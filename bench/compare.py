@@ -44,7 +44,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("engine")
     parser.add_argument("--tlc", required=True)
-    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--only", default="")
     args = parser.parse_args()
     engine = str(Path(args.engine).resolve())
