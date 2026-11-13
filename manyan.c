@@ -14508,14 +14508,22 @@ static void worker_atoms(int lo, int hi) {
     arena = saved;
 }
 
+/* Fairness of the specification: WF_v(A) or SF_v(A), as an enabledness
+   predicate on states and a step predicate on edges. */
+typedef struct { int strong; Expr *enabled, *step; Ctx c; } Fair;
+
+static Fair *fairs;
+static int nfairs;
+
 /* Under symmetry or a view a state's successor is kept as the state found
    first with its fingerprint, which may be a permutation of it or another
    state with its view, so an action
    is evaluated, as TLC does, on the successors themselves: a state's
    successors, regenerated once without printing, as TLC generated them
-   once, with their fingerprints and the action atoms on the step to each
-   (2 if it holds, else 1), at natoms each. */
-typedef struct { int n; uint64_t *fp; signed char *holds; } Successors;
+   once, with their fingerprints, the action atoms on the step to each
+   (2 if it holds, else 1), at natoms each, and so the fairness's steps,
+   at nfairs each. */
+typedef struct { int n; uint64_t *fp; signed char *holds, *fair; } Successors;
 static Successors *real_succ;   /* each state's, for the atoms set up */
 static int nreal_succ;
 static List real_found;
@@ -14557,15 +14565,18 @@ static Successors *real_successors(int s) {
     int n = real_found.n;
     uint64_t *fp = xcalloc((size_t)n + 1, sizeof(uint64_t));
     signed char *holds = xcalloc((size_t)n * (size_t)natoms + 1, 1);
+    signed char *fair = xcalloc((size_t)n * (size_t)nfairs + 1, 1);
     for (int k = 0; k < n; k++) {
         Value **next = (Value **)real_found.v[k];
         fp[k] = fingerprint(next);
         for (int i = 0; i < natoms; i++)
             if (atoms[i]->action && atoms[i]->index == i) holds[(size_t)k * (size_t)natoms + (size_t)i] = (signed char)(holds_at(atoms[i], s, next) ? 2 : 1);
+        for (int f = 0; f < nfairs; f++)
+            fair[(size_t)k * (size_t)nfairs + (size_t)f] = (signed char)holds_in(fairs[f].step, fairs[f].c, state_values(s), next);
     }
     region_close(region);
     arena = saved;
-    *r = (Successors){n, fp, holds};
+    *r = (Successors){n, fp, holds, fair};
     return r;
 }
 
@@ -14826,13 +14837,6 @@ static void sim_product(int *roots, int nroots) {
     }
 }
 
-/* Fairness of the specification: WF_v(A) or SF_v(A), as an enabledness
-   predicate on states and a step predicate on edges. */
-typedef struct { int strong; Expr *enabled, *step; Ctx c; } Fair;
-
-static Fair *fairs;
-static int nfairs;
-
 /* The rest of the fairness, such as <>[][A]_v, which TLC checks as a
    conjunct of each negated property. */
 static Expr **fair_rest;
@@ -14841,9 +14845,15 @@ static int nfair_rest;
 
 static int fair_enabled(Fair *f, int s) { return holds_in(f->enabled, f->c, state_values(s), next_state); }
 
+/* Whether a step of s to `to` is one of f's action: under symmetry or a
+   view, as tnode_step, some step of s to a state with to's fingerprint. */
 static int fair_step(Fair *f, int s, int to) {
     if (to == STUTTER) return 0;
-    return holds_in(f->step, f->c, state_values(s), state_values(to));
+    if (!nsymmetry && !view_expr) return holds_in(f->step, f->c, state_values(s), state_values(to));
+    Successors *r = real_successors(s);
+    for (int k = 0; k < r->n; k++)
+        if (r->fp[k] == states[to].fp && r->fair[(size_t)k * (size_t)nfairs + (size_t)(f - fairs)]) return 1;
+    return 0;
 }
 
 /* Whether the lasso of the n states ls, back to ls[cyc], is fair. */
@@ -15919,7 +15929,7 @@ static void collect_fairnesses(void) {
 
 /* An empty cache for the natoms atoms on each state and step. */
 static void atom_cache_reset(void) {
-    for (int s = 0; s < nreal_succ; s++) free(real_succ[s].fp), free(real_succ[s].holds);
+    for (int s = 0; s < nreal_succ; s++) free(real_succ[s].fp), free(real_succ[s].holds), free(real_succ[s].fair);
     free(real_succ);
     real_succ = xcalloc((size_t)nstates + 1, sizeof(Successors));
     nreal_succ = nstates;
