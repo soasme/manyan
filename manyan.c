@@ -1498,7 +1498,13 @@ static Value *enumerate_lazy(Value *s) {
         if (s->u.l.b) return s->u.l.b;
         Arena *saved = keeping(s->perm);
         List out = {0};
-        each_filtered(s, list_keep, &out);
+        Value *in = s->u.l.a;
+        if (in->kind == V_LAZY && (in->lazy == L_SUBSET || in->lazy == L_FCNSET)) each_filtered(s, list_keep, &out);
+        else {   /* a set held whole: in a loop, not a call for each element */
+            Value *base = filter_base(s);
+            for (int i = 0; i < base->n; i++)
+                if (filter_member_test(s, base->u.set.elems[i]) == TRUEV) list_add(&out, base->u.set.elems[i]);
+        }
         Value *set = list_set(&out);
         /* Keep the elements unless they would outlive the filter's arena. */
         if (may_keep(s)) s->u.l.b = set;
