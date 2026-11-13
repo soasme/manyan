@@ -414,3 +414,22 @@ compares or fingerprints it, which it does as it goes. Real numbers
 check them either. `RandomElement`, `RandomSubset` and
 `RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
 and constants when model checking.
+
+Known gaps, not decisions, each to be closed:
+
+- A temporal property's verdict is TLC's, but its counterexample may be
+  another one TLC could print. TLC builds its tableau of particles, linked
+  in the order of their index, and Manyan's tableau has other nodes, so
+  where there is a tableau the cycle found or the path to it may differ.
+  Where there is none, TLC's order of a state's successors comes from its
+  random fingerprint polynomial, and Manyan takes its own fingerprints in
+  its place: the counterexample is one TLC prints with some polynomial,
+  not always one of those `-fp 0` to `-fp 9` give. Of 900 random graphs
+  of `tests/fuzz.py live`, 896 print what TLC prints.
+- Where TLC fails with a Java exception, hangs, or prints as a
+  simulation's counterexample a lasso that does not violate the property,
+  Manyan reports what the model does instead.
+- Four of tlaplus/Examples print other output than TLC, for the reasons
+  the [full benchmark](fullbench.md) gives.
+- `-symbolic` and `-typecheck`: what Apalache does that they do not is in
+  [Apalache gaps](apalache-gaps.md).

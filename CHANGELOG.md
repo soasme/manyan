@@ -209,7 +209,10 @@ unreleased:
   disjunctive normal form of the fairness and the negated properties is
   an error model, searched in turn on the state graph by the edges that
   keep its `<>[]` conditions, from the initial states and then from the
-  targets of the other edges; the counterexample is the one TLC prints
+  targets of the other edges; the counterexample is the one TLC prints.
+  So are properties with a tableau: the disjuncts with the same rest
+  share one, and their error models are searched in turn on its product
+  with the state graph, its promises fulfilled in the cycle
 - `make fuzz-sim` also simulates with `-continue`
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC

@@ -15255,7 +15255,7 @@ static int live_cut_violated(void) {
    negated properties is a conjunction of <>[]X, []<>S and []<>A
    (Liveness.processLiveness): each disjunct is a possible error model,
    searched in turn on the state graph (LiveWorker). */
-typedef struct { TFList ea, aes, aea; } Pem;   /* <>[]X, []<>S, []<>A */
+typedef struct { TFList ea, aes, aea, tf; } Pem;   /* <>[]X, []<>S, []<>A, the rest, for a tableau */
 typedef struct { TFList *v; int n; } Dnf;     /* n negative: too large */
 
 static Dnf dnf_one(TF *f) {
@@ -15298,7 +15298,7 @@ static Dnf tf_dnf(TF *f) {
 }
 
 /* The error model of a disjunct, as TLC's classifyExpr; 0 if a conjunct
-   needs a tableau. */
+   for the tableau has an action, which TLC's tableau cannot take. */
 static int pem_of(TFList x, Pem *m) {
     *m = (Pem){0};
     for (int i = 0; i < x.n; i++) {
@@ -15306,7 +15306,8 @@ static int pem_of(TFList x, Pem *m) {
         if (t->op == TF_EVENTUALLY && t->a->op == TF_ALWAYS && !tf_has(t->a->a, 1)) tfl_add(&m->ea, t->a->a);
         else if (t->op == TF_ALWAYS && t->a->op == TF_EVENTUALLY && !tf_has(t->a->a, 1))
             tfl_add(tf_has(t->a->a, 0) ? &m->aea : &m->aes, t->a->a);
-        else return 0;
+        else if (tf_has(t, 0)) return 0;
+        else tfl_add(&m->tf, t);
     }
     return 1;
 }
@@ -15323,7 +15324,17 @@ static int pem_holds(TF *f, int s, int e, int to) {
 }
 
 static Pem *pem;          /* the error model searched */
+static TFList promises;   /* the <>F of its tableau */
 static char *pem_in;      /* by node: in the component */
+
+static void tf_promises(TF *f) {
+    if (!f) return;
+    if (f->op == TF_EVENTUALLY) tfl_add(&promises, f);
+    tf_promises(f->a);
+    tf_promises(f->b);
+}
+
+static int pem_fulfils(int p, int i) { return !tnode_defers(pnodes[p].tnode, promises.v[i]->index); }
 
 /* Whether the edge k of node p holds pem's <>[] conditions, and, with a,
    the action a. */
@@ -15336,12 +15347,18 @@ static int pem_step(int p, int k, TF *a) {
 }
 
 /* TLC's checkComponent: a component of one node needs a step to itself;
-   each []<>S holds in a node, each []<>A on an edge inside. */
+   each promise is fulfilled in a node, each []<>S holds in one, each
+   []<>A on an edge inside. */
 static int pem_accept(int *nodes, int n) {
     if (n == 1) {
         int p = nodes[0], k = 0;
         while (k < pnodes[p].nsucc && pnodes[p].succ[k] != p) k++;
         if (k == pnodes[p].nsucc || !pem_step(p, k, NULL)) return 0;
+    }
+    for (int i = 0; i < promises.n; i++) {
+        int ok = 0;
+        for (int j = 0; j < n && !ok; j++) ok = pem_fulfils(nodes[j], i);
+        if (!ok) return 0;
     }
     for (int i = 0; i < pem->aes.n; i++) {
         int ok = 0;
@@ -15411,19 +15428,21 @@ static int pem_sccs(int *roots, int nroots, Ints *com) {
 }
 
 /* TLC's dfsPostFix: from the root, a walk through the component that
-   takes the first edge meeting a []<>A not met yet, else, once a []<>S is
-   met, the last edge it may take, else the last one to a node not seen
+   takes the first edge meeting a []<>A not met yet, else, once a []<>S or
+   promise is met, the last edge it may take, else the last one to a node not seen
    since the last condition met, backing up where there is none. The walk
    before the node it ends at is in *walk. */
 static int pem_walk(int root, Ints *walk) {
-    char *seen = xcalloc((size_t)npnodes, 1), *met = xcalloc((size_t)(pem->aes.n + pem->aea.n) + 1, 1);
-    int cnt = pem->aes.n + pem->aea.n, cur = root;
+    int na = pem->aes.n + pem->aea.n, cnt = na + promises.n, cur = root;
+    char *seen = xcalloc((size_t)npnodes, 1), *met = xcalloc((size_t)cnt + 1, 1);
     seen[root] = 1;
     while (cnt > 0) {
         int cnt0 = cnt;
         for (;;) {
             for (int i = 0; i < pem->aes.n; i++)
                 if (!met[i] && pem_holds(pem->aes.v[i], pnodes[cur].state, -1, -1)) met[i] = 1, cnt--;
+            for (int i = 0; i < promises.n; i++)
+                if (!met[na + i] && pem_fulfils(cur, i)) met[na + i] = 1, cnt--;
             if (cnt <= 0) break;
             int next1 = -1, next2 = -1, cnt1 = cnt, moved = 0;
             for (int k = 0; k < pnodes[cur].nsucc && !moved; k++) {
@@ -15482,7 +15501,7 @@ static void pem_back(int from, int root, Ints *post) {
 
 /* TLC's printTrace: the shortest path to the root, then the cycle of the
    walk and the way back, each state once in a row; the last state, if
-   the root, stutters. */
+   the root's, stutters. */
 static void pem_print(int root, int *roots, int nroots) {
     List path = {0}, acts = {0};
     product_path(roots, nroots, root, NULL, 0, &path, &acts);
@@ -15492,26 +15511,29 @@ static void pem_print(int root, int *roots, int nroots) {
     for (int i = walk.n - 1; i >= 0; i--)
         if (!post.n || post.v[post.n - 1] != walk.v[i]) PUSH(post.v, post.n, walk.v[i]);
     if (post.n && post.v[post.n - 1] == root) post.n--;
-    int n = path.n + post.n, *ls = NEWN(int, n + 1), *la = NEWN(int, n + 1), prev = -1;
+    int n = path.n + post.n, *ls = NEWN(int, n + 1), *la = NEWN(int, n + 1), prev = -1, k = 0, at = 0;
     for (int i = 0; i < n; i++) {
         int p = i < path.n ? (int)path.v[i]->u.i : post.v[post.n - 1 - (i - path.n)];
-        ls[i] = pnodes[p].state;
-        la[i] = !i ? -1 : i < path.n ? (int)acts.v[i]->u.i : edge_act(prev, p);
+        int act = !i ? -1 : i < path.n ? (int)acts.v[i]->u.i : edge_act(prev, p);
         prev = p;
+        if (k && ls[k - 1] == pnodes[p].state) continue;   /* only its tableau node changes */
+        ls[k] = pnodes[p].state;
+        la[k++] = act;
+        if (i < path.n) at = k - 1;
     }
-    if (ls[n - 1] == pnodes[root].state) print_lasso(ls, la, n, -1, la[n - 1], n - 1);
-    else print_lasso(ls, la, n, path.n - 1, edge_act(prev, root), path.n - 1);
+    if (ls[k - 1] == pnodes[root].state) print_lasso(ls, la, k, -1, la[k - 1], k - 1);
+    else print_lasso(ls, la, k, at, edge_act(prev, root), at);
 }
 
 /* 1 if a property is violated, its counterexample printed; 0 if none is;
-   -1 if TLC checks them with a tableau. */
+   -1 if TLC checks them otherwise. The disjuncts sharing a tableau are
+   TLC's order of solution: their error models are searched in turn on its
+   product with the state graph. */
 static int pem_violated(void) {
     if (sim_n || nsymmetry || view_expr || !ntemporal_props) return -1;
     free(decoded);
     decoded = xcalloc((size_t)nstates, sizeof(Value **));
-    neventualities = natoms = ntnodes = npnodes = 0;
-    free(pnodes_of);
-    pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
+    neventualities = natoms = 0;
     TF *f = NULL, *neg = NULL;
     for (int i = 0; i < nfairness; i++) {
         TF *t = to_tf(fairness[i], root_ctx, 0);
@@ -15528,28 +15550,41 @@ static int pem_violated(void) {
     Pem *pems = NEWN(Pem, d.n + 1);
     for (int i = 0; i < d.n; i++) if (!pem_of(d.v[i], &pems[i])) return -1;
     atom_cache_reset();
-    TF *any = tf_new(TF_TRUE, NULL, NULL);
-    int *roots, nroots = live_roots(any, &roots);
-    live_build(any, 0, NULL);
     live_negated = f;
-    free(pem_in);
-    pem_in = xcalloc((size_t)npnodes + 1, 1);
+    char *done = xcalloc((size_t)d.n + 1, 1);
     for (int i = 0; i < d.n; i++) {
-        pem = &pems[i];
-        Ints com = {0};
-        int root = pem_sccs(roots, nroots, &com);
-        if (root >= 0) { pem_print(root, roots, nroots); return 1; }
+        if (done[i]) continue;
+        TF *tf = tf_new(TF_TRUE, NULL, NULL);
+        for (int j = 0; j < pems[i].tf.n; j++) tf = tf_new(TF_AND, tf, pems[i].tf.v[j]);
+        promises = (TFList){0};
+        tf_promises(tf);
+        ntnodes = npnodes = 0;
+        free(pnodes_of);
+        pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
+        int *roots, nroots = live_roots(tf, &roots);
+        live_build(tf, 0, NULL);
+        free(pem_in);
+        pem_in = xcalloc((size_t)npnodes + 1, 1);
+        for (int j = i; j < d.n; j++) {
+            if (done[j] || !tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n)) continue;
+            done[j] = 1;
+            pem = &pems[j];
+            Ints com = {0};
+            int root = pem_sccs(roots, nroots, &com);
+            if (root >= 0) { pem_print(root, roots, nroots); free(done); return 1; }
+        }
     }
+    free(done);
     return 0;
 }
 
 static int live_violated(void) {
-    int pem = pem_violated();
-    if (pem >= 0) return pem ? MANYAN_VIOLATION_LIVENESS : 0;
     int cut = live_cut_violated();
     if (cut) return cut;
+    int pem = pem_violated();
+    if (pem >= 0) return pem ? MANYAN_VIOLATION_LIVENESS : 0;
     for (int p = 0; p < ntemporal_props; p++)
-        if (check_property(p ? live_setup(p) : live_negated)) return MANYAN_VIOLATION_LIVENESS;
+        if (check_property(live_setup(p))) return MANYAN_VIOLATION_LIVENESS;
     return 0;
 }
 

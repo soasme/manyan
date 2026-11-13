@@ -16,9 +16,9 @@ from TLC.
   against TLC (`make full-bench`), and publish how many give identical
   output ([full benchmark](fullbench.md)). Each spec that differs becomes a test in
   `tests/spec` and then a fix. The goal is all of them.
-- The gaps the [manual](manual.md#limitations) lists are left by
-  decision, each for the reason it gives; one is reopened when a
-  specification needs it. The order of `Print` output in a simulation
+- The gaps the [manual](manual.md#limitations) lists by decision are
+  left, each for the reason it gives; one is reopened when a
+  specification needs it. Its known gaps are to be closed. The order of `Print` output in a simulation
   that stops early is TLC's threads' timing.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
@@ -26,10 +26,10 @@ from TLC.
   `tests/fuzz.py live` makes on three seeds, the verdict is TLC's on all,
   the counterexample one TLC prints on 896. Manyan now orders a state's
   successors as TLC's table of them does, by its own fingerprints in
-  place of TLC's random polynomial, and checks a property without a
-  tableau as TLC does, by its possible error models. The rest: with a
-  tableau too, TLC checks the conjuncts `[]<>P` and `<>[]P` of a negated
-  property apart from it and prunes the search by them.
+  place of TLC's random polynomial, and checks the properties as TLC
+  does, by its possible error models. The rest: TLC's tableau is built of
+  particles, its successors linked in the order of their index, so its
+  product has other nodes and edges than Manyan's.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle and the tableau have models.
