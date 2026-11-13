@@ -1,0 +1,12 @@
+Finished computing initial states: 3 distinct states generated.
+Error: Temporal property P was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+s = 2
+
+State 2: Stuttering
+8 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 13

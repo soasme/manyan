@@ -26,9 +26,10 @@ from TLC.
   `tests/fuzz.py live` makes on three seeds, the verdict is TLC's on all,
   the counterexample one TLC prints on 896. Manyan now orders a state's
   successors as TLC's table of them does, by its own fingerprints in
-  place of TLC's random polynomial. The rest: TLC checks the
-  conjuncts `[]<>P` and `<>[]P` of a negated property without its
-  tableau and prunes the search by them.
+  place of TLC's random polynomial, and checks a property without a
+  tableau as TLC does, by its possible error models. The rest: with a
+  tableau too, TLC checks the conjuncts `[]<>P` and `<>[]P` of a negated
+  property apart from it and prunes the search by them.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle and the tableau have models.

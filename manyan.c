@@ -15208,6 +15208,16 @@ static void collect_fairnesses(void) {
     for (int i = 0; i < nfairness; i++) collect_fairness(fairness[i], root_ctx);
 }
 
+/* An empty cache for the natoms atoms on each state and step. */
+static void atom_cache_reset(void) {
+    size_t n = (size_t)nstates * (size_t)natoms;
+    free(step_atoms);
+    step_atoms = xmalloc(sizeof(size_t) * (size_t)(nstates + 1));
+    for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(states[s].nedges + 1) * (size_t)natoms; }
+    if (atom_cache) munmap(atom_cache, atom_cache_size);
+    atom_cache = shared(atom_cache_size = n + 1);
+}
+
 static TF *live_setup(int p) {
     neventualities = 0;
     natoms = 0;
@@ -15217,12 +15227,7 @@ static TF *live_setup(int p) {
     pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
     TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
-    size_t n = (size_t)nstates * (size_t)natoms;
-    free(step_atoms);
-    step_atoms = xmalloc(sizeof(size_t) * (size_t)(nstates + 1));
-    for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(states[s].nedges + 1) * (size_t)natoms; }
-    if (atom_cache) munmap(atom_cache, atom_cache_size);
-    atom_cache = shared(atom_cache_size = n + 1);
+    atom_cache_reset();
     return live_negated = neg;
 }
 
@@ -15245,7 +15250,302 @@ static int live_cut_violated(void) {
     return MANYAN_VIOLATION_SAFETY;
 }
 
+/* Where TLC checks the properties without a tableau, as it does when
+   each disjunct of the disjunctive normal form of the fairness and the
+   negated properties is a conjunction of <>[]X, []<>S and []<>A
+   (Liveness.processLiveness): each disjunct is a possible error model,
+   searched in turn on the state graph (LiveWorker). */
+typedef struct { TFList ea, aes, aea; } Pem;   /* <>[]X, []<>S, []<>A */
+typedef struct { TFList *v; int n; } Dnf;     /* n negative: too large */
+
+static Dnf dnf_one(TF *f) {
+    Dnf d = {NEWN(TFList, 1), 1};
+    d.v[0].v = NEWN(TF *, 1);
+    d.v[0].v[0] = f;
+    d.v[0].n = 1;
+    return d;
+}
+
+/* As TLC's toDNF: a conjunction's disjuncts are its conjuncts', crossed,
+   the first varying slowest; a disjunction's are its disjuncts', those
+   []<>X merged into one []<>(X1 \/ X2 ...) at the end. */
+static Dnf tf_dnf(TF *f) {
+    if (f->op != TF_AND && f->op != TF_OR) return dnf_one(f);
+    Dnf a = tf_dnf(f->a), b = tf_dnf(f->b), d = {0};
+    if (a.n < 0 || b.n < 0 || (long)a.n * b.n > 4096) return (Dnf){NULL, -1};
+    if (f->op == TF_AND) {
+        d.v = NEWN(TFList, a.n * b.n);
+        for (int i = 0; i < a.n; i++)
+            for (int j = 0; j < b.n; j++) {
+                TFList *l = &d.v[d.n++];
+                l->v = NEWN(TF *, a.v[i].n + b.v[j].n);
+                memcpy(l->v, a.v[i].v, sizeof(TF *) * (size_t)a.v[i].n);
+                memcpy(l->v + a.v[i].n, b.v[j].v, sizeof(TF *) * (size_t)b.v[j].n);
+                l->n = a.v[i].n + b.v[j].n;
+            }
+        return d;
+    }
+    TF *ae = NULL;
+    d.v = NEWN(TFList, a.n + b.n + 1);
+    for (int i = 0; i < a.n + b.n; i++) {
+        TFList x = i < a.n ? a.v[i] : b.v[i - a.n];
+        if (x.n == 1 && x.v[0]->op == TF_ALWAYS && x.v[0]->a->op == TF_EVENTUALLY)
+            ae = ae ? tf_new(TF_OR, ae, x.v[0]->a->a) : x.v[0]->a->a;
+        else d.v[d.n++] = x;
+    }
+    if (ae) d.v[d.n++] = dnf_one(tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, ae, NULL), NULL)).v[0];
+    return d;
+}
+
+/* The error model of a disjunct, as TLC's classifyExpr; 0 if a conjunct
+   needs a tableau. */
+static int pem_of(TFList x, Pem *m) {
+    *m = (Pem){0};
+    for (int i = 0; i < x.n; i++) {
+        TF *t = x.v[i];
+        if (t->op == TF_EVENTUALLY && t->a->op == TF_ALWAYS && !tf_has(t->a->a, 1)) tfl_add(&m->ea, t->a->a);
+        else if (t->op == TF_ALWAYS && t->a->op == TF_EVENTUALLY && !tf_has(t->a->a, 1))
+            tfl_add(tf_has(t->a->a, 0) ? &m->aea : &m->aes, t->a->a);
+        else return 0;
+    }
+    return 1;
+}
+
+/* f, of no temporal operator, on state s, or on its step e to `to`. */
+static int pem_holds(TF *f, int s, int e, int to) {
+    switch (f->op) {
+    case TF_TRUE: return 1;
+    case TF_FALSE: return 0;
+    case TF_AND: return pem_holds(f->a, s, e, to) && pem_holds(f->b, s, e, to);
+    case TF_OR: return pem_holds(f->a, s, e, to) || pem_holds(f->b, s, e, to);
+    default: return f->action ? atom_holds_edge(f, s, e, to) : atom_holds_on(f, s, NULL);
+    }
+}
+
+static Pem *pem;          /* the error model searched */
+static char *pem_in;      /* by node: in the component */
+
+/* Whether the edge k of node p holds pem's <>[] conditions, and, with a,
+   the action a. */
+static int pem_step(int p, int k, TF *a) {
+    int s = pnodes[p].state, to = pnodes[pnodes[p].succ[k]].state, e = 0;
+    StateRec *r = &states[s];
+    while (e < r->nedges && r->edges[2 * e] != to) e++;
+    for (int i = 0; i < pem->ea.n; i++) if (!pem_holds(pem->ea.v[i], s, e, to)) return 0;
+    return !a || pem_holds(a, s, e, to);
+}
+
+/* TLC's checkComponent: a component of one node needs a step to itself;
+   each []<>S holds in a node, each []<>A on an edge inside. */
+static int pem_accept(int *nodes, int n) {
+    if (n == 1) {
+        int p = nodes[0], k = 0;
+        while (k < pnodes[p].nsucc && pnodes[p].succ[k] != p) k++;
+        if (k == pnodes[p].nsucc || !pem_step(p, k, NULL)) return 0;
+    }
+    for (int i = 0; i < pem->aes.n; i++) {
+        int ok = 0;
+        for (int j = 0; j < n && !ok; j++) ok = pem_holds(pem->aes.v[i], pnodes[nodes[j]].state, -1, -1);
+        if (!ok) return 0;
+    }
+    for (int i = 0; i < pem->aea.n; i++) {
+        int ok = 0;
+        for (int j = 0; j < n && !ok; j++)
+            for (int k = 0; k < pnodes[nodes[j]].nsucc && !ok; k++)
+                ok = pem_in[pnodes[nodes[j]].succ[k]] && pem_step(nodes[j], k, pem->aea.v[i]);
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
+/* TLC's checkSccs: Tarjan's from each initial node, by the edges that
+   hold the <>[] conditions, the last first; the target of another edge
+   not yet seen is a root after them. Returns the root of the first
+   accepted component, its nodes marked in pem_in and in *com. */
+static int pem_sccs(int *roots, int nroots, Ints *com) {
+    int nq = nroots, *queue = xmalloc(sizeof(int) * (size_t)(nroots + 1)), qcap = nroots + 1;
+    memcpy(queue, roots, sizeof(int) * (size_t)nroots);
+    for (int p = 0; p < npnodes; p++) pnodes[p].index = -1, pnodes[p].onstack = 0;
+    int *stack = xmalloc(sizeof(int) * (size_t)npnodes), *cstack = xmalloc(sizeof(int) * (size_t)npnodes);
+    int *cedge = xmalloc(sizeof(int) * (size_t)npnodes), index = 0, sp = 0, found = -1;
+    for (int q = 0; q < nq && found < 0; q++) {
+        if (pnodes[queue[q]].index >= 0) continue;
+        int cp = 0, w = queue[q];
+        for (;;) {
+            if (w >= 0) {   /* visit w */
+                pnodes[w].index = pnodes[w].low = index++;
+                stack[sp++] = w;
+                pnodes[w].onstack = 1;
+                cstack[cp] = w, cedge[cp++] = 0;
+                for (int k = 0; k < pnodes[w].nsucc; k++) {
+                    int x = pnodes[w].succ[k];
+                    if (pnodes[x].index >= 0 || pem_step(w, k, NULL)) continue;
+                    if (nq == qcap) queue = xrealloc(queue, sizeof(int) * (size_t)(qcap *= 2));
+                    queue[nq++] = x;
+                }
+                w = -1;
+            }
+            if (!cp || found >= 0) break;
+            int v = cstack[cp - 1], ns = pnodes[v].nsucc;
+            if (cedge[cp - 1] < ns) {
+                int k = ns - 1 - cedge[cp - 1]++, x = pnodes[v].succ[k];
+                if (!pem_step(v, k, NULL)) continue;
+                if (pnodes[x].index < 0) w = x;
+                else if (pnodes[x].onstack && pnodes[x].index < pnodes[v].low) pnodes[v].low = pnodes[x].index;
+                continue;
+            }
+            if (--cp > 0 && pnodes[v].low < pnodes[cstack[cp - 1]].low) pnodes[cstack[cp - 1]].low = pnodes[v].low;
+            if (pnodes[v].low != pnodes[v].index) continue;
+            int start = sp;
+            do start--; while (stack[start] != v);
+            for (int i = start; i < sp; i++) pnodes[stack[i]].onstack = 0, pem_in[stack[i]] = 1;
+            if (pem_accept(stack + start, sp - start)) {
+                found = v;
+                for (int i = start; i < sp; i++) PUSH(com->v, com->n, stack[i]);
+            } else for (int i = start; i < sp; i++) pem_in[stack[i]] = 0;
+            sp = start;
+        }
+    }
+    free(queue); free(stack); free(cstack); free(cedge);
+    return found;
+}
+
+/* TLC's dfsPostFix: from the root, a walk through the component that
+   takes the first edge meeting a []<>A not met yet, else, once a []<>S is
+   met, the last edge it may take, else the last one to a node not seen
+   since the last condition met, backing up where there is none. The walk
+   before the node it ends at is in *walk. */
+static int pem_walk(int root, Ints *walk) {
+    char *seen = xcalloc((size_t)npnodes, 1), *met = xcalloc((size_t)(pem->aes.n + pem->aea.n) + 1, 1);
+    int cnt = pem->aes.n + pem->aea.n, cur = root;
+    seen[root] = 1;
+    while (cnt > 0) {
+        int cnt0 = cnt;
+        for (;;) {
+            for (int i = 0; i < pem->aes.n; i++)
+                if (!met[i] && pem_holds(pem->aes.v[i], pnodes[cur].state, -1, -1)) met[i] = 1, cnt--;
+            if (cnt <= 0) break;
+            int next1 = -1, next2 = -1, cnt1 = cnt, moved = 0;
+            for (int k = 0; k < pnodes[cur].nsucc && !moved; k++) {
+                int w = pnodes[cur].succ[k];
+                if (!pem_in[w] || !pem_step(cur, k, NULL)) continue;
+                next1 = w;
+                for (int i = 0; i < pem->aea.n; i++)
+                    if (!met[pem->aes.n + i] && pem_step(cur, k, pem->aea.v[i])) met[pem->aes.n + i] = 1, cnt--;
+                if (cnt < cnt1) moved = 1;
+                else if (!seen[w]) next2 = w;
+            }
+            if (moved || (cnt < cnt0 && next1 >= 0)) {
+                PUSH(walk->v, walk->n, cur);
+                cur = next1;
+                memset(seen, 0, (size_t)npnodes);
+                break;
+            }
+            while (next2 < 0 && walk->n > 0) {   /* back up */
+                cur = walk->v[--walk->n];
+                for (int k = 0; k < pnodes[cur].nsucc && next2 < 0; k++)
+                    if (pem_in[pnodes[cur].succ[k]] && !seen[pnodes[cur].succ[k]]) next2 = pnodes[cur].succ[k];
+            }
+            if (next2 < 0) { cnt = 0; break; }
+            PUSH(walk->v, walk->n, cur);
+            cur = next2;
+            seen[cur] = 1;
+        }
+    }
+    free(seen); free(met);
+    return cur;
+}
+
+/* TLC's bfsPostFix: the shortest way in the component, by the edges that
+   hold the <>[] conditions, from `from` to an edge back to the root, its
+   nodes from the last to `from` added to post. */
+static void pem_back(int from, int root, Ints *post) {
+    int *prev = xmalloc(sizeof(int) * (size_t)npnodes), *queue = xmalloc(sizeof(int) * (size_t)npnodes), qh = 0, qt = 0;
+    for (int p = 0; p < npnodes; p++) prev[p] = -2;
+    prev[from] = -1;
+    queue[qt++] = from;
+    while (qh < qt) {
+        int v = queue[qh++];
+        for (int k = 0; k < pnodes[v].nsucc; k++) {
+            int w = pnodes[v].succ[k];
+            if (w == v || !pem_step(v, k, NULL)) continue;
+            if (w == root) {
+                for (int x = v; x >= 0; x = prev[x]) PUSH(post->v, post->n, x);
+                free(prev); free(queue);
+                return;
+            }
+            if (pem_in[w] && prev[w] == -2) prev[w] = v, queue[qt++] = w;
+        }
+    }
+    free(prev); free(queue);
+}
+
+/* TLC's printTrace: the shortest path to the root, then the cycle of the
+   walk and the way back, each state once in a row; the last state, if
+   the root, stutters. */
+static void pem_print(int root, int *roots, int nroots) {
+    List path = {0}, acts = {0};
+    product_path(roots, nroots, root, NULL, 0, &path, &acts);
+    Ints walk = {0}, post = {0};
+    int cur = pem_walk(root, &walk);
+    if (cur != root) pem_back(cur, root, &post);
+    for (int i = walk.n - 1; i >= 0; i--)
+        if (!post.n || post.v[post.n - 1] != walk.v[i]) PUSH(post.v, post.n, walk.v[i]);
+    if (post.n && post.v[post.n - 1] == root) post.n--;
+    int n = path.n + post.n, *ls = NEWN(int, n + 1), *la = NEWN(int, n + 1), prev = -1;
+    for (int i = 0; i < n; i++) {
+        int p = i < path.n ? (int)path.v[i]->u.i : post.v[post.n - 1 - (i - path.n)];
+        ls[i] = pnodes[p].state;
+        la[i] = !i ? -1 : i < path.n ? (int)acts.v[i]->u.i : edge_act(prev, p);
+        prev = p;
+    }
+    if (ls[n - 1] == pnodes[root].state) print_lasso(ls, la, n, -1, la[n - 1], n - 1);
+    else print_lasso(ls, la, n, path.n - 1, edge_act(prev, root), path.n - 1);
+}
+
+/* 1 if a property is violated, its counterexample printed; 0 if none is;
+   -1 if TLC checks them with a tableau. */
+static int pem_violated(void) {
+    if (sim_n || nsymmetry || view_expr || !ntemporal_props) return -1;
+    free(decoded);
+    decoded = xcalloc((size_t)nstates, sizeof(Value **));
+    neventualities = natoms = ntnodes = npnodes = 0;
+    free(pnodes_of);
+    pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
+    TF *f = NULL, *neg = NULL;
+    for (int i = 0; i < nfairness; i++) {
+        TF *t = to_tf(fairness[i], root_ctx, 0);
+        f = f ? tf_new(TF_AND, f, t) : t;
+    }
+    for (int p = 0; p < ntemporal_props; p++) {
+        TF *t = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
+        neg = neg ? tf_new(TF_OR, neg, t) : t;
+    }
+    f = f ? tf_new(TF_AND, f, neg) : neg;
+    if (f->op == TF_FALSE) return 0;
+    Dnf d = tf_dnf(f);
+    if (d.n < 0) return -1;
+    Pem *pems = NEWN(Pem, d.n + 1);
+    for (int i = 0; i < d.n; i++) if (!pem_of(d.v[i], &pems[i])) return -1;
+    atom_cache_reset();
+    TF *any = tf_new(TF_TRUE, NULL, NULL);
+    int *roots, nroots = live_roots(any, &roots);
+    live_build(any, 0, NULL);
+    live_negated = f;
+    free(pem_in);
+    pem_in = xcalloc((size_t)npnodes + 1, 1);
+    for (int i = 0; i < d.n; i++) {
+        pem = &pems[i];
+        Ints com = {0};
+        int root = pem_sccs(roots, nroots, &com);
+        if (root >= 0) { pem_print(root, roots, nroots); return 1; }
+    }
+    return 0;
+}
+
 static int live_violated(void) {
+    int pem = pem_violated();
+    if (pem >= 0) return pem ? MANYAN_VIOLATION_LIVENESS : 0;
     int cut = live_cut_violated();
     if (cut) return cut;
     for (int p = 0; p < ntemporal_props; p++)

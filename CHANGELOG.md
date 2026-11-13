@@ -204,6 +204,12 @@ unreleased:
   its state is expanded; the stuttering step first, then the actions',
   for one added later. Counterexamples TLC could not print, such as a
   lasso stuttering where TLC's walk leaves the root, are gone
+- Properties TLC checks without a tableau, such as `[]<>A`, `<>[]P` or
+  `WF_v(A)`, are checked as TLC checks them: each disjunct of the
+  disjunctive normal form of the fairness and the negated properties is
+  an error model, searched in turn on the state graph by the edges that
+  keep its `<>[]` conditions, from the initial states and then from the
+  targets of the other edges; the counterexample is the one TLC prints
 - `make fuzz-sim` also simulates with `-continue`
 - `make fuzz-check` checks the models of tests/spec with random options,
   with Manyan (one or four workers) and with TLC
