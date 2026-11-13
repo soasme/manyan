@@ -14018,6 +14018,7 @@ static int succ_table_size(int s) {
 }
 
 static int cmp_int(const void *x, const void *y) { return (*(const int *)x > *(const int *)y) - (*(const int *)x < *(const int *)y); }
+static int cmp_u64(const void *x, const void *y) { return (*(const uint64_t *)x > *(const uint64_t *)y) - (*(const uint64_t *)x < *(const uint64_t *)y); }
 
 /* The steps e of state s, edge n its stuttering one if stutter is set, in
    the order TLC's table of them holds the successors: by a fingerprint's
@@ -15266,7 +15267,7 @@ static int live_cut_violated(void) {
    negated properties is a conjunction of <>[]X, []<>S and []<>A
    (Liveness.processLiveness): each disjunct is a possible error model,
    searched in turn on the state graph (LiveWorker). */
-typedef struct { TFList ea, aes, aea, tf; } Pem;   /* <>[]X, []<>S, []<>A, the rest, for a tableau */
+typedef struct { TFList ea, aes, aea, tf; uint64_t s_bits, ea_bits, aea_bits; } Pem;   /* <>[]X, []<>S, []<>A, the rest, for a tableau; bits of conds */
 typedef struct { TFList *v; int n; } Dnf;     /* n negative: too large */
 
 static Dnf dnf_one(TF *f) {
@@ -15388,7 +15389,7 @@ static int pem_accept(int *nodes, int n) {
    hold the <>[] conditions, the last first; the target of another edge
    not yet seen is a root after them. Returns the root of the first
    accepted component, its nodes marked in pem_in and in *com. */
-static int pem_sccs(int *roots, int nroots, Ints *com) {
+static int pem_sccs(int *roots, int nroots, Ints *com, int (*accept)(int *, int)) {
     int nq = nroots, *queue = xmalloc(sizeof(int) * (size_t)(nroots + 1)), qcap = nroots + 1;
     memcpy(queue, roots, sizeof(int) * (size_t)nroots);
     for (int p = 0; p < npnodes; p++) pnodes[p].index = -1, pnodes[p].onstack = 0;
@@ -15425,7 +15426,7 @@ static int pem_sccs(int *roots, int nroots, Ints *com) {
             int start = sp;
             do start--; while (stack[start] != v);
             for (int i = start; i < sp; i++) pnodes[stack[i]].onstack = 0, pem_in[stack[i]] = 1;
-            if (pem_accept(stack + start, sp - start)) {
+            if (accept(stack + start, sp - start)) {
                 found = v;
                 for (int i = start; i < sp; i++) PUSH(com->v, com->n, stack[i]);
             } else for (int i = start; i < sp; i++) pem_in[stack[i]] = 0;
@@ -15434,6 +15435,67 @@ static int pem_sccs(int *roots, int nroots, Ints *com) {
     }
     free(queue); free(stack); free(cstack); free(cedge);
     return found;
+}
+
+/* What each component of the whole product offers an error model, to
+   skip the search of one that none can accept: a component it accepts
+   lies in one of them. Bits of the []<>S holding in a node, and of the
+   <>[] and []<>A conditions holding on each edge inside; the components
+   that fulfil the promises and have an edge inside. */
+static TFList conds_s, conds_e;   /* the bits, if 64 or fewer each */
+typedef struct { uint64_t states, *edges; int n; } Offer;
+static Offer *offers;
+static int noffers;
+
+static uint64_t cond_bits(TFList conds, TFList of) {
+    uint64_t b = 0;
+    for (int i = 0; i < of.n; i++)
+        for (int j = 0; j < conds.n; j++) if (conds.v[j] == of.v[i]) b |= 1ull << j;
+    return b;
+}
+
+static int pem_offer(int *nodes, int n) {
+    for (int i = 0; i < promises.n; i++) {
+        int ok = 0;
+        for (int j = 0; j < n && !ok; j++) ok = pem_fulfils(nodes[j], i);
+        if (!ok) return 0;
+    }
+    Offer o = {0};
+    for (int j = 0; j < n; j++) {
+        int p = nodes[j], s = pnodes[p].state;
+        for (int b = 0; b < conds_s.n; b++) if (pem_holds(conds_s.v[b], s, -1, -1)) o.states |= 1ull << b;
+        for (int k = 0; k < pnodes[p].nsucc; k++) {
+            int w = pnodes[p].succ[k], seen = 0;
+            if (!pem_in[w]) continue;
+            uint64_t x = 0;
+            for (int b = 0; b < conds_e.n; b++)
+                if (pem_holds(conds_e.v[b], s, pnodes[p].edge[k], pnodes[w].state)) x |= 1ull << b;
+            for (int i = 0; i < o.n && !seen; i++) seen = o.edges[i] == x;
+            if (!seen) PUSH(o.edges, o.n, x);
+        }
+    }
+    if (!o.n) return 0;
+    qsort(o.edges, (size_t)o.n, sizeof(uint64_t), cmp_u64);
+    for (int i = 0; i < noffers; i++)   /* one of each */
+        if (offers[i].states == o.states && offers[i].n == o.n && !memcmp(offers[i].edges, o.edges, sizeof(uint64_t) * (size_t)o.n)) return 0;
+    PUSH(offers, noffers, o);
+    return 0;
+}
+
+static int offer_has(Offer *o, uint64_t need) {
+    for (int i = 0; i < o->n; i++) if ((o->edges[i] & need) == need) return 1;
+    return 0;
+}
+
+static int pem_possible(Pem *m) {
+    for (int i = 0; i < noffers; i++) {
+        Offer *o = &offers[i];
+        int ok = (o->states & m->s_bits) == m->s_bits && offer_has(o, m->ea_bits);
+        for (int b = 0; b < 64 && ok; b++)
+            if (m->aea_bits >> b & 1) ok = offer_has(o, m->ea_bits | 1ull << b);
+        if (ok) return 1;
+    }
+    return 0;
 }
 
 /* TLC's dfsPostFix: from the root, a walk through the component that
@@ -15558,6 +15620,18 @@ static int pem_violated(void) {
     if (d.n < 0) return -1;
     Pem *pems = NEWN(Pem, d.n + 1);
     for (int i = 0; i < d.n; i++) if (!pem_of(d.v[i], &pems[i])) return -1;
+    conds_s = conds_e = (TFList){0};
+    for (int i = 0; i < d.n; i++) {
+        for (int j = 0; j < pems[i].aes.n; j++) tfl_add(&conds_s, pems[i].aes.v[j]);
+        for (int j = 0; j < pems[i].ea.n; j++) tfl_add(&conds_e, pems[i].ea.v[j]);
+        for (int j = 0; j < pems[i].aea.n; j++) tfl_add(&conds_e, pems[i].aea.v[j]);
+    }
+    int prune = conds_s.n <= 64 && conds_e.n <= 64;
+    for (int i = 0; i < d.n && prune; i++) {
+        pems[i].s_bits = cond_bits(conds_s, pems[i].aes);
+        pems[i].ea_bits = cond_bits(conds_e, pems[i].ea);
+        pems[i].aea_bits = cond_bits(conds_e, pems[i].aea);
+    }
     atom_cache_reset();
     live_negated = f;
     char *done = xcalloc((size_t)d.n + 1, 1);
@@ -15574,12 +15648,22 @@ static int pem_violated(void) {
         live_build(tf, 0, NULL);
         free(pem_in);
         pem_in = xcalloc((size_t)npnodes + 1, 1);
+        int same = 0;
+        for (int j = i; j < d.n; j++) same += !done[j] && tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n);
+        int offered = prune && same > 8;   /* the pass costs a few searches */
+        if (offered) {
+            Pem all = {0};
+            pem = &all;
+            noffers = 0;
+            pem_sccs(roots, nroots, NULL, pem_offer);
+        }
         for (int j = i; j < d.n; j++) {
             if (done[j] || !tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n)) continue;
             done[j] = 1;
             pem = &pems[j];
+            if (offered && !pem_possible(pem)) continue;
             Ints com = {0};
-            int root = pem_sccs(roots, nroots, &com);
+            int root = pem_sccs(roots, nroots, &com, pem_accept);
             if (root >= 0) { pem_print(root, roots, nroots); free(done); return 1; }
         }
     }
