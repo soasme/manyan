@@ -281,7 +281,9 @@ process would find them, and expands a batch while it waits for one. A state who
 expansion reports anything (an error, a violation, a deadlock, output from
 `Print`) is expanded again by Manyan itself, so the output, including which
 violation is reported and its trace, is the same for every N. Levels
-smaller than 256 states are expanded by Manyan alone.
+smaller than 256 states, and a model with a `VIEW` or `SYMMETRY` (whose
+state kept for a fingerprint is the first one process finds), are
+expanded by Manyan alone.
 
 The initial states are computed by the workers too, when `Init` chooses
 among enough alternatives (an element of `x \in S`, a disjunct, a

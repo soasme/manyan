@@ -83,6 +83,10 @@ unreleased:
   `<>A` is checked right: their 65th shared the first's mark of being
   deferred, so a fair cycle that fulfils both at different states was
   missed. A tableau node defers `<>A` when it is among its next formulas
+- a model with a `VIEW` or `SYMMETRY` is checked by one process whatever
+  `-workers`: workers kept the state a worker claimed first for a
+  fingerprint, so the trace, the invariant checked and the verdict could
+  differ from one process's
 - an error evaluating fairness is the one TLC reports first: weak
   fairness's `ENABLED` is evaluated with the actions on each step, before
   strong fairness's on the state

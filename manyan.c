@@ -11513,7 +11513,9 @@ static void print_unfingerprinted(Expr **fps, int n) {
 
 /* Breadth-first search (§10.4). Returns the exit status. */
 static int search(void) {
-    if (dump_file || npossibles) nworkers = 1;
+    /* Under symmetry or a view a state stands for others: the one kept is
+       the first found, as one process finds it, not the first claimed. */
+    if (dump_file || npossibles || nsymmetry || view_expr) nworkers = 1;
     if (nworkers > 1) share_search();
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
