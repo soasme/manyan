@@ -170,6 +170,9 @@ unreleased:
   on the steps to the successors themselves: it was evaluated on the step
   to the state kept for the successor's fingerprint, so a fair cycle could
   be missed and a violated property pass
+- a filter `{x \in U : P}` of a `UNION` TLC keeps tests the elements of
+  its sets in turn, duplicates too, as TLC: it tested them sorted, so the
+  states counted, the counterexample and an error of `P` could differ
 - an error evaluating fairness is the one TLC reports first: weak
   fairness's `ENABLED` is evaluated with the actions on each step, before
   strong fairness's on the state

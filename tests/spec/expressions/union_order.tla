@@ -1,6 +1,6 @@
 ---- MODULE union_order ----
-\* Quantifiers, set maps, CHOOSE, filters and functions take a UNION TLC
-\* keeps sorted; x \in U in Init and Next takes one of its sets after
+\* Quantifiers, set maps, CHOOSE and functions take a UNION TLC keeps
+\* sorted; x \in U in Init and Next, and a filter, take one of its sets after
 \* another, in order, duplicates too, until U is counted or compared with
 \* another value and keeps its elements.
 EXTENDS Integers, TLC, FiniteSets
