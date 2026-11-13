@@ -1347,6 +1347,17 @@ static Value *fcnset_domain(Value *s) {
     return dom;
 }
 
+/* Steps c, k of n indices in increasing order, to the next such in
+   order; 0 after the last. */
+static int next_combination(int *c, int k, int n) {
+    int i = k - 1;
+    while (i >= 0 && c[i] == n - k + i) i--;
+    if (i < 0) return 0;
+    c[i]++;
+    for (int j = i + 1; j < k; j++) c[j] = c[j - 1] + 1;
+    return 1;
+}
+
 /* Calls fn on each subset of the set base in the standard order: smaller
    subsets first, then those of each size in the order of their elements;
    so nothing to sort; until fn returns nonzero. The subset is one value,
@@ -1357,19 +1368,14 @@ static int each_subset(Value *base, int (*fn)(Value *sub, void *data), void *dat
     Value *sub = mk_set(n);
     for (int k = 0; k <= n; k++) {
         for (int i = 0; i < k; i++) c[i] = i;
-        for (;;) {
+        do {
             sub->n = k;
             sub->u.set.hash = 0;
             sub->u.set.source = NULL;
             for (int i = 0; i < k; i++) sub->u.set.elems[i] = base->u.set.elems[c[i]];
             int r = fn(sub, data);
             if (r) return r;
-            int i = k - 1;
-            while (i >= 0 && c[i] == n - k + i) i--;
-            if (i < 0) break;
-            c[i]++;
-            for (int j = i + 1; j < k; j++) c[j] = c[j - 1] + 1;
-        }
+        } while (next_combination(c, k, n));
     }
     return 0;
 }
@@ -1379,8 +1385,6 @@ static Value *set_copy(Value *s) {
     memcpy(c->u.set.elems, s->u.set.elems, sizeof(Value *) * (size_t)s->n);
     return c;
 }
-
-static int subset_keep(Value *sub, void *out) { Value *o = out; o->u.set.elems[o->n++] = set_copy(sub); return 0; }
 
 static Value *filter_member_test(Value *s, Value *v);
 
@@ -1444,9 +1448,16 @@ static Value *enumerate_lazy(Value *s) {
         Value *base = enumerate(s->u.l.a);
         if (base->n >= 31) fail("Overflow when computing the number of elements in:\n%s", pretty(s));   /* TLC's size() */
         if (base->n > 24) fail("Attempted to enumerate SUBSET of a set with too many elements.");
-        Value *out = mk_set(1 << base->n);
-        out->n = 0;
-        each_subset(base, subset_keep, out);
+        /* In the standard order, as each_subset, each subset made in place. */
+        int n = base->n, at = 0, c[24];
+        Value *out = mk_set(1 << n);
+        for (int k = 0; k <= n; k++) {
+            for (int i = 0; i < k; i++) c[i] = i;
+            do {
+                Value *sub = out->u.set.elems[at++] = mk_set(k);
+                for (int i = 0; i < k; i++) sub->u.set.elems[i] = base->u.set.elems[c[i]];
+            } while (next_combination(c, k, n));
+        }
         fp_leave(s->u.l.expr);
         return out;
     }
@@ -5513,11 +5524,15 @@ static int64_t check_int(int64_t v, int64_t a, int64_t b, const char *op) {
     return v;
 }
 
+static __attribute__((cold)) _Noreturn void int_overflow(int64_t x, int64_t y, char op) {
+    fail_module("Overflow when computing %lld%c%lld", (long long)x, op, (long long)y);
+}
+
 static int64_t int_op(int64_t x, int64_t y, char op) {
     int64_t v;
     int over = op == '+' ? __builtin_add_overflow(x, y, &v) : op == '-' ? __builtin_sub_overflow(x, y, &v) : __builtin_mul_overflow(x, y, &v);
-    if (over) fail_module("Overflow when computing %lld%c%lld", (long long)x, op, (long long)y);
-    return check_int(v, x, y, (char[]){op, 0});
+    if (over || (!symbolic_mode && v != (int32_t)v)) int_overflow(x, y, op);
+    return v;
 }
 
 static int64_t int_arg(Value *v, int which, const char *op) {
