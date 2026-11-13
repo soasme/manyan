@@ -14164,9 +14164,15 @@ static int nfair_rest;
 
 static int fair_enabled(Fair *f, int s) { return holds_in(f->enabled, f->c, state_values(s), next_state); }
 
+/* Whether a step of s to `to` is one of f's action: under symmetry or a
+   view, as tnode_step, some step of s to a state with to's fingerprint. */
 static int fair_step(Fair *f, int s, int to) {
     if (to == STUTTER) return 0;
-    return holds_in(f->step, f->c, state_values(s), state_values(to));
+    if (!nsymmetry && !view_expr) return holds_in(f->step, f->c, state_values(s), state_values(to));
+    Successors *r = real_successors(s);
+    for (int k = 0; k < r->n; k++)
+        if (r->fp[k] == states[to].fp && holds_in(f->step, f->c, state_values(s), r->v[k])) return 1;
+    return 0;
 }
 
 /* Whether the lasso of the n states ls, back to ls[cyc], is fair. */

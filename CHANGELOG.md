@@ -83,6 +83,10 @@ unreleased:
   `<>A` is checked right: their 65th shared the first's mark of being
   deferred, so a fair cycle that fulfils both at different states was
   missed. A tableau node defers `<>A` when it is among its next formulas
+- under a `VIEW` or `SYMMETRY`, a fairness condition's action is evaluated
+  on the steps to the successors themselves: it was evaluated on the step
+  to the state kept for the successor's fingerprint, so a fair cycle could
+  be missed and a violated property pass
 - an error evaluating fairness is the one TLC reports first: weak
   fairness's `ENABLED` is evaluated with the actions on each step, before
   strong fairness's on the state

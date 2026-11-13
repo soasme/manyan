@@ -1,0 +1,22 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Exits was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ steps = 0
+/\ pc = "a"
+
+State 2: <AB line 9, col 7 to line 9, col 49 of module view_fairness>
+/\ steps = 1
+/\ pc = "b"
+
+State 3: <BC line 10, col 7 to line 10, col 49 of module view_fairness>
+/\ steps = 2
+/\ pc = "c"
+
+Back to state 1: <CA line 11, col 7 to line 11, col 49 of module view_fairness>
+
+4 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 13
