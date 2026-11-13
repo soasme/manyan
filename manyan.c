@@ -1217,12 +1217,13 @@ static void list_add(List *l, Value *v) {
     l->v[l->n++] = v;
 }
 
-/* The enumerated S of {x \in S : p(x)}, whose elements TLC filters as
-   it takes them. */
+/* The elements of S of {x \in S : p(x)}, which TLC filters as it takes
+   them: a UNION it keeps, set by set. */
+static Value *elements(Value *s);
 static Value *filter_base(Value *s) {
     if (!is_set(s->u.l.a) || user_set(s->u.l.a))
         fail("Attempted to enumerate { x \\in S : p(x) } when S:\n%s\nis not enumerable", pretty(s->u.l.a));
-    return enumerate(s->u.l.a);
+    return elements(s->u.l.a);
 }
 
 static Value *list_set(List *l) {
@@ -1586,8 +1587,8 @@ static Value *union_cache(Value *s) {
     return s;
 }
 
-/* The elements of s as TLC's x \in s takes them in Init and Next (its
-   quantifiers take them sorted): a UNION it keeps, those of each of its
+/* The elements of s as TLC's x \in s takes them in Init and Next and a
+   filter tests them (its quantifiers take them sorted): a UNION it keeps, those of each of its
    sets in turn, duplicates too; another set, in order. Only to iterate:
    the result is no normalized set. */
 static Value *elements(Value *s) {

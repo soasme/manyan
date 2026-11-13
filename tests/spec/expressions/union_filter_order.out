@@ -1,0 +1,9 @@
+2
+5
+1
+2
+3
+{[k |-> 1], [k |-> 2], [k |-> 3], [k |-> 5]}
+Error: Invariant Inv is violated by the initial state:
+x = [k |-> 5]
+exit 12
