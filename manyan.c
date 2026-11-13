@@ -6750,6 +6750,10 @@ static Value *apply_oper(Value *op, Value **args, int n, Expr *where) {
     if (op->u.op.table) return table_apply(op, args, n);
     Def *d = op->u.op.def;
     if (d->replacement) d = d->replacement;
+    if (d->kind == D_CONST) {   /* F <- C: C's operator takes the arguments; a value applied is the value */
+        Value *v = decl_value(d, (Ctx){op->u.op.env, op->u.op.inst}, where);
+        return v->kind == V_OPER ? apply_oper(v, args, n, where) : v;
+    }
     if (d->nparams != n && !d->native)
         fail_at(where, "The operator %s requires %d arguments.", S(d->name), d->nparams);
     Ctx c = {op->u.op.env, op->u.op.inst};
@@ -6821,7 +6825,13 @@ static Value *def_value(Def *d);
 
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     if (d->replacement) d = d->replacement;
-    if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
+    if (d->kind == D_CONST || d->kind == D_VAR) {
+        Value *v = decl_value(d, c, call);
+        if (!n || v->kind != V_OPER) return v;   /* F <- C: C's operator takes F's arguments */
+        Value **vals = NEWN(Value *, n);
+        for (int i = 0; i < n; i++) vals[i] = eval(args[i], c);
+        return apply_oper(v, vals, n, call);
+    }
     if (d->value) return d->value;
     if (ngen_values && is_gen(d)) return gen_value(call);
     if (d->kind == D_FCN) {

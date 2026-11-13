@@ -83,6 +83,10 @@ unreleased:
   `<>A` is checked right: their 65th shared the first's mark of being
   deferred, so a fair cycle that fulfils both at different states was
   missed. A tableau node defers `<>A` when it is among its next formulas
+- an operator `F(a, b)` the configuration substitutes by a constant `C`
+  without parameters (`F <- C`) applies `C`'s value to its arguments, as
+  TLC: an operator table `C(2, 0) = 1` was taken whole, so a violated
+  invariant could pass
 - an error evaluating fairness is the one TLC reports first: weak
   fairness's `ENABLED` is evaluated with the actions on each step, before
   strong fairness's on the state
