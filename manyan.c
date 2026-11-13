@@ -18994,7 +18994,7 @@ static int symbolic(void) {
             lasso_depth = depth;
         }
         if (bad >= 0 || dead >= 0 || (prop >= 0 && !(as_tlc && (ninvariants || check_deadlock))) || depth == sym_length || !nactions) break;
-        if (!sym_solve(&kept, 1)) { stuck = outside = 1; break; }   /* no behavior goes on in the model */
+        if (kept != L_TRUE && !sym_solve(&kept, 1)) { stuck = outside = 1; break; }   /* no behavior goes on in the model */
         sat_unit(kept);
         Branch **steps = NEWN(Branch *, nactions), *by = NEWN(Branch, nactions);
         enabled[depth] = NEWN(int, nactions);
