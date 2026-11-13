@@ -13970,7 +13970,7 @@ static int tnode_step(int n, int s, int e, int to) {
 }
 
 /* The product graph: nodes are (state, tableau node). */
-typedef struct { int state, tnode; int *succ, *act; int nsucc; int index, low, onstack, mark; char late; } PNode;
+typedef struct { int state, tnode; int *succ, *act, *edge; int nsucc; int index, low, onstack, mark; char late; } PNode;
 
 static PNode *pnodes;
 static int npnodes, cappnodes;
@@ -14017,6 +14017,8 @@ static int succ_table_size(int s) {
     return live_cap[s];
 }
 
+static int cmp_int(const void *x, const void *y) { return (*(const int *)x > *(const int *)y) - (*(const int *)x < *(const int *)y); }
+
 /* The steps e of state s, edge n its stuttering one if stutter is set, in
    the order TLC's table of them holds the successors: by a fingerprint's
    slot, probing linearly, after the successors, the state itself. A node
@@ -14032,37 +14034,44 @@ static void succ_order(int p, const int *edges, int n, int stutter, int *order) 
         for (int e = 0; e < n; e++) if (e != self) order[k++] = e;
         return;
     }
-    int len = succ_table_size(s), count = 0, *slot = xmalloc(sizeof(int) * (size_t)len);
-    for (int i = 0; i < len; i++) slot[i] = -1;
-    for (int e = 0; e < n + stutter; e++) {
-        if (count >= len / 2) {   /* TLC's grow: the old slots in order, put again */
-            int *old = slot, olen = len;
-            len = 2 * len + 1;
-            slot = xmalloc(sizeof(int) * (size_t)len);
-            for (int i = 0; i < len; i++) slot[i] = -1;
-            count = 0;
-            for (int i = 0; i < olen; i++) {
-                if (old[i] < 0) continue;
-                int at = (int)((uint32_t)states[old[i] < n ? edges[2 * old[i]] : s].fp & 0x7fffffff) % len;
-                while (slot[at] >= 0) at = (at + 1) % len;
-                slot[at] = old[i], count++;
-            }
-            free(old);
-        }
-        int at = (int)((uint32_t)states[e < n ? edges[2 * e] : s].fp & 0x7fffffff) % len;
-        while (slot[at] >= 0) at = (at + 1) % len;
-        slot[at] = e, count++;
+    static int *slot, cap, *used, *pend, ncap;   /* slot: all -1 between calls; used: the slots taken */
+    int len = succ_table_size(s), count = 0;
+    if (n + 1 > ncap) {
+        ncap = n + 1;
+        used = xrealloc(used, sizeof(int) * (size_t)ncap);
+        pend = xrealloc(pend, sizeof(int) * (size_t)ncap);
     }
-    int k = 0;
-    for (int i = 0; i < len; i++) if (slot[i] >= 0) order[k++] = slot[i];
-    free(slot);
+    for (int e = 0; e < n + stutter; e++) {
+        int npend = 0;
+        if (count >= len / 2) {   /* TLC's grow: the old slots in order, put again */
+            qsort(used, (size_t)count, sizeof(int), cmp_int);
+            for (int i = 0; i < count; i++) pend[npend++] = slot[used[i]], slot[used[i]] = -1;
+            len = 2 * len + 1;
+            count = 0;
+        }
+        pend[npend++] = e;
+        if (len > cap) {
+            slot = xrealloc(slot, sizeof(int) * (size_t)len);
+            for (int i = cap; i < len; i++) slot[i] = -1;
+            cap = len;
+        }
+        for (int i = 0; i < npend; i++) {
+            int x = pend[i], at = (int)((uint32_t)states[x < n ? edges[2 * x] : s].fp & 0x7fffffff) % len;
+            while (slot[at] >= 0) at = (at + 1) % len;
+            slot[at] = x;
+            used[count++] = at;
+        }
+    }
+    qsort(used, (size_t)count, sizeof(int), cmp_int);
+    for (int i = 0; i < count; i++) order[i] = slot[used[i]], slot[used[i]] = -1;
 }
 
 /* The successors of a product node by the n steps of its state in edges,
    (target, action) pairs, then the stuttering step if stutter is set, with
-   each successor of the tableau node. */
+   each successor of the tableau node; edge is the step's index in the
+   state graph, n for stuttering. */
 static void pnode_steps(int p, const int *edges, int n, int stutter) {
-    static int *found, cap, *order, ncap;   /* (successor, action) pairs */
+    static int *found, cap, *order, ncap;   /* (successor, action, step) triples */
     int s = pnodes[p].state, t = pnodes[p].tnode, m = 0, graph = edges == states[s].edges;
     tnode_expand(t);
     if (n + 1 > ncap) order = xrealloc(order, sizeof(int) * (size_t)(ncap = n + 1));
@@ -14074,16 +14083,18 @@ static void pnode_steps(int p, const int *edges, int n, int stutter) {
         for (int k = tnodes[t].nsucc - 1; k >= 0; k--) {   /* in TLC's order */
             int u = tnodes[t].succ[k];
             if (!tnode_admits(u, target)) continue;
-            if (2 * m + 2 > cap) found = xrealloc(found, sizeof(int) * (size_t)(cap = 2 * cap + 16));
-            found[2 * m] = pnode_find(target, u, 1);
-            found[2 * m + 1] = action;
+            if (3 * m + 3 > cap) found = xrealloc(found, sizeof(int) * (size_t)(cap = 2 * cap + 18));
+            found[3 * m] = pnode_find(target, u, 1);
+            found[3 * m + 1] = action;
+            found[3 * m + 2] = e;
             m++;
         }
     }
     PNode *pn = &pnodes[p];
-    pn->succ = alloc_raw(sizeof(int) * (size_t)(2 * m));
+    pn->succ = alloc_raw(sizeof(int) * (size_t)(3 * m));
     pn->act = pn->succ + m;
-    for (int i = 0; i < m; i++) { pn->succ[i] = found[2 * i]; pn->act[i] = found[2 * i + 1]; }
+    pn->edge = pn->act + m;
+    for (int i = 0; i < m; i++) pn->succ[i] = found[3 * i], pn->act[i] = found[3 * i + 1], pn->edge[i] = found[3 * i + 2];
     pn->nsucc = m;
 }
 
@@ -15339,9 +15350,7 @@ static int pem_fulfils(int p, int i) { return !tnode_defers(pnodes[p].tnode, pro
 /* Whether the edge k of node p holds pem's <>[] conditions, and, with a,
    the action a. */
 static int pem_step(int p, int k, TF *a) {
-    int s = pnodes[p].state, to = pnodes[pnodes[p].succ[k]].state, e = 0;
-    StateRec *r = &states[s];
-    while (e < r->nedges && r->edges[2 * e] != to) e++;
+    int s = pnodes[p].state, to = pnodes[pnodes[p].succ[k]].state, e = pnodes[p].edge[k];
     for (int i = 0; i < pem->ea.n; i++) if (!pem_holds(pem->ea.v[i], s, e, to)) return 0;
     return !a || pem_holds(a, s, e, to);
 }
