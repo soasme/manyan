@@ -162,8 +162,8 @@ gives none, and a cycle such definitions make is refused. A constant `Init` or
 invariant is checked like any other, and an expression the evaluator
 fails on, such as `Head(<<>>)`, is some unknown value there, as in
 Apalache. Apalache's own module is built in. Checked against Apalache
-0.63.0: `make test-symbolic` runs 217 of Apalache's integration tests and
-60 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
+0.63.0: `make test-symbolic` runs 226 of Apalache's integration tests and
+64 more, and `make full-bench-symbolic` the models tlaplus/Examples checks
 with Apalache ([symbolic-bench](symbolic-bench.md)).
 
 A temporal property is checked as Apalache checks one, on lassos: a
@@ -425,7 +425,7 @@ Known gaps, not decisions, each to be closed:
   random fingerprint polynomial, and Manyan takes its own fingerprints in
   its place: the counterexample is one TLC prints with some polynomial,
   not always one of those `-fp 0` to `-fp 9` give. Of 900 random graphs
-  of `tests/fuzz.py live`, 896 print what TLC prints.
+  of `tests/fuzz.py live`, 897 print what TLC prints.
 - Where TLC fails with a Java exception, hangs, or prints as a
   simulation's counterexample a lasso that does not violate the property,
   Manyan reports what the model does instead.

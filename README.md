@@ -42,7 +42,7 @@ Try it out:
 
 ```sh
 $ manyan examples/DieHard
-manyan version 0.10.0
+manyan version 0.11.0
 Finished computing initial states: 1 distinct state generated.
 Error: Invariant NotSolved is violated.
 Error: The behavior up to this point is:
@@ -129,7 +129,7 @@ report as TLC with one worker.
   Apalache does, with its `--cinit` (`-cinit`), `--max-error`
   (`-max-error`, with the configuration's `VIEW`), `--run-dir` (`-run-dir`,
   counterexamples in ITF), action and trace invariants, `Gen` and its
-  module, and TLC's fairness; 225 of
+  module, and TLC's fairness; 226 of
   Apalache's own tests give its outcome, refusing what it refuses (see the
   [manual](docs/manual.md#symbolic-checking-experimental)).
 - Experimental: `-typecheck` checks types and `@type` annotations as
@@ -151,7 +151,7 @@ with TLC 1.8.0 as the oracle for every choice the language leaves open.
 The tests follow it; they need python3, and those that run TLC also need
 Java (they download tla2tools 1.8.0 themselves):
 
-- `tests/spec`: over 500 models, each with TLC's output and exit status.
+- `tests/spec`: over 800 models, each with TLC's output and exit status.
   `make test-spec-oracle` runs TLC on every one of them as well, so a test
   can't drift from what TLC does. `tests/spec/tlc` holds models imported
   from TLC's own test suite.
@@ -166,7 +166,7 @@ Java (they download tla2tools 1.8.0 themselves):
   under fairness, to find differences. What they find becomes a test.
 - `tests/tla` models parts of `manyan`'s algorithms in TLA⁺, for TLC and `manyan` to
   check.
-- `tests/symbolic`: 253 models for `-symbolic`, 217 of them from Apalache's
+- `tests/symbolic`: 290 models for `-symbolic`, 226 of them from Apalache's
   own tests, each with Apalache 0.63.0's outcome; `make
   test-symbolic-oracle` runs Apalache on them too.
 - `tests/typecheck`: Apalache's 75 type checking tests for `-typecheck`,

@@ -1,4 +1,4 @@
-unreleased:
+2026-11-14 0.11.0:
 
 - experimental: `-typecheck` checks a module's types as Apalache's
   `apalache-mc typecheck` (Snowcat) does: `@type` and `@typeAlias`

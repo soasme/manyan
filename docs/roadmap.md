@@ -24,7 +24,7 @@ from TLC.
   the oracle and re-bless the tests that changed.
 - Give TLC's counterexample to a temporal property. Of 900 random graphs
   `tests/fuzz.py live` makes on three seeds, the verdict is TLC's on all,
-  the counterexample one TLC prints on 896. Manyan now orders a state's
+  the counterexample one TLC prints on 897. Manyan now orders a state's
   successors as TLC's table of them does, by its own fingerprints in
   place of TLC's random polynomial, and checks the properties as TLC
   does, by its possible error models. The rest: TLC's tableau is built of
