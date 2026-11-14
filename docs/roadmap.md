@@ -68,15 +68,38 @@ output, and 897 of 900 random liveness graphs its counterexample.
    ([manual](manual.md#limitations)). Build the tableau as TLC does, so
    that the product, and so the cycle found and the path to it, are
    TLC's: `tests/fuzz.py live` at 900 of 900.
-2. **Nowhere slower than TLC.** Huang is the one model of the Examples
+2. **Trace validation against TLC.** Checking a system's logged traces
+   against its spec is how TLC is used in industry: etcd's raft runs TLC
+   once a trace (`tla/validate.sh`), CCF does too. Run etcd's traces with
+   Manyan and with TLC and compare what they print, as the full bench
+   does the Examples.
+3. **Nowhere slower than TLC.** Huang is the one model of the Examples
    where Manyan is slower than TLC: 41.0 s against 34.6 s with one worker
    ([fullbench](fullbench.md)). Find where its time goes, and then that
    of the next least ahead, MCInnerSerial (1.7x) and EWD998Small (2.2x).
-3. **A result to walk.** `manyan_check` gives an exit status, and the rest
+4. **A property's groups in parallel.** The quick bench's liveness takes
+   0.17 s with one worker and 0.16 with eight: 0.14 s is `Served`, five
+   groups of one error model each, checked in turn by one process. Let
+   each worker check a group, product and search, and the search check
+   again in order only one found violated or not known, as for error
+   models.
+5. **Memory with workers.** MCKVSSafetySmall holds 651 MB with one
+   worker (190 bytes a state), and the search process 0.93 GB with four;
+   SlushMedium and MCBoulanger pass 4 GB with four workers and stay under
+   2 GB with one ([fullbench](fullbench.md)). Measure what the search
+   and each worker hold of their own, and cut it.
+6. **TLC's command lines, as scripts run them.** etcd's script stops at
+   `unknown option -lncheck`, though checking liveness at the end is all
+   Manyan does. Accept `-lncheck`, `-noGenerateSpecTE`, `-teSpecOutDir`
+   and `-h` as `-metadir` is; take `-inv`, `-invlevel` and
+   `-postCondition`; and write `-dumpTrace json`, TLC's counterexample for
+   other tools to read.
+7. **A result to walk.** `manyan_check` gives an exit status, and the rest
    is printed text. Give the C API the result itself: the verdict, the
    property or invariant violated, the counterexample's states, actions
    and loop, and the counts, as values `manyan.h` already reads. A
-   binding needs it before anything else.
+   binding needs it before anything else; `-dumpTrace json` is the same
+   result printed.
 
 ## What stays
 
