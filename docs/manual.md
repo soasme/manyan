@@ -437,7 +437,17 @@ Known gaps, not decisions, each to be closed:
 - `Print` and `PrintT` in a fairness condition or a temporal property
   print what Manyan evaluates, as its search needs each condition; TLC
   evaluates all of them on every state and step as it finds them, and
-  prints each time.
+  prints each time. So do the actions TLC evaluates for them, such as
+  `ENABLED` or `WF_v(A)`'s steps.
+- TLC's tableau checker generates a state's successors again where its
+  product meets the state anew, and so prints again what the actions
+  print. Manyan does so for the first temporal property with a tableau;
+  as its tableau has other nodes than TLC's (above), the number of times
+  may differ, and a second such property prints nothing again.
+- TLC evaluates the constant definitions of each instance at startup,
+  `L!D` once for `L == INSTANCE M`, and keeps their values; Manyan
+  evaluates them where they are used, so their `Print`s show then, and
+  each time.
 - With `-noGenerateSpecTE`, an error in one of Naturals' operators TLC
   computes in Java names its class `Integers`, as without; TLC names
   `Naturals` until it reports a first error, and reads Integers then.

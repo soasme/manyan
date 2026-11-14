@@ -182,6 +182,7 @@ docs/standards/             the language standard Manyan conforms to
 docs/manual.md              how to use Manyan
 docs/std.md                 the standard modules, and writing an operator in C
 docs/benchmark.md           Manyan against TLC
+docs/etcd.md                etcd's trace validation, Manyan against TLC
 docs/optimizations.md       what made Manyan fast, and what did not
 docs/roadmap.md             where Manyan is going
 tests/spec/                 conformance tests, by chapter of the standard

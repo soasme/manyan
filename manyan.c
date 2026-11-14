@@ -675,6 +675,7 @@ static int expandable(Value *v) {
 /* A function whose domain is 1..n prints as a tuple. */
 static int fcn_is_tuple(Value *f) {
     if (f->kind == V_TUPLE) return 1;
+    if (f->range && f->made != MADE_RECORD) return f->u.fcn.keys[0]->u.i == 1;   /* an interval */
     for (int i = 0; i < f->n; i++)
         if (f->u.fcn.keys[i]->kind != V_INT || f->u.fcn.keys[i]->u.i != i + 1) return 0;
     return 1;
@@ -2153,6 +2154,7 @@ struct Def {
     unsigned level_walk;  /* the walk of subst_level that last entered it */
     Value *cache;         /* a constant definition without parameters, once evaluated */
     int uncached;         /* one that failed as TLC started: evaluated each time, as in TLC */
+    int effectful;        /* one that printed, drew or set as it was computed */
     int local;
     int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
     int self;             /* D_FCN whose body names it: TLC's RecursiveFcnSpec, always lazy (§6.6) */
@@ -2208,6 +2210,8 @@ struct Module {
     int instantiated;     /* the target of an INSTANCE */
     Expr *odd[3];         /* its first decimal or too big integer: in a definition, an assumption, a theorem */
 };
+
+static Module *root;
 
 /* ---------------------------------------------------------------- lexer */
 
@@ -6083,6 +6087,7 @@ static __attribute__((noinline)) Value *ev_call(Expr *e, Ctx c) {
     if (d->intop && e->n == 2 && !d->replacement) return int_call(d, e, c);
     Value *vals[4];
     if (!d->replacement && plain_args(d, e, c, vals)) return call_native(d, e, vals, c);
+    if (c.inst && d->cache && d->mod == root && !d->replacement) return d->cache;   /* the root module's, the same inside an instance */
     return call_def(d, e->args, e->n, c, e);
 }
 
@@ -6897,9 +6902,24 @@ static Value **copy_values(Value **vs, int n, long *budget) {
 
 
 static Value *def_value(Def *d);
+static long effects;   /* the prints, draws and TLCSets so far */
+
+/* Constant definition d, computed and kept; whether it printed, drew or
+   set, kept too. */
+static __attribute__((noinline)) Value *cache_def(Def *d) {
+    long seen = effects;
+    d->cache = def_value(d);
+    d->effectful = effects != seen;
+    return d->cache;
+}
 
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
-    if (d->replacement) d = d->replacement;
+    if (d->replacement) {
+        /* TLC computes it again where a name it replaces calls it: once is
+           the same unless it prints, draws or sets */
+        d = d->replacement;
+        if (d->effectful) return eval_body(d->body, (Ctx){NULL, NULL});
+    }
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
     if (d->value) return d->value;
     if (ngen_values && is_gen(d)) return gen_value(call);
@@ -6939,7 +6959,7 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     while (in && in->def == &enabled_mark) in = in->parent;
     if (n == 0 && !in) {   /* a definition of the spec, computed once if constant */
         if (d->cache) return d->cache;
-        if (def_level(d) == 0 && !keep_lazy && !d->uncached) return d->cache = def_value(d);
+        if (def_level(d) == 0 && !keep_lazy && !d->uncached) return cache_def(d);
     }
     Env *env = NULL;
     for (int i = 0; i < n; i++) {
@@ -7404,13 +7424,15 @@ static Value *printable(Value *v) {
 
 static FILE *user_file;   /* where Print writes, -userFile; NULL for standard output */
 static int reprinting;    /* a constant computed again, which has printed */
+static int expansion_printed;   /* since the state being expanded began */
 
 NATIVE(n_print) {
     UNUSED;
     printable(a[0]), printable(a[1]);
     if (in_worker) worker_cannot();   /* the search prints in order */
+    effects++;
     FILE *out = user_file ? user_file : stdout;
-    if (!reprinting) fprintf(out, "%s  %s\n", pretty(a[0]), pretty(a[1]));
+    if (!reprinting) fprintf(out, "%s  %s\n", pretty(a[0]), pretty(a[1])), expansion_printed = 1;
     fflush(out);
     return a[1];
 }
@@ -7418,8 +7440,9 @@ NATIVE(n_print) {
 NATIVE(n_printt) {
     UNUSED;
     if (in_worker) worker_cannot();
+    effects++;
     FILE *out = user_file ? user_file : stdout;
-    if (!reprinting) fprintf(out, "%s\n", pretty(printable(a[0])));
+    if (!reprinting) fprintf(out, "%s\n", pretty(printable(a[0]))), expansion_printed = 1;
     fflush(out);
     return TRUEV;
 }
@@ -7491,6 +7514,7 @@ NATIVE(n_tlcget) {
 
 NATIVE(n_tlcset) {
     UNUSED;
+    effects++;
     if (a[0]->kind == V_STR && !strcmp(S(a[0]->u.i), "exit")) {   /* the search stops after this state */
         if (a[1]->kind == V_BOOL && a[1]->u.i) {
             if (in_worker) worker_cannot();
@@ -7814,6 +7838,7 @@ static void draw_restart(Value **from) {
 
 static JRandom *draws(void) {
     if (in_worker && !draw_from) worker_cannot();   /* Init's draws go on in order */
+    effects++;
     if (draw_due) jr_seed(drawing, draw_seed ^ (int64_t)(draw_from ? fingerprint(draw_from) : 0));
     draw_due = 0;
     return drawing;
@@ -10958,18 +10983,28 @@ static long *gen_after;
 static int ngen_after;
 static int live_cut = -1;   /* the state TLC stopped expanding at in its temporal checks */
 static void print_counts_after(int s);
+static void live_follow(int idx);
+static unsigned char *printed;   /* each expanded state whose actions printed */
 static void note_expanded(int idx) {
     if (!ntemporal_props) return;
     if (idx >= ngen_after) {
-        ngen_after = idx + 1 > 2 * ngen_after ? idx + 1 : 2 * ngen_after;
-        gen_after = xrealloc(gen_after, sizeof(long) * (size_t)ngen_after);
+        int n = idx + 1 > 2 * ngen_after ? idx + 1 : 2 * ngen_after;
+        gen_after = xrealloc(gen_after, sizeof(long) * (size_t)n);
+        printed = xrealloc(printed, (size_t)n);
+        memset(printed + ngen_after, 0, (size_t)(n - ngen_after));
+        ngen_after = n;
     }
     gen_after[idx] = generated;
+    printed[idx] = (unsigned char)expansion_printed;
+    if (!simulating) live_follow(idx);
+    expansion_printed = 0;
 }
 
 /* Whether TLC's temporal checks stop at a finite counterexample once the
    first n states are expanded; if so it is printed. */
+static int follow;
 static int live_cut_in(int n) {
+    follow = -2;   /* the product followed is set up again */
     int saved_expanded = expanded;
     expanded = n;
     Arena *saved = arena;
@@ -11002,6 +11037,7 @@ static int cut_reported(int violated) {
    states are numbered in the order it finds them. */
 static int *seen_after, nseen_after;
 static int last_seen(int s) {
+    if (s >= expanded && expanded > 0) s = expanded - 1;   /* none found since */
     for (; nseen_after <= s; nseen_after++) {
         int seen = nseen_after ? seen_after[nseen_after - 1] : 0, i = nseen_after;
         if (!i) while (seen + 1 < nstates && states[seen + 1].parent == -1) seen++;
@@ -11023,6 +11059,7 @@ static void print_counts_after(int s) {
 /* Expands state idx: its successors join the search. Returns the exit
    status of a violation it reports, 0 if none. */
 static int expand_state(int idx) {
+    expansion_printed = 0;
     expanding = idx;
     expanded = idx + 1;
     cur_level = states[idx].depth;
@@ -13083,7 +13120,9 @@ static void evaluate_constant(Def *d) {
    the order SANY finishes the modules (a module after those it uses): a
    constant replaced by a definition with variables must evaluate, and every
    other constant definition without parameters is evaluated once, any
-   error ignored. Side effects such as Print show then. */
+   error ignored. Side effects such as Print show then. A definition a
+   module extends is evaluated again if replaced, as TLC evaluates the
+   definitions each module sees. */
 static void evaluate_constants(Module *m) {
     if (m->instantiated && m->ndecls) return;
     Arena *saved = arena;
@@ -13103,6 +13142,10 @@ static void evaluate_constants(Module *m) {
         }
         call_def(c->replacement, NULL, 0, (Ctx){NULL, NULL}, NULL);
         handler = NULL;
+    }
+    for (int i = 0; i < m->nsyms; i++) {
+        Def *d = m->syms[i].def;
+        if (d->replacement && !m->syms[i].npath && d->mod != m && !(d->mod->instantiated && d->mod->ndecls)) evaluate_constant(d);
     }
     for (int i = 0; i < m->nunits; i++) if (m->units[i].kind == 0) evaluate_constant(m->units[i].def);
     arena = saved;
@@ -14010,14 +14053,21 @@ static int holds_in(Expr *e, Ctx c, Value **cur, Value **next) {
 
 static int atom_holds(TF *t, int s, int to) { return atom_holds_on(t, s, state_values(to)); }
 
-static signed char *state_atom(TF *t, int s) { return &atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index]; }
-static signed char *step_atom(TF *t, int s, int e) { return &atom_cache[step_atoms[s] + (size_t)e * (size_t)natoms + (size_t)t->index]; }
+static int following;   /* the search follows a product (live_follow), the graph growing: no cache */
+static signed char no_atom;
+static signed char *state_atom(TF *t, int s) {
+    return following ? (no_atom = 0, &no_atom) : &atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index];
+}
+static signed char *step_atom(TF *t, int s, int e) {
+    return following ? (no_atom = 0, &no_atom) : &atom_cache[step_atoms[s] + (size_t)e * (size_t)natoms + (size_t)t->index];
+}
 
 /* t in state s, or on a step from it, with TLCGet's counts as TLC's when
-   it checks it: once it has expanded s. */
+   it checks it: once it has expanded s, or the state it follows. */
+static int live_step;
 static int holds_at(TF *t, int s, Value **next) {
     int saved = live_expanded;
-    live_expanded = s;
+    live_expanded = following ? live_step : s;
     int v = holds_in(t->atom, t->c, state_values(s), next);
     live_expanded = saved;
     return v;
@@ -14087,27 +14137,34 @@ static int real_emit(void) {
     return 0;
 }
 
-static Successors *real_successors(int s) {
-    Successors *r = &real_succ[s];
-    if (r->fp) return r;
+/* The successors of s generated again, into real_found, in the arena's
+   region the caller opens. */
+static void generate_again(int s) {
     Value **saved_cur = cur_state, **saved_next = next_state, **saved_target = gen_target;
-    int (*saved_emit)(void) = gen_emit, quiet = reprinting;
-    Arena *saved = arena;
-    arena = &scratch_arena;   /* the successors are dropped once their atoms are known */
-    Region *region = region_open();
+    int (*saved_emit)(void) = gen_emit;
     Value **st = NEWN(Value *, nvars);
     real_found = (List){0};   /* its storage is the arena's */
     gen_emit = real_emit;
     gen_target = st;
     cur_state = state_values(s);
-    reprinting = 1;
     for (int a = 0; a < nactions; a++) {
         memset(st, 0, sizeof(Value *) * (size_t)nvars);
         next_state = st;
         gen(actions[a].e, actions[a].c, NULL);
     }
-    reprinting = quiet;
     cur_state = saved_cur; next_state = saved_next; gen_target = saved_target; gen_emit = saved_emit;
+}
+
+static Successors *real_successors(int s) {
+    Successors *r = &real_succ[s];
+    if (r->fp) return r;
+    int quiet = reprinting;
+    Arena *saved = arena;
+    arena = &scratch_arena;   /* the successors are dropped once their atoms are known */
+    Region *region = region_open();
+    reprinting = 1;
+    generate_again(s);
+    reprinting = quiet;
     int n = real_found.n;
     uint64_t *fp = xcalloc((size_t)n + 1, sizeof(uint64_t));
     signed char *holds = xcalloc((size_t)n * (size_t)natoms + 1, 1);
@@ -14121,6 +14178,17 @@ static Successors *real_successors(int s) {
     arena = saved;
     *r = (Successors){n, fp, holds};
     return r;
+}
+
+/* TLC generating the successors of s again in its temporal checks: what
+   the actions print is printed again; the successors are dropped. */
+static void regenerate(int s) {
+    Arena *saved = arena;
+    arena = &scratch_arena;
+    Region *region = region_open();
+    generate_again(s);
+    region_close(region);
+    arena = saved;
 }
 
 static int tnode_admits(int n, int s) {
@@ -14842,8 +14910,15 @@ static void warn_stuttering(void);
    -1), its cycle back to ls[entry] by the action back, or with entry
    negative its last state stuttering, by back for a CounterExample; cyc
    is where the properties are evaluated to loop back. */
+/* TLC rebuilds the n states ls of a counterexample from Init, each from
+   the one before (replay): what that evaluates prints again. */
+static void replay_lasso(int *ls, int n) {
+    for (int i = 0; i < n; i++) replay(i ? state_values(ls[i - 1]) : NULL, state_values(ls[i]), i);
+}
+
 static void print_lasso(int *ls, int *la, int n, int entry, int back, int cyc) {
     int stutter = entry < 0;
+    replay_lasso(ls, n);
     print_violated(lasso_values(ls, n), n, cyc);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     for (int i = 0; i < n; i++) {
@@ -14856,6 +14931,7 @@ static void print_lasso(int *ls, int *la, int n, int entry, int back, int cyc) {
         post_behavior(lasso_values(ls, n), la, n, n, back, 0);
         return;
     }
+    replay(state_values(ls[n - 1]), state_values(ls[entry]), n);
     printf("Back to state %d: ", entry + 1);
     action_label(back);
     printf("\n\n");
@@ -15217,6 +15293,45 @@ static int tf_cycle_free(TF *f) {
            tf_has(f->a->a, 1);
 }
 
+static void regenerate(int s);
+
+/* The product's edges as TLC adds them once it has expanded s0; whether
+   the path to a node with nothing left to do ends there (*at), if cut is
+   set: TLC meets it on a new node's own state, and returns from that node
+   before it generates the state's successors again. Each other node new
+   to it whose state is expanded makes TLC generate the state's successors
+   again, which prints again where the actions do; while the search
+   follows the product, the step is so completed, as TLC completes it. */
+static int live_build_at(int s0, int cut, int *at) {
+    static int *stack, n;
+    int found = 0, fresh = npnodes;   /* the nodes made from here are new */
+    for (int i = 0; i < pnodes_of[s0].n && (following || !found); i++) {
+        if (pnodes[pnodes_of[s0].v[i].node].succ) continue;
+        live_step = s0;
+        n = 0;
+        PUSH(stack, n, pnodes_of[s0].v[i].node);
+        while (n && (following || !found)) {
+            int v = stack[--n];
+            if (pnodes[v].succ) continue;
+            pnode_successors(v);
+            int end = 0;
+            for (int k = 0; k < pnodes[v].nsucc && cut && v >= fresh && !end; k++) {
+                int w = pnodes[v].succ[k];
+                end = pnodes[w].state == pnodes[v].state && !tnodes[pnodes[w].tnode].nnext;
+                if (end && !found) *at = w, found = 1;
+            }
+            if (end) continue;
+            if (v >= fresh && following && printed[pnodes[v].state]) regenerate(pnodes[v].state);
+            for (int k = pnodes[v].nsucc - 1; k >= 0; k--) {
+                int w = pnodes[v].succ[k];
+                if (!pnodes[w].succ && pnodes[w].state <= s0) PUSH(stack, n, w);
+            }
+        }
+    }
+    live_step = -1;
+    return found;
+}
+
 /* TLC builds the product as it expands each state: the edges of the
    state's nodes, then those of each node new to it whose state is
    expanded already. When such a node's tableau node has nothing left to
@@ -15225,34 +15340,18 @@ static int tf_cycle_free(TF *f) {
    there (§10.7), if cut is set. Returns the state being expanded then,
    or -1; *at is the node. */
 static int live_build(TF *negated, int cut, int *at) {
-    int *stack = NULL, n = 0, *roots, found = -1;
+    int *roots;
     live_roots(negated, &roots);   /* the graph starts with them */
-    for (int s0 = 0; s0 < expanded && found < 0; s0++)
-        for (int i = 0; i < pnodes_of[s0].n && found < 0; i++) {
-            if (pnodes[pnodes_of[s0].v[i].node].succ) continue;
-            live_step = s0;
-            PUSH(stack, n, pnodes_of[s0].v[i].node);
-            while (n && found < 0) {
-                int v = stack[--n];
-                if (pnodes[v].succ) continue;
-                pnode_successors(v);
-                for (int k = 0; k < pnodes[v].nsucc && cut && found < 0; k++) {
-                    int w = pnodes[v].succ[k];
-                    if (!pnodes[w].succ && pnodes[w].state <= s0 && !tnodes[pnodes[w].tnode].nnext) *at = w, found = s0;
-                }
-                for (int k = pnodes[v].nsucc - 1; k >= 0; k--) {
-                    int w = pnodes[v].succ[k];
-                    if (!pnodes[w].succ && pnodes[w].state <= s0) PUSH(stack, n, w);
-                }
-            }
-        }
-    live_step = -1;
-    return found;
+    for (int s0 = 0; s0 < expanded; s0++)
+        if (live_build_at(s0, cut, at)) return s0;
+    return -1;
 }
 
+/* Whether TLC can stop at a finite counterexample of negated. */
+static int live_cuts(TF *negated) { return !sim_n && !nfairs && !nfair_rest && tf_tableau(negated) && tf_cycle_free(negated); }
+
 static int live_cut_at(TF *negated, int *at) {
-    if (sim_n || nfairs || nfair_rest || !tf_tableau(negated) || !tf_cycle_free(negated)) return -1;
-    return live_build(negated, 1, at);
+    return live_cuts(negated) ? live_build(negated, 1, at) : -1;
 }
 
 /* Prints, as TLC, the path to node `at` as a finite counterexample, its
@@ -15269,6 +15368,7 @@ static void print_cut(int at) {
         ls[n] = s;
         act[n++] = (int)acts.v[i]->u.i;
     }
+    replay_lasso(ls, n);
     print_violated(lasso_values(ls, n), n, n - 1);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     for (int i = 0; i < n; i++) print_live_state(i + 1, ls[i], i ? act[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : i]);
@@ -15432,6 +15532,67 @@ static TF *live_setup(int p) {
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
     atom_cache_reset();
     return live_negated = neg;
+}
+
+/* TLC's tableau checker builds a property's product as it expands each
+   state, and so generates a state's successors again, printing, where
+   the product meets the state anew (live_build_at). From the first state
+   whose actions print, the search follows the first property with a
+   tableau so, to print where TLC does; before it, what TLC generated
+   again printed nothing. The check after the search builds its own. */
+static int follow = -1;   /* the property followed; -1 none yet, -2 none or no more */
+static int nfollowed, ngrown;
+
+static void grow_follow(void) {
+    if (ngrown >= nstates) return;
+    int n = nstates + nstates / 2 + 16;
+    pnodes_of = xrealloc(pnodes_of, sizeof(PRefs) * (size_t)n);
+    memset(pnodes_of + ngrown, 0, sizeof(PRefs) * (size_t)(n - ngrown));
+    decoded = xrealloc(decoded, sizeof(Value **) * (size_t)n);
+    memset(decoded + ngrown, 0, sizeof(Value **) * (size_t)(n - ngrown));
+    real_succ = xrealloc(real_succ, sizeof(Successors) * (size_t)n);
+    memset(real_succ + ngrown, 0, sizeof(Successors) * (size_t)(n - ngrown));
+    nreal_succ = ngrown = n;
+}
+
+static void live_follow(int idx) {
+    if (follow == -2 || (follow == -1 && !printed[idx])) return;
+    Arena *saved = arena;
+    arena = &perm_arena;
+    sigjmp_buf here, *outer = handler;
+    handler = &here;
+    if (sigsetjmp(here, 0)) {   /* the check after the search meets it */
+        follow = -2;
+        following = 0;
+        handler = outer;
+        arena = saved;
+        return;
+    }
+    if (follow == -1) {
+        collect_fairnesses();
+        follow = -2;
+        free(decoded);
+        decoded = xcalloc((size_t)nstates, sizeof(Value **));
+        for (int p = 0; p < ntemporal_props && follow == -2; p++)
+            if (tf_tableau(live_setup(p))) follow = p;
+        ngrown = nstates;
+        if (follow >= 0) {
+            int *roots;
+            live_roots(live_negated, &roots);
+        }
+    }
+    following = follow >= 0;
+    if (following) grow_follow();
+    int at, cut = following && live_cuts(live_negated);
+    for (; following && nfollowed <= idx; nfollowed++)
+        if (live_build_at(nfollowed, cut, &at)) {   /* TLC stops there; the check after finds it */
+            exit_requested = 1;
+            follow = -2;
+            break;
+        }
+    following = 0;
+    handler = outer;
+    arena = saved;
 }
 
 /* Whether a temporal property fails on the state graph; if so, its

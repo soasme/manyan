@@ -44,7 +44,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic install clean
+.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -186,6 +186,20 @@ full-bench: manyan $(TLA_JAR) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
 full-bench-symbolic: manyan $(APALACHE) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
 	python3 bench/symbolic.py ./manyan --apalache "$(APALACHE_RUN)" --examples $(EXAMPLES) \
 		--library $(COMMUNITY) --library $(TLAPM)/library $(if $(ONLY),--only $(ONLY))
+
+# etcd-io/raft, pinned: its trace validation, with the traces its
+# interaction tests log (needs Go). ONLY=PATTERN picks traces.
+RAFT_REV = 99f9ffb3d19c2dee73cc802737cd7e1e5f008986
+RAFT = $(OBJDIR)/raft-$(RAFT_REV)
+
+etcd-bench: manyan $(TLA_JAR) $(COMMUNITY) $(RAFT)
+	python3 bench/etcd.py ./manyan --tlc "$(TLC)" --raft $(RAFT) \
+		--library $(COMMUNITY) $(if $(ONLY),--only $(ONLY))
+
+$(OBJDIR)/raft-%:
+	rm -rf $@.tmp && git init -q $@.tmp
+	git -C $@.tmp fetch -q --depth 1 https://github.com/etcd-io/raft $*
+	git -C $@.tmp checkout -q FETCH_HEAD && mv $@.tmp $@
 
 $(OBJDIR)/Examples-%:
 	rm -rf $@.tmp && git init -q $@.tmp

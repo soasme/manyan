@@ -10,6 +10,18 @@ unreleased:
   its place. Under `VIEW` or symmetry, the steps regenerated for a
   property's actions neither print nor stay in memory. An operator prints
   as `<Operator Name>`
+- `Print` in the actions prints again where TLC generates a state's
+  successors again: as its tableau checker meets the state anew in a
+  temporal property's product, which the search now builds as it goes
+  once the actions have printed, and as it rebuilds a counterexample
+  from `Init`. A counterexample TLC finds while it expands a state stops
+  the search there, as TLC. All 28 traces etcd's interaction tests log
+  give TLC's output; `make etcd-bench` logs and checks them
+- A definition a configuration puts in place of a name is computed again
+  at each use of the name, as TLC, where it prints or draws; at startup,
+  again for each module extending the name's. A constant definition of
+  the root module is computed once inside an instance too: etcd's
+  probe_and_replicate trace takes 3.5 s, from 44.5 s
 - `TLCEval` converts its value as TLC does: an interval to its elements,
   a tuple, record or `[x \in S |-> e]` to a function of its pairs, which
   fails as a function when applied outside its domain
