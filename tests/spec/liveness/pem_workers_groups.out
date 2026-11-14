@@ -1,0 +1,22 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Q was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 24 of module pem_workers_groups>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 24 of module pem_workers_groups>
+x = 2
+
+State 4: <Next line 7, col 9 to line 7, col 24 of module pem_workers_groups>
+x = 3
+
+Back to state 1: <Next line 7, col 9 to line 7, col 24 of module pem_workers_groups>
+
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 13

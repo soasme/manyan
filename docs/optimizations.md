@@ -131,3 +131,17 @@ ones with a large serial part, not a slow evaluator.
   ReadersWriters 0.25 → 0.12 s, MCLiveWriteThroughCache 0.19 → 0.09 s
   with 4 workers. Only above 100000 evaluations: below, the fork costs
   more (ElevatorLivenessMedium +26%, LiveHourClock +43%).
+- **The quick bench's liveness.** 0.17 s with one worker and 0.16 with
+  eight: 0.14 s was `Served`, five groups of one error model each, a
+  tableau each, checked in turn by one process. The workers now check the
+  groups, each in one worker, and the search checks again in order those
+  violated or not known: 0.168 → 0.097 s with 8 workers, SimpleAllocator
+  0.122 → 0.026, MCAlternatingBit 0.046 → 0.012. Not for two groups,
+  which lose the workers' search inside each (TestGraphs +32%, EWD840
+  +66%); nor more workers forked than a level has batches, a fork costing
+  each (CoffeeCan100Beans +41% with 8 workers, now +9%). Left: groups that
+  share their atoms evaluate them in each worker, where in turn the first
+  fills them for the rest (CoffeeCan100Beans +9%, MCLiveInternalMemory +8%
+  with 4 workers, a few milliseconds); the first group checked first, by
+  the search, made those faster and MCAlternatingBit +94%, DijkstraMutex
+  +60%.

@@ -10985,7 +10985,7 @@ static int expand_state(int idx) {
 typedef struct { uint64_t fp; int action; int seen; uint32_t claim; } Found;
 enum { NEW = -1, CONSTRAINED = -2 };
 typedef struct { int worker; size_t off; atomic_int done; } Batch;
-enum { EXPAND, INIT, ATOMS, OFFERS, STEPS, PEMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms, the offers' and the <>[] conditions on the product, search error models */
+enum { EXPAND, INIT, ATOMS, GROUPS, OFFERS, STEPS, PEMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms, check groups of error models, the offers' and the <>[] conditions on the product, search error models */
 typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; int merged; } Claim;
 enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants unchecked, held, or not */
 
@@ -11187,6 +11187,7 @@ static void worker_expand(int idx) {
 }
 
 static void worker_atoms(int lo, int hi);
+static void worker_groups(int lo, int hi);
 static void worker_offers(int lo, int hi);
 static void worker_steps(int lo, int hi);
 static void worker_pems(int lo, int hi);
@@ -11234,6 +11235,7 @@ static int expand_batch(void) {
     int lo = control->lo + b * control->per, hi = lo + control->per < control->hi ? lo + control->per : control->hi;
     if (control->job == INIT) worker_init(lo, hi);
     else if (control->job == ATOMS) worker_atoms(lo, hi);
+    else if (control->job == GROUPS) worker_groups(lo, hi);
     else if (control->job == OFFERS) worker_offers(lo, hi);
     else if (control->job == STEPS) worker_steps(lo, hi);
     else if (control->job == PEMS) worker_pems(lo, hi);
@@ -11259,12 +11261,14 @@ static _Noreturn void worker_main(int id) {
     _exit(0);
 }
 
-static void start_workers(void) {
+static int nforked;   /* the workers running: nworkers - 1, or fewer for a level of fewer batches */
+
+static void start_workers(int n) {
     fflush(stdout);
     to_worker = xmalloc(sizeof *to_worker * (size_t)nworkers);
     from_worker = xmalloc(sizeof *from_worker * (size_t)nworkers);
     worker_pids = xmalloc(sizeof(pid_t) * (size_t)nworkers);
-    for (int i = 0; i < nworkers - 1; i++) {
+    for (int i = 0; i < n; i++) {
         if (pipe(to_worker[i]) || pipe(from_worker[i])) { fputs("manyan: cannot start workers\n", stderr); exit(MANYAN_ERROR); }
         pid_t pid = fork();
         if (pid < 0) { fputs("manyan: cannot start workers\n", stderr); exit(MANYAN_ERROR); }
@@ -11279,13 +11283,14 @@ static void start_workers(void) {
         worker_pids[i] = pid;
     }
     workers_running = 1;
+    nforked = n;
     forked_strs = nstrs;
 }
 
 static void stop_workers(void) {
     if (!workers_running) return;
-    for (int i = 0; i < nworkers - 1; i++) close(to_worker[i][1]);
-    for (int i = 0; i < nworkers - 1; i++) waitpid(worker_pids[i], NULL, 0);
+    for (int i = 0; i < nforked; i++) close(to_worker[i][1]);
+    for (int i = 0; i < nforked; i++) waitpid(worker_pids[i], NULL, 0);
     workers_running = 0;
 }
 
@@ -11339,13 +11344,15 @@ static int merge_atoms(void);
 static int run_level(int lo, int hi, int per, size_t n, int job) {
     /* Workers know the strings there were when they started; states may
        now hold newer ones. */
-    if (workers_running && nstrs != forked_strs) stop_workers();
-    if (!workers_running) start_workers();
+    int nbatches = (hi - lo + per - 1) / per;
+    int want = job == EXPAND || job == INIT || nbatches >= nworkers ? nworkers - 1 : nbatches - 1;
+    if (workers_running && (nstrs != forked_strs || nforked < want)) stop_workers();
+    if (!workers_running) start_workers(want);
     control->lo = lo;
     control->hi = hi;
     control->job = job;
     control->per = per;
-    control->nbatches = (hi - lo + per - 1) / per;
+    control->nbatches = nbatches;
     control->fp_table = fp_table;
     control->fp_size = fp_size;
     memset(claims, 0, sizeof(Claim) * n);
@@ -11355,14 +11362,14 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
     atomic_store(&control->next, 0);
     for (int b = 0; b < control->nbatches; b++) atomic_store(&batches[b].done, 0);
     fflush(stdout);
-    for (int i = 0; i < nworkers - 1; i++)
+    for (int i = 0; i < nforked; i++)
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_encoded = w_budget = 0;
-    int r = job == INIT ? merge_init(lo, hi) : job == ATOMS || job == OFFERS || job == STEPS || job == PEMS ? merge_atoms() : merge_level(lo, hi);
+    int r = job == INIT ? merge_init(lo, hi) : job == ATOMS || job == GROUPS || job == OFFERS || job == STEPS || job == PEMS ? merge_atoms() : merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
-    for (int i = 0; i < nworkers - 1; i++)
+    for (int i = 0; i < nforked; i++)
         if (read(from_worker[i][0], &c, 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     control->job = EXPAND;
     return r;
@@ -15742,10 +15749,100 @@ static void pem_print(int root, int *roots, int nroots) {
     else print_lasso(ls, la, k, at, edge_act(prev, root), at);
 }
 
+/* The error models of the group of pems[i], those sharing its tableau,
+   searched on its product with the state graph: 1 if one is accepted, its
+   counterexample printed but in a worker, 0 if none is. With workers, and
+   not in one, the workers fill what the searches take and search the
+   error models first. */
+static TFList pem_filled;   /* the <>[] actions evaluated on every edge */
+
+static int pem_group(Pem *pems, int n, int i, int prune) {
+    int forks = nworkers > 1 && !in_worker;
+    TF *tf = tf_new(TF_TRUE, NULL, NULL);
+    for (int j = 0; j < pems[i].tf.n; j++) tf = tf_new(TF_AND, tf, pems[i].tf.v[j]);
+    promises = (TFList){0};
+    tf_promises(tf);
+    ntnodes = npnodes = 0;
+    free(pnodes_of);
+    pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
+    int *roots, nroots = live_roots(tf, &roots);
+    live_build(tf, 0, NULL);
+    free(pem_in);
+    pem_in = xcalloc((size_t)npnodes + 1, 1);
+    int njob = 0;
+    pem_job = NEWN(int, n);
+    for (int j = i; j < n; j++)
+        if (tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n)) pem_job[njob++] = j;
+    int offered = prune && njob > 8;   /* the pass costs a few searches */
+    if (offered) {
+        Pem all = {0};
+        pem = &all;
+        pem_comp = NEWN(int, npnodes);
+        for (int p = 0; p < npnodes; p++) pem_comp[p] = -1;
+        comp_nodes = comp_at = (Ints){0};
+        npem_evals = 0;
+        pem_sccs(roots, nroots, NULL, pem_number);
+        PUSH(comp_at.v, comp_at.n, comp_nodes.n);
+        if (forks && npem_evals > OFFER_FORK) {
+            stop_workers();   /* to fork with this group's product */
+            run_level(0, nstates, BATCH, 0, OFFERS);
+        }
+        noffers = 0;
+        for (int c = 0; c + 1 < comp_at.n; c++) pem_offer(comp_nodes.v + comp_at.v[c], comp_at.v[c + 1] - comp_at.v[c]);
+        int k = 0;
+        for (int j = 0; j < njob; j++) if (pem_possible(&pems[pem_job[j]])) pem_job[k++] = pem_job[j];
+        njob = k;
+    }
+    int nfilled = pem_filled.n;   /* the workers fill the <>[] actions neither the offers nor a search took */
+    for (int k = 0; k < njob && !offered; k++)
+        for (int j = 0; j < pems[pem_job[k]].ea.n; j++)
+            if (tf_has(pems[pem_job[k]].ea.v[j], 0)) tfl_add(&pem_filled, pems[pem_job[k]].ea.v[j]);
+    signed char *found = NULL;
+    if (forks && njob > 1) {
+        pem_found = found = shared((size_t)njob);
+        pem_models = pems, pem_njob = njob, pem_roots = roots, pem_nroots = nroots;
+        stop_workers();   /* to fork with this group's product */
+        if (pem_filled.n > nfilled) run_level(0, nstates, BATCH, 0, STEPS);
+        run_level(0, njob, 1, 0, PEMS);
+    }
+    int violated = 0;
+    for (int k = 0; k < njob && !violated; k++) {
+        if (found && found[k] == 1) continue;
+        pem = &pems[pem_job[k]];
+        Ints com = {0};
+        int root = pem_sccs(roots, nroots, &com, pem_accept);
+        if (root >= 0) {
+            violated = 1;
+            if (!in_worker) pem_print(root, roots, nroots);
+        }
+    }
+    if (found) munmap(found, (size_t)njob);
+    return violated;
+}
+
+/* The groups the workers check, each to whether one of its error models
+   is accepted: 2 one is, 1 none, 0 not known; the search goes on in order
+   from them, as from pem_found. */
+static Pem *group_pems;
+static int *group_first, group_npems, group_prune;
+static signed char *group_found;
+
+static void worker_groups(int lo, int hi) {
+    for (int g = lo; g < hi; g++) {
+        EvalState saved = eval_save();
+        ErrorState er = error_save();
+        sigjmp_buf here;
+        handler = &here;
+        if (!sigsetjmp(here, 0)) group_found[g] = pem_group(group_pems, group_npems, group_first[g], group_prune) ? 2 : 1;
+        eval_restore(saved);
+        error_restore(&er);
+    }
+}
+
 /* 1 if a property is violated, its counterexample printed; 0 if none is;
    -1 if TLC checks them otherwise. The disjuncts sharing a tableau are
    TLC's order of solution: their error models are searched in turn on its
-   product with the state graph. */
+   product with the state graph, a group at a time. */
 static int pem_violated(void) {
     if (sim_n || nsymmetry || view_expr || !ntemporal_props) return -1;
     free(decoded);
@@ -15780,70 +15877,25 @@ static int pem_violated(void) {
     }
     atom_cache_reset();
     live_negated = f;
-    char *done = xcalloc((size_t)d.n + 1, 1);
-    TFList filled = {0};   /* the <>[] actions evaluated on every edge */
+    pem_filled = (TFList){0};
+    int *first = NEWN(int, d.n), ngroups = 0;   /* each group's first error model */
     for (int i = 0; i < d.n; i++) {
-        if (done[i]) continue;
-        TF *tf = tf_new(TF_TRUE, NULL, NULL);
-        for (int j = 0; j < pems[i].tf.n; j++) tf = tf_new(TF_AND, tf, pems[i].tf.v[j]);
-        promises = (TFList){0};
-        tf_promises(tf);
-        ntnodes = npnodes = 0;
-        free(pnodes_of);
-        pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
-        int *roots, nroots = live_roots(tf, &roots);
-        live_build(tf, 0, NULL);
-        free(pem_in);
-        pem_in = xcalloc((size_t)npnodes + 1, 1);
-        int same = 0;
-        for (int j = i; j < d.n; j++) same += !done[j] && tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n);
-        int offered = prune && same > 8;   /* the pass costs a few searches */
-        if (offered) {
-            Pem all = {0};
-            pem = &all;
-            pem_comp = NEWN(int, npnodes);
-            for (int p = 0; p < npnodes; p++) pem_comp[p] = -1;
-            comp_nodes = comp_at = (Ints){0};
-            npem_evals = 0;
-            pem_sccs(roots, nroots, NULL, pem_number);
-            PUSH(comp_at.v, comp_at.n, comp_nodes.n);
-            if (nworkers > 1 && npem_evals > OFFER_FORK) {
-                stop_workers();   /* to fork with this group's product */
-                run_level(0, nstates, BATCH, 0, OFFERS);
-            }
-            noffers = 0;
-            for (int c = 0; c + 1 < comp_at.n; c++) pem_offer(comp_nodes.v + comp_at.v[c], comp_at.v[c + 1] - comp_at.v[c]);
-        }
-        int njob = 0;
-        pem_job = NEWN(int, d.n);
-        for (int j = i; j < d.n; j++)
-            if (!done[j] && tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n)) {
-                done[j] = 1;
-                if (!offered || pem_possible(&pems[j])) pem_job[njob++] = j;
-            }
-        int nfilled = filled.n;   /* the workers fill the <>[] actions neither the offers nor a search took */
-        for (int k = 0; k < njob && !offered; k++)
-            for (int j = 0; j < pems[pem_job[k]].ea.n; j++)
-                if (tf_has(pems[pem_job[k]].ea.v[j], 0)) tfl_add(&filled, pems[pem_job[k]].ea.v[j]);
-        signed char *found = NULL;
-        if (nworkers > 1 && njob > 1) {
-            pem_found = found = shared((size_t)njob);
-            pem_models = pems, pem_njob = njob, pem_roots = roots, pem_nroots = nroots;
-            stop_workers();   /* to fork with this group's product */
-            if (filled.n > nfilled) run_level(0, nstates, BATCH, 0, STEPS);
-            run_level(0, njob, 1, 0, PEMS);
-        }
-        for (int k = 0; k < njob; k++) {
-            if (found && found[k] == 1) continue;
-            pem = &pems[pem_job[k]];
-            Ints com = {0};
-            int root = pem_sccs(roots, nroots, &com, pem_accept);
-            if (root >= 0) { pem_print(root, roots, nroots); free(done); return 1; }
-        }
-        if (found) munmap(found, (size_t)njob);
+        int k = 0;
+        while (k < i && !tfl_same(pems[k].tf.v, pems[k].tf.n, pems[i].tf.v, pems[i].tf.n)) k++;
+        if (k == i) first[ngroups++] = i;
     }
-    free(done);
-    return 0;
+    signed char *found = NULL;
+    if (nworkers > 1 && ngroups > 2) {   /* two keep two workers busy, where each group's search keeps them all */
+        group_found = found = shared((size_t)ngroups);
+        group_pems = pems, group_first = first, group_npems = d.n, group_prune = prune;
+        stop_workers();   /* to fork with the error models */
+        run_level(0, ngroups, 1, 0, GROUPS);
+    }
+    int violated = 0;
+    for (int g = 0; g < ngroups && !violated; g++)
+        if (!found || found[g] != 1) violated = pem_group(pems, d.n, first[g], prune);
+    if (found) munmap(found, (size_t)ngroups);
+    return violated;
 }
 
 static int live_violated(void) {

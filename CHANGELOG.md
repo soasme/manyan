@@ -1,3 +1,12 @@
+unreleased:
+
+- liveness with workers: the groups of a property's error models, one
+  tableau each, are checked by the workers, then in order by the search
+  where one is violated or a worker could not tell; a level of fewer
+  batches than workers forks no more workers than it has batches. The
+  quick bench's liveness 43% faster with 8 workers, SimpleAllocator 79%,
+  MCAlternatingBit 73%, DijkstraMutex 37%
+
 2026-11-14 0.12.0:
 
 - faster evaluation: Naturals' `<`, `\leq`, `>`, `\geq`, `+`, `-` and `*`

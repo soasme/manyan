@@ -82,7 +82,9 @@ output, and 897 of 900 random liveness graphs its counterexample.
    groups of one error model each, checked in turn by one process. Let
    each worker check a group, product and search, and the search check
    again in order only one found violated or not known, as for error
-   models.
+   models. Done: the quick bench's liveness 0.168 → 0.097 s with 8
+   workers; for more than two groups, as two keep two workers busy where
+   each group's own search keeps them all.
 5. **Memory with workers.** MCKVSSafetySmall holds 651 MB with one
    worker (190 bytes a state), and the search process 0.93 GB with four;
    SlushMedium and MCBoulanger pass 4 GB with four workers and stay under
