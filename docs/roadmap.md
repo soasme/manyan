@@ -76,7 +76,10 @@ TLC's output; the other four are explained in [fullbench](fullbench.md).
    ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
    evaluate a property's fairness on the states and edges in parallel,
    not in one process (AllocatorImplementation). The initial states and
-   a property's actions are computed in parallel already.
+   a property's actions are computed in parallel already. Done for a
+   property's error models, which the workers search: AllocatorImplementation
+   0.48 → 0.24 s with 4 workers. Left: one error model's search, and the
+   product it searches, built by one process.
 
 ## What stays
 

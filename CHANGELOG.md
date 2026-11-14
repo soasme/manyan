@@ -4,6 +4,10 @@ unreleased:
   of two integers are computed where they are called, and `x[k]` of a
   variable reads the state directly. refinement 7%, recursion 7%,
   counters 5% faster with one worker
+- liveness with workers: the error models of a property are searched by
+  the workers, then in order by the search where one is accepted or a
+  worker could not tell. AllocatorImplementation twice as fast with 4
+  workers
 
 2026-11-14 0.11.0:
 

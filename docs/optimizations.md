@@ -110,3 +110,9 @@ ones with a large serial part, not a slow evaluator.
   the work, so it would take components checked in parallel, not a
   fill.
   `subst_index` (above) took 3.6% off the evaluation itself.
+  Since 0.11.0 a property is checked by its possible error models (PEMs),
+  searched lazily, one at a time; filling every atom of every step in the
+  workers first doubled the time with 4 workers (0.48 → 0.96 s). Instead
+  the workers each search error models of the product, filling the shared
+  atom cache as they go, and the search goes on in order from what they
+  found: 0.48 → 0.24 s with 4 workers, 0.46 → 0.21 s with 8.

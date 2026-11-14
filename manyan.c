@@ -10985,7 +10985,7 @@ static int expand_state(int idx) {
 typedef struct { uint64_t fp; int action; int seen; uint32_t claim; } Found;
 enum { NEW = -1, CONSTRAINED = -2 };
 typedef struct { int worker; size_t off; atomic_int done; } Batch;
-enum { EXPAND, INIT, ATOMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms */
+enum { EXPAND, INIT, ATOMS, PEMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms, search error models */
 typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; int merged; } Claim;
 enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants unchecked, held, or not */
 
@@ -11187,6 +11187,7 @@ static void worker_expand(int idx) {
 }
 
 static void worker_atoms(int lo, int hi);
+static void worker_pems(int lo, int hi);
 
 /* Init's slices [lo, hi): a header for each, then its states. */
 static void worker_init(int lo, int hi) {
@@ -11231,6 +11232,7 @@ static int expand_batch(void) {
     int lo = control->lo + b * control->per, hi = lo + control->per < control->hi ? lo + control->per : control->hi;
     if (control->job == INIT) worker_init(lo, hi);
     else if (control->job == ATOMS) worker_atoms(lo, hi);
+    else if (control->job == PEMS) worker_pems(lo, hi);
     else for (int idx = lo; idx < hi; idx++) worker_expand(idx);
     atomic_store(&batches[b].done, 1);
     return 1;
@@ -11353,7 +11355,7 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_encoded = w_budget = 0;
-    int r = job == INIT ? merge_init(lo, hi) : job == ATOMS ? merge_atoms() : merge_level(lo, hi);
+    int r = job == INIT ? merge_init(lo, hi) : job == ATOMS || job == PEMS ? merge_atoms() : merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
     for (int i = 0; i < nworkers - 1; i++)
@@ -15486,6 +15488,31 @@ static int pem_sccs(int *roots, int nroots, Ints *com, int (*accept)(int *, int)
     return found;
 }
 
+/* The error models of a group the workers search, each to whether a
+   component accepts it: 2 one does, 1 none, 0 not known (the search
+   failed, printed or drew in the worker). The search goes on in order
+   from them, searching again only those not found to be accepted by none. */
+static int *pem_job, pem_nroots, *pem_roots;
+static Pem *pem_models;
+static signed char *pem_found;
+
+static void worker_pems(int lo, int hi) {
+    for (int i = lo; i < hi; i++) {
+        EvalState saved = eval_save();
+        ErrorState er = error_save();
+        sigjmp_buf here;
+        handler = &here;
+        Ints com = {0};
+        if (!sigsetjmp(here, 0)) {
+            pem = &pem_models[pem_job[i]];
+            pem_found[i] = pem_sccs(pem_roots, pem_nroots, &com, pem_accept) >= 0 ? 2 : 1;
+        }
+        eval_restore(saved);
+        error_restore(&er);
+        memset(pem_in, 0, (size_t)npnodes + 1);
+    }
+}
+
 /* What each component of the whole product offers an error model, to
    skip the search of one that none can accept: a component it accepts
    lies in one of them. Bits of the []<>S holding in a node, and of the
@@ -15706,15 +15733,28 @@ static int pem_violated(void) {
             noffers = 0;
             pem_sccs(roots, nroots, NULL, pem_offer);
         }
-        for (int j = i; j < d.n; j++) {
-            if (done[j] || !tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n)) continue;
-            done[j] = 1;
-            pem = &pems[j];
-            if (offered && !pem_possible(pem)) continue;
+        int njob = 0;
+        pem_job = NEWN(int, d.n);
+        for (int j = i; j < d.n; j++)
+            if (!done[j] && tfl_same(pems[j].tf.v, pems[j].tf.n, pems[i].tf.v, pems[i].tf.n)) {
+                done[j] = 1;
+                if (!offered || pem_possible(&pems[j])) pem_job[njob++] = j;
+            }
+        signed char *found = NULL;
+        if (nworkers > 1 && njob > 1) {
+            pem_found = found = shared((size_t)njob);
+            pem_models = pems, pem_roots = roots, pem_nroots = nroots;
+            stop_workers();   /* to fork with this group's product */
+            run_level(0, njob, 1, 0, PEMS);
+        }
+        for (int k = 0; k < njob; k++) {
+            if (found && found[k] == 1) continue;
+            pem = &pems[pem_job[k]];
             Ints com = {0};
             int root = pem_sccs(roots, nroots, &com, pem_accept);
             if (root >= 0) { pem_print(root, roots, nroots); free(done); return 1; }
         }
+        if (found) munmap(found, (size_t)njob);
     }
     free(done);
     return 0;

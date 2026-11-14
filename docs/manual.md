@@ -426,6 +426,10 @@ Known gaps, not decisions, each to be closed:
   its place: the counterexample is one TLC prints with some polynomial,
   not always one of those `-fp 0` to `-fp 9` give. Of 900 random graphs
   of `tests/fuzz.py live`, 897 print what TLC prints.
+- `Print` and `PrintT` in a fairness condition or a temporal property
+  print what Manyan evaluates, as its search needs each condition; TLC
+  evaluates all of them on every state and step as it finds them, and
+  prints each time.
 - Where TLC fails with a Java exception, hangs, or prints as a
   simulation's counterexample a lasso that does not violate the property,
   Manyan reports what the model does instead.
