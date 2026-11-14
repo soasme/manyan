@@ -95,7 +95,10 @@ output, and 897 of 900 random liveness graphs its counterexample.
    Manyan does. Accept `-lncheck`, `-noGenerateSpecTE`, `-teSpecOutDir`
    and `-h` as `-metadir` is; take `-inv`, `-invlevel` and
    `-postCondition`; and write `-dumpTrace json`, TLC's counterexample for
-   other tools to read.
+   other tools to read. Done: each as TLC, `-inv` an invariant of a
+   module extending the spec, `-postCondition` and `-dumpTrace json`
+   postconditions of a module the spec extends, the latter TLC's own
+   `_JsonTrace`.
 7. **A result to walk.** `manyan_check` gives an exit status, and the rest
    is printed text. Give the C API the result itself: the verdict, the
    property or invariant violated, the counterexample's states, actions

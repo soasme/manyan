@@ -1,5 +1,14 @@
 unreleased:
 
+- TLC's command lines: `-inv EXPR` and `-invlevel N` add an invariant,
+  `-postCondition M!Op` a postcondition, and `-dumpTrace json FILE`
+  writes the counterexample in TLC's JSON, as TLC's `_JsonTrace` does;
+  `-noGenerateSpecTE`, `-teSpecOutDir`, `-lncheck` and `-h` are taken, so
+  etcd's trace validation script runs. In the C API, `invariants`,
+  `postconditions`, `dump_trace` and `no_te_spec` of `ManyanOptions`
+- `DOMAIN` of a state of `Trace` is its variables' names, not an interval
+  of numbers; a postcondition's records keep their order as written for
+  `JsonSerialize` after a temporal property's counterexample too
 - liveness with workers: the groups of a property's error models, one
   tableau each, are checked by the workers, then in order by the search
   where one is violated or a worker could not tell; a level of fewer

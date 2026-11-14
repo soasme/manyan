@@ -1,0 +1,7 @@
+Error: Invariant Inv is violated by the initial state:
+x = <<1, "a">>
+
+"CounterExample written: trace.json"
+exit 12
+--- trace.json
+{"counterexample":{"action":[],"state":[[1,{"x":[1,"a"]}]]},"vars":["x"]}

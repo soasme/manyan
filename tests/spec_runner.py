@@ -13,7 +13,8 @@ NAME.in where a test has one). The
 oracle does not run a test with an option in ORACLE_SKIPS.
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
 numbered in order of appearance, as fingerprints differ; then the
-behaviors it writes (`-simulate file=FILE`).
+behaviors it writes (`-simulate file=FILE`) and the counterexample
+(`-dumpTrace json FILE`). The time naming an `-inv` expression is N.
 
 With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
@@ -145,6 +146,7 @@ def normalize(output, directory):
         if NOISE.match(line):
             continue
         line = re.sub(r" at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.$", ".", line)
+        line = re.sub(r"(__Debugger(Module|Expr)__)\d+", r"\1N", line)
         if line.strip() == "" and (not lines or lines[-1] == ""):
             continue
         lines.append(line.rstrip())
@@ -153,9 +155,9 @@ def normalize(output, directory):
     return "\n".join(lines) + "\n"
 
 
-def dumped(directory):
+def dumped(directory, options):
     """The files a run wrote in directory: dot files, each state's fingerprint
-    replaced by its number, behaviors, and user output."""
+    replaced by its number, behaviors, user output and the counterexample."""
     text = ""
     for dot in sorted(directory.glob("*.dot")):
         ids = {}
@@ -166,6 +168,9 @@ def dumped(directory):
             text += re.sub(pattern, number, line) + "\n"
     for written in sorted(directory.glob("*_0_*")) + sorted(directory.glob("*.txt")):   # -simulate file=, -userFile
         text += f"--- {written.name}\n" + written.read_text()
+    for i, option in enumerate(options[:-2]):
+        if option == "-dumpTrace" and (directory / options[i + 2]).exists():
+            text += f"--- {options[i + 2]}\n" + (directory / options[i + 2]).read_text() + "\n"
     return text
 
 
@@ -208,7 +213,7 @@ def run(command, path, memory):
                                           (given if given.exists() else directory / (path.stem + ".cfg")).read_bytes())
         if killed:
             output, code = f"{killed}\n", "killed"
-        return normalize(output, directory) + f"exit {code}\n" + dumped(directory)
+        return normalize(output, directory) + f"exit {code}\n" + dumped(directory, named)
 
 
 def metadir():

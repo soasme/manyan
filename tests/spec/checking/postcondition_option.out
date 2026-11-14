@@ -1,0 +1,6 @@
+"started"
+Finished computing initial states: 1 distinct state generated.
+Error: Postcondition Done at line 4, col 9 to line 4, col 30 of module Post is false.
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 10

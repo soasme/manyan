@@ -61,7 +61,13 @@ for it; [std.md](std.md) lists them.
 | `-stack N` | let expressions nest and definitions call at most N deep, and report TLC's `StackOverflowError` past that (exit 255 while parsing, 75 while evaluating); TLC's own depth depends on its Java stack. Without it calls go 5000 deep and parsing as deep as the C stack goes, so a spec nested far deeper crashes |
 | `-userFile FILE` | write the output of `Print` and `PrintT` to FILE instead of standard output |
 | `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
-| `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup` | accepted for TLC's command lines, and ignored: Manyan writes no metadata and has its own fingerprints |
+| `-inv EXPR` | also check `EXPR` as an invariant, after the configuration's, as TLC's `-inv`: an operator of the spec keeps its name, another expression is named `__DebuggerExpr__` and the time in milliseconds |
+| `-invlevel N` | report the first behavior of N states, as TLC's: the invariant `TLCGet("level") < N` |
+| `-postCondition M!Op` | also check `Op` of module `M` once the search is done, after the configuration's `POSTCONDITION`s; as TLC, the spec extends `M` |
+| `-dumpTrace json FILE` | write the counterexample to FILE in TLC's JSON: its states, the actions between them and the variables, as `CounterExample` of TLCExt gives them |
+| `-noGenerateSpecTE` | as TLC's: TLC then sets up no trace spec, which shows in the order of `CounterExample`'s fields |
+| `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup`, `-teSpecOutDir DIR`, `-lncheck WHEN` | accepted for TLC's command lines, and ignored: Manyan writes no metadata or trace spec, has its own fingerprints, and checks liveness once the states are found, as `-lncheck final` |
+| `-h` | print the usage and exit |
 
 A run prints TLC's report on standard output: the initial states, then
 either `Model checking completed. No error has been found.` or the first
@@ -381,7 +387,9 @@ Not supported, by decision, each for the reason given:
 - `-coverage` and `-tool`: their output is TLC's cost model and its
   Toolbox's message codes, made for the Toolbox's views.
 - `-generateSpecTE`, and the `_TTrace` module TLC writes at an error,
-  which reads the trace from a `.bin` in Java's serialization.
+  which reads the trace from a `.bin` in Java's serialization; so too
+  `-dumpTrace tlc` and `-loadTrace`. `-dumpTrace`'s other formats are
+  written by CommunityModules' operators that Manyan does not have.
 - checkpoints (`-checkpoint`, `-recover`) and distributed checking: TLC's
   files are its JVM's; models Manyan checks seldom run for the hours that
   call for them.
@@ -430,6 +438,9 @@ Known gaps, not decisions, each to be closed:
   print what Manyan evaluates, as its search needs each condition; TLC
   evaluates all of them on every state and step as it finds them, and
   prints each time.
+- With `-noGenerateSpecTE`, an error in one of Naturals' operators TLC
+  computes in Java names its class `Integers`, as without; TLC names
+  `Naturals` until it reports a first error, and reads Integers then.
 - Where TLC fails with a Java exception, hangs, or prints as a
   simulation's counterexample a lasso that does not violate the property,
   Manyan reports what the model does instead.

@@ -1,0 +1,25 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ s = {}
+/\ x = 0
+
+State 2: <Inc line 8, col 8 to line 8, col 36 of module dump_trace_json>
+/\ s = {0}
+/\ x = 1
+
+State 3: <Inc line 8, col 8 to line 8, col 36 of module dump_trace_json>
+/\ s = {0, 1}
+/\ x = 2
+
+State 4: <Inc line 8, col 8 to line 8, col 36 of module dump_trace_json>
+/\ s = {0, 1, 2}
+/\ x = 3
+
+"CounterExample written: trace.json"
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 12
+--- trace.json
+{"counterexample":{"action":[[[1,{"s":[],"x":0}],{"name":"Inc","location":{"beginLine":8,"beginColumn":8,"endLine":8,"endColumn":36,"module":"dump_trace_json"}},[2,{"s":[0],"x":1}]],[[2,{"s":[0],"x":1}],{"name":"Inc","location":{"beginLine":8,"beginColumn":8,"endLine":8,"endColumn":36,"module":"dump_trace_json"}},[3,{"s":[0,1],"x":2}]],[[3,{"s":[0,1],"x":2}],{"name":"Inc","location":{"beginLine":8,"beginColumn":8,"endLine":8,"endColumn":36,"module":"dump_trace_json"}},[4,{"s":[0,1,2],"x":3}]]],"state":[[1,{"s":[],"x":0}],[2,{"s":[0],"x":1}],[3,{"s":[0,1],"x":2}],[4,{"s":[0,1,2],"x":3}]]},"vars":["x","s"]}

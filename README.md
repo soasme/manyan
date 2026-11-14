@@ -121,7 +121,8 @@ report as TLC with one worker.
   temporal properties under weak and strong fairness, with TLC's
   counterexamples; random simulation (`-simulate`, `-generate`), drawing
   the same behaviors as TLC for a seed, and writing them to files (`file=`);
-  TLC's `-continue`, `-difftrace`, `-view`, `-userFile` and `-dump dot`.
+  TLC's `-continue`, `-difftrace`, `-view`, `-userFile`, `-dump dot`,
+  `-inv`, `-invlevel`, `-postCondition` and `-dumpTrace json`.
 - TLC's error messages and exit statuses for evaluation errors, parse
   errors and configuration errors.
 - Experimental: `-symbolic` checks invariants, temporal properties and

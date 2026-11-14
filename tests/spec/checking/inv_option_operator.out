@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Small is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 18 of module inv_option_operator>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 18 of module inv_option_operator>
+x = 2
+
+State 4: <Next line 7, col 9 to line 7, col 18 of module inv_option_operator>
+x = 3
+
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 12

@@ -477,7 +477,8 @@ struct ManyanValue {
     };
     unsigned char perm;      /* a V_LAZY made in the permanent arena */
     unsigned char range;     /* a V_FCN whose domain TLC keeps as the interval of its keys; a record of
-                                Trace, whose fields TLC keeps in the order of the variables */
+                                a state, of Trace or CounterExample, whose fields TLC keeps in the order
+                                of the variables */
     int n;                   /* elements of a set, tuple, or function */
     union {
         int64_t i;           /* V_BOOL, V_INT, V_STR, V_MODEL (string id) */
@@ -1989,7 +1990,7 @@ static Value *fcn_apply(Value *f, Value *a, Expr *where) {
 static Value *fcn_domain(Value *f) {
     if (f->kind == V_LAMBDA) return f->u.l.a;
     if (f->kind == V_TUPLE) return mk_interval(1, f->n);
-    if (f->range) return mk_interval(f->u.fcn.keys[0]->u.i, f->u.fcn.keys[f->n - 1]->u.i);
+    if (f->range && f->made != MADE_RECORD) return mk_interval(f->u.fcn.keys[0]->u.i, f->u.fcn.keys[f->n - 1]->u.i);
     Value *s = mk_set(f->n);
     for (int i = 0; i < f->n; i++) s->u.set.elems[i] = f->u.fcn.keys[i];
     return s;
@@ -2440,7 +2441,19 @@ static const char stack_overflow[] =
     "an infinite loop when trying to compute the function or its application\n"
     "to an element in its putative domain.";
 
+static const char *breakpoint;   /* the -inv expression being read, whose errors TLC reports as its own */
+
+/* TLC's error in an -inv expression: a syntax error, or one SANY finds
+   after (Unknown location), its own if why is NULL. */
+static _Noreturn void breakpoint_error(int syntax, const char *why) {
+    printf("Error: Parsing or semantic analysis failed.Parsing or semantic analysis failed.%s", syntax ? "" : "Unknown location\n\n");
+    if (why) printf("%s\n", why);
+    else printf("%s error while parsing breakpoint expression \"%s\"\n", syntax ? "Syntax" : "Semantic", breakpoint);
+    exit(MANYAN_ERROR_PARSE);
+}
+
 static _Noreturn void parse_error(const char *file, int line, int col, const char *fmt, ...) {
+    if (breakpoint) breakpoint_error(1, NULL);
     char msg[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -3884,6 +3897,24 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "\n\n\nTLCEvalDefinition(definitionName) ==\n"
      "\n\n\n\n  TRUE\n"
      "\n====\n"},
+    {"_JsonTrace",   /* TLC's -dumpTrace json, without what -loadTrace reads */
+     "------------------------------- MODULE _JsonTrace -------------------------------\n"
+     "LOCAL INSTANCE TLC\n"
+     "LOCAL INSTANCE TLCExt\n"
+     "LOCAL INSTANCE Json\n"
+     "LOCAL INSTANCE Sequences\n"
+     "LOCAL INSTANCE Naturals\n"
+     "\n"
+     "CONSTANT _JsonTraceFile\n"
+     "\n"
+     "_JsonTrace ==\n"
+     "    IF CounterExample.state = {} \\/ (\"console\" \\in DOMAIN CounterExample /\\ CounterExample[\"console\"] = FALSE) THEN TRUE ELSE\n"
+     "        /\\ LET trace == ToTrace(CounterExample)\n"
+     "               vars  == UNION { DOMAIN trace[i] : i \\in DOMAIN trace }\n"
+     "           IN JsonSerialize(_JsonTraceFile, [counterexample |-> CounterExample, vars |-> vars])\n"
+     "        /\\ PrintT(\"CounterExample written: \" \\o _JsonTraceFile)\n"
+     "\n"
+     "====\n"},
     {"Toolbox",
      "---- MODULE Toolbox ----\n"
      "\n\n\nLOCAL INSTANCE Naturals\n"
@@ -4070,6 +4101,7 @@ static void loc_line(Buf *b, Expr *e) {
 }
 
 static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
+    if (breakpoint) breakpoint_error(0, NULL);
     char msg[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -5903,6 +5935,7 @@ static Value *fcndef_value(Def *d, Ctx c) {
 
 static int nowarning;   /* TLC's warnings off (-nowarning) */
 static int keep_going;   /* -continue: a violated invariant or action property is reported, and the search goes on */
+static int te_spec;      /* TLC sets up a trace exploration spec: not with -continue or -noGenerateSpecTE */
 
 /* Prints one of TLC's warnings; as TLC, the first of a run says how to
    turn them off. */
@@ -10197,7 +10230,8 @@ static int trace_states(int s1, Value **s2, int action, int print) {
 }
 static int print_trace(int s1, Value **s2, int action) { return trace_states(s1, s2, action, 1); }
 
-static int *posts, nposts;   /* the POSTCONDITIONs' names */
+static struct { int name, module; } *posts;   /* the POSTCONDITIONs, and the module of each -postCondition */
+static int nposts;
 /* The _POSSIBLE predicates, and how often each held where evaluated:
    -1 where never evaluated. */
 static Check *possibles;
@@ -10246,7 +10280,11 @@ static int check_posts(int after_error) {
     Def **d = NEWN(Def *, nposts + 1);
     for (int i = 0; i < nposts; i++) {
         Buf why = {0};
-        if ((d[i] = late_def(posts[i], "post condition", &why))) continue;
+        Sym *s = posts[i].module ? module_lookup(find_module(posts[i].module), posts[i].name) : NULL;
+        if (posts[i].module && s && s->def->kind == D_OP) d[i] = s->def;
+        else if (posts[i].module) buf_printf(&why, "Could not find operator: %s in module: %s", S(posts[i].name), S(posts[i].module));
+        else d[i] = late_def(posts[i].name, "post condition", &why);
+        if (d[i]) continue;
         if (simulating) printf("Error: %s\n", why.s);
         else if (!after_error || keep_going) {
             print_exception("java.lang.RuntimeException", ": ");
@@ -10261,6 +10299,8 @@ static int check_posts(int after_error) {
     int64_t level = cur_level;
     cur_state = next_state = NULL;
     cur_level = 0;
+    arena = &scratch_arena;   /* records keep their order as written, for JsonSerialize */
+    Region *r = region_open();
     int status = 0;
     sigjmp_buf here;
     handler = &here;
@@ -10269,7 +10309,7 @@ static int check_posts(int after_error) {
         Buf b = {0};
         loc_text(&b, d[i]->body);
         if (sigsetjmp(here, 0)) {
-            printf("Error: Evaluating postcondition %s at %s failed.\n", S(posts[i]), b.s);
+            printf("Error: Evaluating postcondition %s at %s failed.\n", S(posts[i].name), b.s);
             print_error_text();
             free(b.s);
             status = MANYAN_VIOLATION_ASSUMPTION;
@@ -10278,10 +10318,10 @@ static int check_posts(int after_error) {
         Value *v = eval(d[i]->body, root_ctx);
         if (v->kind != V_BOOL) {
             printf("Error: Evaluating postcondition %s at %s failed.\n"
-                   "TLC expected a boolean value, but did not find one. %s\n", S(posts[i]), b.s, b.s);
+                   "TLC expected a boolean value, but did not find one. %s\n", S(posts[i].name), b.s, b.s);
             status = MANYAN_VIOLATION_ASSUMPTION;
         } else if (!v->u.i) {
-            printf("Error: Postcondition %s at %s is false.\n", S(posts[i]), b.s);
+            printf("Error: Postcondition %s at %s is false.\n", S(posts[i].name), b.s);
             status = MANYAN_VIOLATION_ASSUMPTION;
         }
         free(b.s);
@@ -10289,6 +10329,7 @@ static int check_posts(int after_error) {
     if (!status) status = check_possibles();
     checking_posts = 0;
     post_trace.n = 0;
+    region_close(r);
     eval_restore(saved);
     error_restore(&error);
     cur_level = level;
@@ -10758,6 +10799,7 @@ static Value *post_state(Value ***st, int n, int i, int aliased) {
     if (alias && fcn_is_record(alias)) return alias;
     Value *r = mk_fcn_from(&keys, &vals);
     r->made = MADE_RECORD;
+    r->range = r->n == nvars;
     return r;
 }
 
@@ -10787,9 +10829,9 @@ static void post_behavior(Value ***st, const int *act, int n, int loop, int loop
 }
 
 /* A CounterExample: TLC sorts its fields as it interned them, "state"
-   first when it sets up a trace spec, which -continue skips. */
+   first when it sets up a trace spec but has not read _JsonTrace. */
 static Value *counter_example_record(Value *states, Value *steps) {
-    if (keep_going) return mk_record(2, (const char *[]){"action", "state"}, (Value *[]){steps, states});
+    if (!te_spec) return mk_record(2, (const char *[]){"action", "state"}, (Value *[]){steps, states});
     return mk_record(2, (const char *[]){"state", "action"}, (Value *[]){states, steps});
 }
 
@@ -12214,9 +12256,8 @@ static int simulate(const ManyanOptions *o) {
                     States *b = sim_behavior(trace, sim_checked, cur_action);
                     print_unspecified(sim_checked);
                     sim_print(b);
-                    /* TLC's postcondition writing the behavior fails on it,
-                       one -continue sets up none of. */
-                    if (keep_going && !nposts) return MANYAN_FAILURE_EVAL;
+                    /* TLC's postcondition writing the behavior for its trace spec fails on it */
+                    if (!te_spec && !nposts) return MANYAN_FAILURE_EVAL;
                     printf("\nError: Evaluating postcondition _TLCTraceSilent at line 28, col 5 to line 28, col 21 of module _TLCTrace failed.\n"
                            "Attempted to apply the operator overridden by the Java method\n"
                            "public static final tlc2.value.IValue tlc2.module._TLCTrace.ioSerialize(tlc2.value.IValue,tlc2.value.impl.StringValue) throws java.io.IOException,\n"
@@ -13532,8 +13573,9 @@ static int setup_model(void) {
             symmetry_tables();
         } else if (strcmp(k, "ALIAS") == 0) alias_name = it->name;
         else if (strncmp(k, "POSTCONDITION", 13) == 0) {
-            posts = xrealloc(posts, sizeof(int) * (size_t)(nposts + 1));
-            posts[nposts++] = it->name;
+            posts = xrealloc(posts, sizeof *posts * (size_t)(nposts + 1));
+            posts[nposts].name = it->name;
+            posts[nposts++].module = it->module;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
         } else if (strcmp(k, "_PERIODIC") == 0) periodic_expr = config_call(it->name, "periodic", 'r');
@@ -22212,6 +22254,33 @@ static SVal *sym_gen(Expr *e, SCtx sc) {
     return v;
 }
 
+/* The invariant -inv expr names, as TLC's: an operator of the root, or
+   expr defined as __DebuggerExpr__N in a module __DebuggerModule__N that
+   extends the root, N the time in milliseconds. */
+static int inv_name(const char *expr) {
+    Sym *s = root_sym(intern(expr));
+    if (s && s->def->kind == D_OP) return s->name;
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    long long n = (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+    char name[64];
+    do sprintf(name, "__DebuggerModule__%lld", n++); while (find_module(intern(name)));
+    char *text = xmalloc(strlen(expr) + strlen(S(root->name)) + 128);
+    sprintf(text, "---- MODULE %s ----\nEXTENDS %s\n\n__DebuggerExpr__%lld == %s\n====\n", name, S(root->name), n - 1, expr);
+    breakpoint = expr;
+    Module *m = parse_text(text, strdup(name));
+    modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
+    modules[nmodules++] = m;
+    load_references(m);
+    finish_module(m);
+    resolve_module(m);
+    s = &m->syms[m->nsyms - 1];
+    if (expr_level(s->def->body) > 2) breakpoint_error(0, "Debug expressions must be action-level or below; actual level: 3 (Temporal)");
+    breakpoint = NULL;
+    add_sym(root, s->name, s->def, NULL, 0, 0, NULL);
+    return s->name;
+}
+
 int manyan_check(const ManyanOptions *o) {
     printf("manyan version %s\n", MANYAN_VERSION);
     stack_limit = o->stack > 0 ? o->stack : 0;
@@ -22259,6 +22328,7 @@ int manyan_check(const ManyanOptions *o) {
     diff_trace = o->difftrace;
     view_trace = o->view;
     keep_going = o->keep_going;
+    te_spec = !o->keep_going && !o->no_te_spec;
     for (const char *const *p = o->properties; p && *p; p++) {
         int n = (int)(strchr(*p, '=') - *p);
         char *key = xmalloc((size_t)n + 3);
@@ -22280,11 +22350,27 @@ int manyan_check(const ManyanOptions *o) {
     free(base);
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = root;
+    /* TLC extends the root with the module of each -postCondition, and -dumpTrace json's */
+    int extra = (o->dump_trace != NULL);
+    for (const char *const *p = o->postconditions; p && *p; p++) extra++;
+    int *extends = NEWN(int, root->nextends + extra + 1);
+    if (root->nextends) memcpy(extends, root->extends, sizeof(int) * (size_t)root->nextends);
+    root->extends = extends;
+    for (const char *const *p = o->postconditions; p && *p; p++) root->extends[root->nextends++] = intern_n(*p, (int)(strchr(*p, '!') - *p));
+    if (o->dump_trace) {
+        intern("action");   /* before _JsonTrace's "state", as TLC */
+        root->extends[root->nextends++] = intern("_JsonTrace");
+    }
     load_references(root);
     finish_module(root);
     resolve_module(root);
     if (lint.n) printf("%s", lint.s);
     if (o->typecheck) return typecheck(root);
+    int ninvs = 0, *invs = NULL;
+    for (const char *const *p = o->invariants; p && *p; p++) {
+        invs = xrealloc(invs, sizeof(int) * (size_t)(ninvs + 1));
+        invs[ninvs++] = inv_name(*p);
+    }
     for (int i = 0; i < nfinished; i++) {
         Expr *e = finished[i]->outer ? NULL : odd_literal(finished[i]);
         if (e && e->num < 0) config_error("TLC can't handle real numbers.\n%s", S(e->op));
@@ -22300,6 +22386,13 @@ int manyan_check(const ManyanOptions *o) {
     jr_seed(&draw_behaviors, draw_seed);
     starting = 1;
     read_config(config_text, 0);
+    for (int i = 0; i < ninvs; i++) cfg_add("INVARIANT", invs[i], 0, NULL, 0, 0, NULL);
+    for (const char *const *p = o->postconditions; p && *p; p++)
+        cfg_add("POSTCONDITION", intern(strchr(*p, '!') + 1), 0, NULL, 0, intern_n(*p, (int)(strchr(*p, '!') - *p)), NULL);
+    if (o->dump_trace) {
+        cfg_add("CONSTANT", intern("_JsonTraceFile"), '=', mk_str(intern(o->dump_trace)), 0, 0, NULL);
+        cfg_add("POSTCONDITION", intern("_JsonTrace"), 0, NULL, 0, intern("_JsonTrace"), NULL);
+    }
     setup_model();
 
     for (int i = 0; i < nfinished; i++) evaluate_constants(finished[i]);
@@ -22383,8 +22476,13 @@ int main(int argc, char **argv) {
     ManyanOptions o = {0};
     o.check_deadlock = 1;
     const char **properties = xcalloc((size_t)argc, sizeof(char *));
-    int nproperties = 0;
+    const char **invariants = xcalloc((size_t)argc, sizeof(char *));
+    const char **postconditions = xcalloc((size_t)argc, sizeof(char *));
+    int nproperties = 0, ninvariants = 0, npostconditions = 0;
     o.properties = properties;
+    o.invariants = invariants;
+    o.postconditions = postconditions;
+    const char *usage = "usage: manyan [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC\n";
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-config") == 0 && i + 1 < argc) o.config = argv[++i];
         else if (strcmp(argv[i], "-deadlock") == 0) o.check_deadlock = 0;
@@ -22431,14 +22529,40 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-view") == 0) o.view = 1;
         else if (strcmp(argv[i], "-userFile") == 0 && i + 1 < argc) o.user_file = argv[++i];
         else if (!strncmp(argv[i], "-D", 2) && strchr(argv[i], '=')) properties[nproperties++] = argv[i] + 2;
-        /* TLC's, for its own files and fingerprints: manyan has neither */
-        else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fp") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits")) && i + 1 < argc) i++;
+        else if (strcmp(argv[i], "-inv") == 0 && i + 1 < argc) invariants[ninvariants++] = argv[++i];
+        else if (strcmp(argv[i], "-invlevel") == 0 && i + 1 < argc) {
+            /* as TLC: the invariant that the level is below N */
+            char *end, *n = argv[++i];
+            strtol(n, &end, 10);
+            if (!*n || *end) { fprintf(stderr, "manyan: -invlevel takes an integer, not %s\n", n); return MANYAN_ERROR; }
+            char *e = xmalloc(strlen(n) + 80);
+            sprintf(e, "LET _T == INSTANCE TLC _N == INSTANCE Naturals IN _N!<(_T!TLCGet(\"level\"), %s)", n);
+            invariants[ninvariants++] = e;
+        }
+        else if (strcmp(argv[i], "-postCondition") == 0 && i + 1 < argc) {
+            const char *pc = argv[++i], *bang = strchr(pc, '!');
+            if (!bang || bang == pc || !bang[1] || strchr(bang + 1, '!') || strchr(pc, '.')) {
+                fprintf(stderr, "manyan: -postCondition takes Module!Operator, not %s\n", pc);
+                return MANYAN_ERROR;
+            }
+            postconditions[npostconditions++] = pc;
+        }
+        else if (strcmp(argv[i], "-dumpTrace") == 0 && i + 2 < argc) {
+            if (strcmp(argv[++i], "json")) { fprintf(stderr, "manyan: -dumpTrace writes only json: -dumpTrace json FILE\n"); return MANYAN_ERROR; }
+            o.dump_trace = argv[++i];
+        }
+        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-help") == 0) { printf("%s", usage); return 0; }
+        /* TLC's, for its own files, fingerprints and when it checks liveness: manyan has no files, its own
+           fingerprints, and checks liveness once the states are found */
+        else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fp") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits") ||
+                  !strcmp(argv[i], "-teSpecOutDir") || !strcmp(argv[i], "-lncheck")) && i + 1 < argc) i++;
+        else if (strcmp(argv[i], "-noGenerateSpecTE") == 0) o.no_te_spec = 1;
         else if (!strcmp(argv[i], "-gzip") || !strcmp(argv[i], "-cleanup")) {}
         else if (argv[i][0] == '-') { fprintf(stderr, "manyan: unknown option %s\n", argv[i]); return MANYAN_ERROR; }
         else o.spec = argv[i];
     }
     if (!o.spec) {
-        fprintf(stderr, "usage: manyan [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC\n");
+        fprintf(stderr, "%s", usage);
         return MANYAN_ERROR;
     }
     int status = manyan_check(&o);
