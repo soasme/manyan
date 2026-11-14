@@ -54,38 +54,29 @@ from TLC.
 - Compile Manyan to WebAssembly for a browser playground, where anyone can paste
   a spec and check it with nothing installed.
 
-## Next: 0.12.0
+## Next: 0.13.0
 
-In the order of the goals above. 0.11.0 brought liveness counterexamples to
-TLC's on 897 of 900 random graphs, and 172 of the 176 Examples checked to
-TLC's output; the other four are explained in [fullbench](fullbench.md).
+In the order of the goals above. 0.12.0 made evaluation faster
+(refinement and recursion 7%, counters 5%) and moved liveness checking
+with workers off one process (ReadersWriters and MCLiveWriteThroughCache
+twice as fast with 4 workers); 172 of the 176 Examples checked give TLC's
+output, and 897 of 900 random liveness graphs its counterexample.
 
-1. **Fewer, cheaper nodes in evaluation.** Counters spends about 60% of
-   its time evaluating, about 148 tree nodes per state
-   ([optimizations](optimizations.md#where-the-time-goes-now)). Resolve
-   variables and bound names to slots before the search, and fuse common
-   shapes into one node. This speeds up every spec, and it should win
-   back the 1–3% that `assignable`'s search for names cost log, recursion
-   and symmetry in 0.6.1, and the 2–4% that the search's regions cost
-   closure in 0.7.0. Done: integer comparisons and arithmetic, and `x[k]`
-   of a variable (refinement and recursion 7%, counters 5%). Slots for
-   bound names are not worth it: a lookup takes 1.0 to 1.7 steps of the
-   environment on the bench (at most 3), and handling one without a call
-   moved partition +4% in cycles. Nor closure's: its time is in the sets of
-   `Reach` (`x \in S` of an atom without `set_member` took 0.5% of its
-   instructions but moved it +1.2% with the profile, and its regions keep
-   about two open at a `force` that must mark them).
-2. **The serial part left with workers**
-   ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
-   evaluate a property's fairness on the states and edges in parallel,
-   not in one process (AllocatorImplementation). The initial states and
-   a property's actions are computed in parallel already. Done for a
-   property's error models, which the workers search: AllocatorImplementation
-   0.48 → 0.22 s with 4 workers; and for the conditions they take on every
-   edge and the offers of the components, which the workers evaluate
-   first: ReadersWriters 0.25 → 0.12 s. Left in one process: an error
-   model's own walk of its components, and the product, built in 3 ms of
-   AllocatorImplementation's 0.22 s.
+1. **TLC's tableau.** The 3 of 900 counterexamples that differ come from
+   TLC's tableau, built of particles and its successors linked in the
+   order of their index, where Manyan's has other nodes
+   ([manual](manual.md#limitations)). Build the tableau as TLC does, so
+   that the product, and so the cycle found and the path to it, are
+   TLC's: `tests/fuzz.py live` at 900 of 900.
+2. **Nowhere slower than TLC.** Huang is the one model of the Examples
+   where Manyan is slower than TLC: 41.0 s against 34.6 s with one worker
+   ([fullbench](fullbench.md)). Find where its time goes, and then that
+   of the next least ahead, MCInnerSerial (1.7x) and EWD998Small (2.2x).
+3. **A result to walk.** `manyan_check` gives an exit status, and the rest
+   is printed text. Give the C API the result itself: the verdict, the
+   property or invariant violated, the counterexample's states, actions
+   and loop, and the counts, as values `manyan.h` already reads. A
+   binding needs it before anything else.
 
 ## What stays
 
