@@ -68,8 +68,10 @@ TLC's output; the other four are explained in [fullbench](fullbench.md).
    back the 1–3% that `assignable`'s search for names cost log, recursion
    and symmetry in 0.6.1, and the 2–4% that the search's regions cost
    closure in 0.7.0. Done: integer comparisons and arithmetic, and `x[k]`
-   of a variable (refinement and recursion 7%, counters 5%). Left: bound
-   names, which closure spends a tenth of its time finding.
+   of a variable (refinement and recursion 7%, counters 5%). Slots for
+   bound names are not worth it: a lookup takes 1.0 to 1.7 steps of the
+   environment on the bench (at most 3), and handling one without a call
+   moved partition +4% in cycles.
 2. **The serial part left with workers**
    ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
    evaluate a property's fairness on the states and edges in parallel,
