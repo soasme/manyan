@@ -1,4 +1,4 @@
-unreleased:
+2026-11-14 0.12.0:
 
 - faster evaluation: Naturals' `<`, `\leq`, `>`, `\geq`, `+`, `-` and `*`
   of two integers are computed where they are called, and `x[k]` of a
