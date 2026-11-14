@@ -72,7 +72,9 @@ output, and 897 of 900 random liveness graphs its counterexample.
    against its spec is how TLC is used in industry: etcd's raft runs TLC
    once a trace (`tla/validate.sh`), CCF does too. Run etcd's traces with
    Manyan and with TLC and compare what they print, as the full bench
-   does the Examples.
+   does the Examples. So far: etcd's example trace gives TLC's output, in 259 s
+   against TLC's 1464 s but 1.59 GB against 0.97 GB; next, the traces
+   etcd's tests generate.
 3. **Nowhere slower than TLC.** Huang is the one model of the Examples
    where Manyan is slower than TLC: 41.0 s against 34.6 s with one worker
    ([fullbench](fullbench.md)). Find where its time goes, and then that
