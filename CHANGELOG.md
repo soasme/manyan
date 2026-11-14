@@ -8,6 +8,11 @@ unreleased:
   the workers, then in order by the search where one is accepted or a
   worker could not tell. AllocatorImplementation twice as fast with 4
   workers
+- liveness with workers: the workers evaluate the conditions a property's
+  error models take on every edge, and those of the offers of the
+  product's components, before the search takes them. ReadersWriters
+  and MCLiveWriteThroughCache twice as fast with 4 workers,
+  AllocatorImplementation 10% and TestGraphs 25% faster
 
 2026-11-14 0.11.0:
 

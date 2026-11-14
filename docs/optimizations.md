@@ -116,3 +116,18 @@ ones with a large serial part, not a slow evaluator.
   the workers each search error models of the product, filling the shared
   atom cache as they go, and the search goes on in order from what they
   found: 0.48 → 0.24 s with 4 workers, 0.46 → 0.21 s with 8.
+  Each search still took the `<>[]` conditions of its error model on
+  every edge itself, 60% of its evaluations, and 7 error models make two
+  rounds on 4 workers. The workers now evaluate those first, by state:
+  0.25 → 0.22 s with 4 workers, 0.22 → 0.20 s with 8. Not where the
+  offers (below) took them already, nor for a group of one error model,
+  nor of state atoms alone: forking costs more there (EWD840 0.006 → 0.009 s,
+  the quick bench's liveness +53% with 8 workers).
+- **ReadersWriters, MCLiveWriteThroughCache.** A product of more than 8
+  error models first computes what each component offers them, on one
+  process: 0.25 s of ReadersWriters' 0.29 s with 4 workers. The
+  components are found first, by a search that evaluates nothing, and
+  the workers evaluate the offers' conditions in them, by state:
+  ReadersWriters 0.25 → 0.12 s, MCLiveWriteThroughCache 0.19 → 0.09 s
+  with 4 workers. Only above 100000 evaluations: below, the fork costs
+  more (ElevatorLivenessMedium +26%, LiveHourClock +43%).

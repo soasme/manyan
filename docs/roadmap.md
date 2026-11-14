@@ -78,8 +78,11 @@ TLC's output; the other four are explained in [fullbench](fullbench.md).
    not in one process (AllocatorImplementation). The initial states and
    a property's actions are computed in parallel already. Done for a
    property's error models, which the workers search: AllocatorImplementation
-   0.48 → 0.24 s with 4 workers. Left: one error model's search, and the
-   product it searches, built by one process.
+   0.48 → 0.22 s with 4 workers; and for the conditions they take on every
+   edge and the offers of the components, which the workers evaluate
+   first: ReadersWriters 0.25 → 0.12 s. Left in one process: an error
+   model's own walk of its components, and the product, built in 3 ms of
+   AllocatorImplementation's 0.22 s.
 
 ## What stays
 

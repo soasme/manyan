@@ -10985,7 +10985,7 @@ static int expand_state(int idx) {
 typedef struct { uint64_t fp; int action; int seen; uint32_t claim; } Found;
 enum { NEW = -1, CONSTRAINED = -2 };
 typedef struct { int worker; size_t off; atomic_int done; } Batch;
-enum { EXPAND, INIT, ATOMS, PEMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms, search error models */
+enum { EXPAND, INIT, ATOMS, OFFERS, STEPS, PEMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms, the offers' and the <>[] conditions on the product, search error models */
 typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; int merged; } Claim;
 enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants unchecked, held, or not */
 
@@ -11187,6 +11187,8 @@ static void worker_expand(int idx) {
 }
 
 static void worker_atoms(int lo, int hi);
+static void worker_offers(int lo, int hi);
+static void worker_steps(int lo, int hi);
 static void worker_pems(int lo, int hi);
 
 /* Init's slices [lo, hi): a header for each, then its states. */
@@ -11232,6 +11234,8 @@ static int expand_batch(void) {
     int lo = control->lo + b * control->per, hi = lo + control->per < control->hi ? lo + control->per : control->hi;
     if (control->job == INIT) worker_init(lo, hi);
     else if (control->job == ATOMS) worker_atoms(lo, hi);
+    else if (control->job == OFFERS) worker_offers(lo, hi);
+    else if (control->job == STEPS) worker_steps(lo, hi);
     else if (control->job == PEMS) worker_pems(lo, hi);
     else for (int idx = lo; idx < hi; idx++) worker_expand(idx);
     atomic_store(&batches[b].done, 1);
@@ -11355,7 +11359,7 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_encoded = w_budget = 0;
-    int r = job == INIT ? merge_init(lo, hi) : job == ATOMS || job == PEMS ? merge_atoms() : merge_level(lo, hi);
+    int r = job == INIT ? merge_init(lo, hi) : job == ATOMS || job == OFFERS || job == STEPS || job == PEMS ? merge_atoms() : merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
     for (int i = 0; i < nworkers - 1; i++)
@@ -15399,6 +15403,16 @@ static void tf_promises(TF *f) {
 
 static int pem_fulfils(int p, int i) { return !tnode_defers(pnodes[p].tnode, promises.v[i]->index); }
 
+/* Whether each promise is fulfilled in a node of a component. */
+static int pem_promised(int *nodes, int n) {
+    for (int i = 0; i < promises.n; i++) {
+        int ok = 0;
+        for (int j = 0; j < n && !ok; j++) ok = pem_fulfils(nodes[j], i);
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
 /* Whether the edge k of node p holds pem's <>[] conditions, and, with a,
    the action a. */
 static int pem_step(int p, int k, TF *a) {
@@ -15416,11 +15430,7 @@ static int pem_accept(int *nodes, int n) {
         while (k < pnodes[p].nsucc && pnodes[p].succ[k] != p) k++;
         if (k == pnodes[p].nsucc || !pem_step(p, k, NULL)) return 0;
     }
-    for (int i = 0; i < promises.n; i++) {
-        int ok = 0;
-        for (int j = 0; j < n && !ok; j++) ok = pem_fulfils(nodes[j], i);
-        if (!ok) return 0;
-    }
+    if (!pem_promised(nodes, n)) return 0;
     for (int i = 0; i < pem->aes.n; i++) {
         int ok = 0;
         for (int j = 0; j < n && !ok; j++) ok = pem_holds(pem->aes.v[i], pnodes[nodes[j]].state, -1, -1);
@@ -15492,9 +15502,29 @@ static int pem_sccs(int *roots, int nroots, Ints *com, int (*accept)(int *, int)
    component accepts it: 2 one does, 1 none, 0 not known (the search
    failed, printed or drew in the worker). The search goes on in order
    from them, searching again only those not found to be accepted by none. */
-static int *pem_job, pem_nroots, *pem_roots;
+static int *pem_job, pem_njob, pem_nroots, *pem_roots;
 static Pem *pem_models;
 static signed char *pem_found;
+
+/* Each search takes the <>[] conditions of its error model on every edge
+   of the product: the workers evaluate them first, on the nodes of the
+   states [lo, hi), filling the atom cache. */
+static void worker_steps(int lo, int hi) {
+    for (int s = lo; s < hi; s++) {
+        EvalState saved = eval_save();
+        ErrorState er = error_save();
+        sigjmp_buf here;
+        handler = &here;
+        if (!sigsetjmp(here, 0))
+            for (int i = 0; i < pnodes_of[s].n * pem_njob; i++) {
+                int p = pnodes_of[s].v[i / pem_njob].node;
+                pem = &pem_models[pem_job[i % pem_njob]];
+                for (int k = 0; k < pnodes[p].nsucc; k++) pem_step(p, k, NULL);
+            }
+        eval_restore(saved);
+        error_restore(&er);
+    }
+}
 
 static void worker_pems(int lo, int hi) {
     for (int i = lo; i < hi; i++) {
@@ -15530,19 +15560,33 @@ static uint64_t cond_bits(TFList conds, TFList of) {
     return b;
 }
 
-static int pem_offer(int *nodes, int n) {
-    for (int i = 0; i < promises.n; i++) {
-        int ok = 0;
-        for (int j = 0; j < n && !ok; j++) ok = pem_fulfils(nodes[j], i);
-        if (!ok) return 0;
+/* The components that fulfil the promises, in order: their nodes, each
+   node's component (-1 if none), and the evaluations of the bits in them. */
+static int *pem_comp;
+static Ints comp_nodes, comp_at;   /* component c's nodes from comp_at.v[c] to comp_at.v[c + 1] */
+static long npem_evals;
+
+static int pem_number(int *nodes, int n) {
+    if (!pem_promised(nodes, n)) return 0;
+    PUSH(comp_at.v, comp_at.n, comp_nodes.n);
+    for (int j = 0; j < n; j++) {
+        int p = nodes[j];
+        pem_comp[p] = comp_at.n - 1;
+        PUSH(comp_nodes.v, comp_nodes.n, p);
+        npem_evals += conds_s.n;
+        for (int k = 0; k < pnodes[p].nsucc; k++) npem_evals += pem_in[pnodes[p].succ[k]] ? conds_e.n : 0;
     }
+    return 0;
+}
+
+static void pem_offer(int *nodes, int n) {
     Offer o = {0};
     for (int j = 0; j < n; j++) {
         int p = nodes[j], s = pnodes[p].state;
         for (int b = 0; b < conds_s.n; b++) if (pem_holds(conds_s.v[b], s, -1, -1)) o.states |= 1ull << b;
         for (int k = 0; k < pnodes[p].nsucc; k++) {
             int w = pnodes[p].succ[k], seen = 0;
-            if (!pem_in[w]) continue;
+            if (pem_comp[w] != pem_comp[p]) continue;
             uint64_t x = 0;
             for (int b = 0; b < conds_e.n; b++)
                 if (pem_holds(conds_e.v[b], s, pnodes[p].edge[k], pnodes[w].state)) x |= 1ull << b;
@@ -15550,12 +15594,38 @@ static int pem_offer(int *nodes, int n) {
             if (!seen) PUSH(o.edges, o.n, x);
         }
     }
-    if (!o.n) return 0;
+    if (!o.n) return;
     qsort(o.edges, (size_t)o.n, sizeof(uint64_t), cmp_u64);
     for (int i = 0; i < noffers; i++)   /* one of each */
-        if (offers[i].states == o.states && offers[i].n == o.n && !memcmp(offers[i].edges, o.edges, sizeof(uint64_t) * (size_t)o.n)) return 0;
+        if (offers[i].states == o.states && offers[i].n == o.n && !memcmp(offers[i].edges, o.edges, sizeof(uint64_t) * (size_t)o.n)) return;
     PUSH(offers, noffers, o);
-    return 0;
+}
+
+/* With workers, the bits are evaluated first by the workers, on the nodes
+   of the states [lo, hi), filling the atom cache, if there are enough of
+   them to pay for forking. */
+#define OFFER_FORK 100000   /* evaluations; a fork costs a few milliseconds */
+
+static void worker_offers(int lo, int hi) {
+    for (int s = lo; s < hi; s++) {
+        EvalState saved = eval_save();
+        ErrorState er = error_save();
+        sigjmp_buf here;
+        handler = &here;
+        if (!sigsetjmp(here, 0))
+            for (int i = 0; i < pnodes_of[s].n; i++) {
+                int p = pnodes_of[s].v[i].node;
+                if (pem_comp[p] < 0) continue;
+                for (int b = 0; b < conds_s.n; b++) pem_holds(conds_s.v[b], s, -1, -1);
+                for (int k = 0; k < pnodes[p].nsucc; k++) {
+                    int w = pnodes[p].succ[k];
+                    if (pem_comp[w] != pem_comp[p]) continue;
+                    for (int b = 0; b < conds_e.n; b++) pem_holds(conds_e.v[b], s, pnodes[p].edge[k], pnodes[w].state);
+                }
+            }
+        eval_restore(saved);
+        error_restore(&er);
+    }
 }
 
 static int offer_has(Offer *o, uint64_t need) {
@@ -15711,6 +15781,7 @@ static int pem_violated(void) {
     atom_cache_reset();
     live_negated = f;
     char *done = xcalloc((size_t)d.n + 1, 1);
+    TFList filled = {0};   /* the <>[] actions evaluated on every edge */
     for (int i = 0; i < d.n; i++) {
         if (done[i]) continue;
         TF *tf = tf_new(TF_TRUE, NULL, NULL);
@@ -15730,8 +15801,18 @@ static int pem_violated(void) {
         if (offered) {
             Pem all = {0};
             pem = &all;
+            pem_comp = NEWN(int, npnodes);
+            for (int p = 0; p < npnodes; p++) pem_comp[p] = -1;
+            comp_nodes = comp_at = (Ints){0};
+            npem_evals = 0;
+            pem_sccs(roots, nroots, NULL, pem_number);
+            PUSH(comp_at.v, comp_at.n, comp_nodes.n);
+            if (nworkers > 1 && npem_evals > OFFER_FORK) {
+                stop_workers();   /* to fork with this group's product */
+                run_level(0, nstates, BATCH, 0, OFFERS);
+            }
             noffers = 0;
-            pem_sccs(roots, nroots, NULL, pem_offer);
+            for (int c = 0; c + 1 < comp_at.n; c++) pem_offer(comp_nodes.v + comp_at.v[c], comp_at.v[c + 1] - comp_at.v[c]);
         }
         int njob = 0;
         pem_job = NEWN(int, d.n);
@@ -15740,11 +15821,16 @@ static int pem_violated(void) {
                 done[j] = 1;
                 if (!offered || pem_possible(&pems[j])) pem_job[njob++] = j;
             }
+        int nfilled = filled.n;   /* the workers fill the <>[] actions neither the offers nor a search took */
+        for (int k = 0; k < njob && !offered; k++)
+            for (int j = 0; j < pems[pem_job[k]].ea.n; j++)
+                if (tf_has(pems[pem_job[k]].ea.v[j], 0)) tfl_add(&filled, pems[pem_job[k]].ea.v[j]);
         signed char *found = NULL;
         if (nworkers > 1 && njob > 1) {
             pem_found = found = shared((size_t)njob);
-            pem_models = pems, pem_roots = roots, pem_nroots = nroots;
+            pem_models = pems, pem_njob = njob, pem_roots = roots, pem_nroots = nroots;
             stop_workers();   /* to fork with this group's product */
+            if (filled.n > nfilled) run_level(0, nstates, BATCH, 0, STEPS);
             run_level(0, njob, 1, 0, PEMS);
         }
         for (int k = 0; k < njob; k++) {
