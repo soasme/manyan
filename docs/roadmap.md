@@ -64,10 +64,12 @@ TLC's output; the other four are explained in [fullbench](fullbench.md).
    its time evaluating, about 148 tree nodes per state
    ([optimizations](optimizations.md#where-the-time-goes-now)). Resolve
    variables and bound names to slots before the search, and fuse common
-   shapes such as `f[x]` and comparisons of integers into one node. This
-   speeds up every spec, and it should win back the 1–3% that
-   `assignable`'s search for names cost log, recursion and symmetry in
-   0.6.1, and the 2–4% that the search's regions cost closure in 0.7.0.
+   shapes into one node. This speeds up every spec, and it should win
+   back the 1–3% that `assignable`'s search for names cost log, recursion
+   and symmetry in 0.6.1, and the 2–4% that the search's regions cost
+   closure in 0.7.0. Done: integer comparisons and arithmetic, and `x[k]`
+   of a variable (refinement and recursion 7%, counters 5%). Left: bound
+   names, which closure spends a tenth of its time finding.
 2. **The serial part left with workers**
    ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
    evaluate a property's fairness on the states and edges in parallel,

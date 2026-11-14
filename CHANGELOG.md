@@ -1,3 +1,10 @@
+unreleased:
+
+- faster evaluation: Naturals' `<`, `\leq`, `>`, `\geq`, `+`, `-` and `*`
+  of two integers are computed where they are called, and `x[k]` of a
+  variable reads the state directly. refinement 7%, recursion 7%,
+  counters 5% faster with one worker
+
 2026-11-14 0.11.0:
 
 - experimental: `-typecheck` checks a module's types as Apalache's
