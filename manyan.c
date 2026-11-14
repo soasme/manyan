@@ -6406,7 +6406,8 @@ static __attribute__((noinline)) Value *ev_fcn(Expr *e, Ctx c) {
 static Value *apply_parts(Expr *e, Ctx c, int lazy, const char *in, Value **key) {
     Expr *fe = e->args[0];
     Value *f = NULL;
-    if (!(lazy && fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement && !fe->def->cache)) {
+    if (fe->kind == K_DECL && fe->def->kind == D_VAR && !c.inst) f = decl_value(fe->def, c, fe);   /* a variable: no laziness to keep */
+    else if (!(lazy && fe->kind == K_CALL && fe->def->kind == D_FCN && !fe->def->replacement && !fe->def->cache)) {
         int keep = keep_lazy;
         keep_lazy = lazy;
         f = eval(fe, c);
