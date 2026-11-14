@@ -71,7 +71,10 @@ TLC's output; the other four are explained in [fullbench](fullbench.md).
    of a variable (refinement and recursion 7%, counters 5%). Slots for
    bound names are not worth it: a lookup takes 1.0 to 1.7 steps of the
    environment on the bench (at most 3), and handling one without a call
-   moved partition +4% in cycles.
+   moved partition +4% in cycles. Nor closure's: its time is in the sets of
+   `Reach` (`x \in S` of an atom without `set_member` took 0.5% of its
+   instructions but moved it +1.2% with the profile, and its regions keep
+   about two open at a `force` that must mark them).
 2. **The serial part left with workers**
    ([optimizations](optimizations.md#open-where-tlc-gains-more-from-workers)):
    evaluate a property's fairness on the states and edges in parallel,
