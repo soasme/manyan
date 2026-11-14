@@ -54,11 +54,11 @@ from TLC.
 - Compile Manyan to WebAssembly for a browser playground, where anyone can paste
   a spec and check it with nothing installed.
 
-## Next: 0.11.0
+## Next: 0.12.0
 
-In the order of the goals above. 0.7.0 brought the Examples to TLC's
-output: 167 of the 174 checked give it, and the other seven are explained
-in [fullbench](fullbench.md).
+In the order of the goals above. 0.11.0 brought liveness counterexamples to
+TLC's on 897 of 900 random graphs, and 172 of the 176 Examples checked to
+TLC's output; the other four are explained in [fullbench](fullbench.md).
 
 1. **Fewer, cheaper nodes in evaluation.** Counters spends about 60% of
    its time evaluating, about 148 tree nodes per state
