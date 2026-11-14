@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 4, col 8 to line 4, col 35 of module tlceval_tuple_domain failed.
+Attempted to apply function:
+<<1, 2>>
+to argument 3, which is not in the domain of the function.
+exit 10

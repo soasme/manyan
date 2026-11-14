@@ -8020,7 +8020,23 @@ NATIVE(n_tostring) {
     return mk_str(intern(s));
 }
 
-NATIVE(n_tlceval) { UNUSED; return a[0]; }
+/* TLCEval(v): v as TLC converts it, a set enumerated and a function
+   computed (toSetEnum, else toFcnRcd): a tuple, record or [x \in S |-> e]
+   becomes a function of its pairs. */
+NATIVE(n_tlceval) {
+    UNUSED;
+    Value *v = a[0];
+    if (v->kind == V_INTERVAL) return enumerate(v);
+    if (v->kind == V_LAMBDA && !set_is_infinite(v->u.l.a)) v = realize(v);
+    if (v->kind != V_TUPLE && (v->kind != V_FCN || v->made == MADE_PLAIN)) return v;
+    Value *f = mk_fcn(v->n);
+    for (int i = 0; i < v->n; i++) {
+        f->u.fcn.keys[i] = v->kind == V_TUPLE ? mk_int(i + 1) : v->u.fcn.keys[i];
+        f->u.fcn.vals[i] = v->u.fcn.vals[i];
+    }
+    f->range = v->kind == V_TUPLE ? v->n > 0 : v->made != MADE_RECORD && v->range;
+    return f;
+}
 
 /* TLCExt's operators. */
 NATIVE(n_asserterror);   /* after the evaluation's saved state */

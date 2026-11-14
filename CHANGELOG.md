@@ -10,6 +10,9 @@ unreleased:
   its place. Under `VIEW` or symmetry, the steps regenerated for a
   property's actions neither print nor stay in memory. An operator prints
   as `<Operator Name>`
+- `TLCEval` converts its value as TLC does: an interval to its elements,
+  a tuple, record or `[x \in S |-> e]` to a function of its pairs, which
+  fails as a function when applied outside its domain
 - TLC's command lines: `-inv EXPR` and `-invlevel N` add an invariant,
   `-postCondition M!Op` a postcondition, and `-dumpTrace json FILE`
   writes the counterexample in TLC's JSON, as TLC's `_JsonTrace` does;
