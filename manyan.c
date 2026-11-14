@@ -636,6 +636,7 @@ static int is_fcn(Value *v) { return v->kind == V_TUPLE || v->kind == V_FCN; }
 
 /* ---------------------------------------------------------------- printing */
 
+static const char *def_name(Def *d);
 static void print_value(Buf *b, Value *v);
 static Value *realize_lambda(Value *f);
 static void realize_both(Value **a, Value **b);
@@ -832,7 +833,7 @@ static void print_value(Buf *b, Value *v) {
         }
         return;
     case V_OPER:
-        if (!v->u.op.table) { buf_puts(b, "<operator>"); return; }
+        if (!v->u.op.table) { buf_printf(b, "<Operator %s>", def_name(v->u.op.def)); return; }
         buf_puts(b, "{ ");
         for (int i = 0; i < v->u.op.table->n; i++) {
             Value *line = v->u.op.table->u.fcn.vals[i];
@@ -5540,6 +5541,8 @@ static Value *force(Env *b) {
     return v;
 }
 
+static const char *def_name(Def *d) { return S(d->name); }
+
 static Value *mk_oper(Def *d, Ctx c) {
     Value *v = NEW(Value);
     v->kind = V_OPER;
@@ -6971,12 +6974,14 @@ NATIVE(n_defined) { UNUSED; return NULL; }   /* marks a Def whose native is d->a
 static const char *java_class(Value *v);
 
 /* Each argument cast to its parameter's class, as Java invokes TLC's
-   method: a StringValue parameter takes only a string; a Value, anything. */
+   method: a StringValue parameter takes only a string; a Value, anything;
+   an OpValue, any operator. */
 static void java_cast(const char *java, Value **args, int n) {
     const char *p = strchr(java, '(');
     for (int i = 0; p && i < n; i++, p = strchr(p, ',')) {
         const char *t = ++p, *end = t + strcspn(t, ",)");
         if (strncmp(t, "tlc2.value.impl.", 16) || (end - t == 21 && !strncmp(t + 16, "Value", 5))) continue;
+        if (end - t == 23 && !strncmp(t + 16, "OpValue", 7) && args[i]->kind == V_OPER) continue;
         const char *cls = java_class(args[i]);
         if ((size_t)(end - t - 16) != strlen(cls) || strncmp(t + 16, cls, strlen(cls)))
             fail("Cannot cast tlc2.value.impl.%s to %.*s", cls, (int)(end - t), t);
@@ -7150,6 +7155,13 @@ Value *manyan_format(ManyanCall *call, const char *fmt, size_t n, const char *co
 }
 
 Value *manyan_arg(ManyanCall *call, int i) { return realize(call->args ? call->args[i] : eval(call->call->args[i], call->c)); }
+
+Value *manyan_apply(ManyanCall *call, Value *op, size_t n, Value *const *args) {
+    if (op->kind != V_OPER) return op;   /* as TLC, a value applied is the value */
+    Value **a = NEWN(Value *, n + 1);
+    memcpy(a, args, sizeof(Value *) * n);
+    return apply_oper(op, a, (int)n, call->call);
+}
 
 void manyan_fail(ManyanCall *call, const char *fmt, ...) {
     (void)call;
@@ -10903,12 +10915,20 @@ static Value *tlc_revision(void) {
 /* TLCGet's counters of the search, -1 for another key. As TLC, a new
    successor joins the queue once checked; a simulation counts none but
    the time. */
+static int last_seen(int s);
+static int live_expanded = -1;   /* see search_counter */
 static int64_t search_counter(const char *key) {
     if (!strcmp(key, "duration")) return time(NULL) - started;
     int which = !strcmp(key, "distinct") ? 1 : !strcmp(key, "queue") ? 2 : !strcmp(key, "diameter") ? 3
               : !strcmp(key, "generated") && checking_posts ? 4 : 0;
     if (!which || simulating) return -1;
     if (in_worker) worker_cannot();   /* the counts are the search's, not a worker's */
+    /* In an atom of a temporal property on state live_expanded or a step
+       from it, the counts as TLC checks it: once it has expanded the state. */
+    if (live_expanded >= 0 && which <= 2) {
+        int found = last_seen(live_expanded) + 1;
+        return which == 1 ? found : found - live_expanded - 1;
+    }
     return which == 1 ? nstates : which == 2 ? nstates - expanded - violation_fresh : which == 3 ? max_depth : generated;
 }
 
@@ -10921,6 +10941,7 @@ static int live_error(void);
 static long *gen_after;
 static int ngen_after;
 static int live_cut = -1;   /* the state TLC stopped expanding at in its temporal checks */
+static void print_counts_after(int s);
 static void note_expanded(int idx) {
     if (!ntemporal_props) return;
     if (idx >= ngen_after) {
@@ -10930,11 +10951,11 @@ static void note_expanded(int idx) {
     gen_after[idx] = generated;
 }
 
-/* TLC adds a deadlocked state to its temporal checks after reporting it:
-   a finite counterexample ending there is reported too. Returns whether
-   one was. */
-static int live_after_deadlock(int idx) {
-    note_expanded(idx);
+/* Whether TLC's temporal checks stop at a finite counterexample once the
+   first n states are expanded; if so it is printed. */
+static int live_cut_in(int n) {
+    int saved_expanded = expanded;
+    expanded = n;
     Arena *saved = arena;
     arena = &perm_arena;
     collect_fairnesses();
@@ -10944,16 +10965,41 @@ static int live_after_deadlock(int idx) {
     if (!sigsetjmp(live, 0)) found = live_cut_violated() != 0;
     handler = NULL;
     arena = saved;
+    expanded = saved_expanded;
     return found;
+}
+
+/* After a finite counterexample: as TLC, which stops its temporal checks
+   with an exception it reports with -continue. */
+static int cut_reported(int violated) {
+    check_posts(1);
+    if (keep_going) {
+        print_exception("tlc2.tool.INextStateFunctor$InvariantViolatedException", ": Invariant violated\n");
+        print_trace(live_cut, NULL, 0);
+        violated = MANYAN_ERROR;
+    }
+    print_counts_after(live_cut);
+    return violated;
+}
+
+/* The last state TLC had found once state s had been expanded, as the
+   states are numbered in the order it finds them. */
+static int *seen_after, nseen_after;
+static int last_seen(int s) {
+    for (; nseen_after <= s; nseen_after++) {
+        int seen = nseen_after ? seen_after[nseen_after - 1] : 0, i = nseen_after;
+        if (!i) while (seen + 1 < nstates && states[seen + 1].parent == -1) seen++;
+        for (int e = 0; e < states[i].nedges; e++) if (states[i].edges[2 * e] > seen) seen = states[i].edges[2 * e];
+        seen_after = xrealloc(seen_after, sizeof(int) * (size_t)(nseen_after + 1));
+        seen_after[nseen_after] = seen;
+    }
+    return seen_after[s];
 }
 
 /* The counts TLC reports when it stops in its temporal checks, once
    state s had been expanded. */
 static void print_counts_after(int s) {
-    int seen = 0;
-    while (seen + 1 < nstates && states[seen + 1].parent == -1) seen++;
-    for (int i = 0; i <= s; i++)
-        for (int e = 0; e < states[i].nedges; e++) if (states[i].edges[2 * e] > seen) seen = states[i].edges[2 * e];
+    int seen = last_seen(s);
     printf("%ld states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
     printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
 }
@@ -10979,6 +11025,9 @@ static int expand_state(int idx) {
         }
     }
     if (succ_count == 0 && check_deadlock) {
+        /* TLC stops at a finite counterexample before the deadlocked state;
+           it adds that state to its temporal checks after reporting it. */
+        if (ntemporal_props && live_cut_in(idx)) return cut_reported(MANYAN_VIOLATION_SAFETY);
         printf("Error: Deadlock reached.\n");
         print_trace(idx, NULL, 0);
         trace_states(idx, NULL, 0, 0);
@@ -10986,7 +11035,7 @@ static int expand_state(int idx) {
            stops its temporal checks with an exception it reports; it
            replays the step, deadlocked again. */
         int again = check_posts(1) < 0;
-        if (!again && ntemporal_props && live_after_deadlock(idx) && keep_going) {
+        if (!again && ntemporal_props && (note_expanded(idx), live_cut_in(idx + 1)) && keep_going) {
             print_exception("tlc2.tool.INextStateFunctor$InvariantViolatedException", ": Invariant violated\n");
             print_trace(idx, NULL, 0);
             again = 1;
@@ -11781,17 +11830,10 @@ static int search(void) {
         handler = &live;
         if (sigsetjmp(live, 0)) return live_error();
         int violated = live_violated();
+        if (violated == MANYAN_VIOLATION_SAFETY) return cut_reported(violated);
         if (violated) {
             check_posts(1);
-            if (violated == MANYAN_VIOLATION_SAFETY && keep_going) {
-                /* TLC stops its temporal checks with an exception, which it
-                   reports with -continue. */
-                print_exception("tlc2.tool.INextStateFunctor$InvariantViolatedException", ": Invariant violated\n");
-                print_trace(live_cut, NULL, 0);
-                violated = MANYAN_ERROR;
-            }
-            if (violated != MANYAN_VIOLATION_LIVENESS) print_counts_after(live_cut);
-            else print_counts(exit_requested ? nstates - expanded : 0);
+            print_counts(exit_requested ? nstates - expanded : 0);
             return violated;
         }
         handler = &here;
@@ -13955,10 +13997,20 @@ static int atom_holds(TF *t, int s, int to) { return atom_holds_on(t, s, state_v
 static signed char *state_atom(TF *t, int s) { return &atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index]; }
 static signed char *step_atom(TF *t, int s, int e) { return &atom_cache[step_atoms[s] + (size_t)e * (size_t)natoms + (size_t)t->index]; }
 
+/* t in state s, or on a step from it, with TLCGet's counts as TLC's when
+   it checks it: once it has expanded s. */
+static int holds_at(TF *t, int s, Value **next) {
+    int saved = live_expanded;
+    live_expanded = s;
+    int v = holds_in(t->atom, t->c, state_values(s), next);
+    live_expanded = saved;
+    return v;
+}
+
 /* t on the state graph's step e of s, to the state `to`. */
 static int atom_holds_edge(TF *t, int s, int e, int to) {
     signed char *slot = step_atom(t, s, e);
-    if (!*slot) *slot = (signed char)(holds_in(t->atom, t->c, state_values(s), state_values(to)) ? 2 : 1);
+    if (!*slot) *slot = (signed char)(holds_at(t, s, state_values(to)) ? 2 : 1);
     return (*slot == 2) != t->neg;
 }
 
@@ -13966,10 +14018,10 @@ static int atom_holds_on(TF *t, int s, Value **next) {
     int v;
     if (!t->action) {
         signed char *slot = state_atom(t, s);
-        if (!*slot) *slot = (signed char)(holds_in(t->atom, t->c, state_values(s), NULL) ? 2 : 1);
+        if (!*slot) *slot = (signed char)(holds_at(t, s, NULL) ? 2 : 1);
         v = *slot == 2;
     } else {
-        v = holds_in(t->atom, t->c, state_values(s), next);
+        v = holds_at(t, s, next);
     }
     return v != t->neg;
 }
@@ -14005,9 +14057,12 @@ static void worker_atoms(int lo, int hi) {
    first with its fingerprint, which may be a permutation of it or another
    state with its view, so an action
    is evaluated, as TLC does, on the successors themselves: a state's
-   successors, regenerated once, with their fingerprints. */
-typedef struct { int n; Value ***v; uint64_t *fp; } Successors;
-static Successors *real_succ;
+   successors, regenerated once without printing, as TLC generated them
+   once, with their fingerprints and the action atoms on the step to each
+   (2 if it holds, else 1), at natoms each. */
+typedef struct { int n; uint64_t *fp; signed char *holds; } Successors;
+static Successors *real_succ;   /* each state's, for the atoms set up */
+static int nreal_succ;
 static List real_found;
 
 static int real_emit(void) {
@@ -14018,24 +14073,37 @@ static int real_emit(void) {
 
 static Successors *real_successors(int s) {
     Successors *r = &real_succ[s];
-    if (r->v) return r;
+    if (r->fp) return r;
     Value **saved_cur = cur_state, **saved_next = next_state, **saved_target = gen_target;
-    int (*saved_emit)(void) = gen_emit;
+    int (*saved_emit)(void) = gen_emit, quiet = reprinting;
+    Arena *saved = arena;
+    arena = &scratch_arena;   /* the successors are dropped once their atoms are known */
+    Region *region = region_open();
     Value **st = NEWN(Value *, nvars);
-    real_found = (List){0};   /* its storage is the arena's, which a simulation resets */
+    real_found = (List){0};   /* its storage is the arena's */
     gen_emit = real_emit;
     gen_target = st;
     cur_state = state_values(s);
+    reprinting = 1;
     for (int a = 0; a < nactions; a++) {
         memset(st, 0, sizeof(Value *) * (size_t)nvars);
         next_state = st;
         gen(actions[a].e, actions[a].c, NULL);
     }
+    reprinting = quiet;
     cur_state = saved_cur; next_state = saved_next; gen_target = saved_target; gen_emit = saved_emit;
-    r->n = real_found.n;
-    r->v = NEWN(Value **, r->n + 1);
-    r->fp = NEWN(uint64_t, r->n + 1);
-    for (int i = 0; i < r->n; i++) { r->v[i] = (Value **)real_found.v[i]; r->fp[i] = fingerprint(r->v[i]); }
+    int n = real_found.n;
+    uint64_t *fp = xcalloc((size_t)n + 1, sizeof(uint64_t));
+    signed char *holds = xcalloc((size_t)n * (size_t)natoms + 1, 1);
+    for (int k = 0; k < n; k++) {
+        Value **next = (Value **)real_found.v[k];
+        fp[k] = fingerprint(next);
+        for (int i = 0; i < natoms; i++)
+            if (atoms[i]->action && atoms[i]->index == i) holds[(size_t)k * (size_t)natoms + (size_t)i] = (signed char)(holds_at(atoms[i], s, next) ? 2 : 1);
+    }
+    region_close(region);
+    arena = saved;
+    *r = (Successors){n, fp, holds};
     return r;
 }
 
@@ -14062,11 +14130,10 @@ static int tnode_step(int n, int s, int e, int to) {
     Successors *r = real_successors(s);
     for (int k = -1; k < r->n; k++) {
         if (k < 0 ? to != s : r->fp[k] != states[to].fp) continue;
-        Value **next = k < 0 ? state_values(s) : r->v[k];
         int ok = 1;
         for (int i = 0; i < tnodes[n].nlits && ok; i++) {
             TF *t = tnodes[n].lits[i];
-            ok = !t->action || atom_holds_on(t, s, next);
+            ok = !t->action || (k < 0 ? atom_holds_on(t, s, state_values(s)) : (r->holds[(size_t)k * (size_t)natoms + (size_t)t->index] == 2) != t->neg);
         }
         if (ok) return 1;
     }
@@ -15326,6 +15393,10 @@ static void collect_fairnesses(void) {
 
 /* An empty cache for the natoms atoms on each state and step. */
 static void atom_cache_reset(void) {
+    for (int s = 0; s < nreal_succ; s++) free(real_succ[s].fp), free(real_succ[s].holds);
+    free(real_succ);
+    real_succ = xcalloc((size_t)nstates + 1, sizeof(Successors));
+    nreal_succ = nstates;
     size_t n = (size_t)nstates * (size_t)natoms;
     free(step_atoms);
     step_atoms = xmalloc(sizeof(size_t) * (size_t)(nstates + 1));
@@ -15353,8 +15424,6 @@ static TF *live_setup(int p) {
 static int live_cut_violated(void) {
     free(decoded);
     decoded = xcalloc((size_t)nstates, sizeof(Value **));
-    free(real_succ);
-    real_succ = xcalloc((size_t)nstates, sizeof(Successors));
     int first = -1, at = -1;   /* the last set up is the first property, whose product the check takes on */
     for (int p = ntemporal_props - 1; p >= 0; p--) {
         int node, s = live_cut_at(live_setup(p), &node);

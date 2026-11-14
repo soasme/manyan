@@ -1,0 +1,5 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 52 of module folds_fold_bag_count failed.
+Applying FoldBag to the following value,
+which is not an element of Nat:
+0 (in: "a":>0)
+exit 10

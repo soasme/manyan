@@ -118,6 +118,8 @@ void *manyan_alloc(size_t);   /* zeroed memory that lives as values do: never fr
    the native's, as manyan_throw. */
 ManyanValue *manyan_format(ManyanCall *, const char *fmt, size_t n, const char *const *args);
 ManyanValue *manyan_arg(ManyanCall *, int i);       /* a MANYAN_LAZY native's argument i, evaluated */
+/* op, an operator argument (MANYAN_OTHER), applied to n values, as TLC's OpValue.eval. */
+ManyanValue *manyan_apply(ManyanCall *, ManyanValue *op, size_t n, ManyanValue *const *args);
 /* An error in the native: manyan_fail one TLC reports as its own, as an
    EvalException; manyan_throw another exception of its Java, which TLC
    reports with the method that threw it. */

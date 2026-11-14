@@ -1,5 +1,15 @@
 unreleased:
 
+- etcd's raft trace validation gives TLC's output. CommunityModules'
+  `FoldSeq`, `SelectInSeq`, `SelectInSubSeq`, `SelectLastInSeq`,
+  `SelectLastInSubSeq`, `IsPrefix`, `FoldBag`, `FoldFunction` and
+  `FoldFunctionOnSet` are computed in C, as TLC's Java; `manyan_apply`
+  applies an operator argument in the C API. `TLCGet`'s counts in a
+  temporal property's atoms are TLC's once it has expanded the state, and
+  a finite counterexample found before a deadlocked state is reported in
+  its place. Under `VIEW` or symmetry, the steps regenerated for a
+  property's actions neither print nor stay in memory. An operator prints
+  as `<Operator Name>`
 - TLC's command lines: `-inv EXPR` and `-invlevel N` add an invariant,
   `-postCondition M!Op` a postcondition, and `-dumpTrace json FILE`
   writes the counterexample in TLC's JSON, as TLC's `_JsonTrace` does;

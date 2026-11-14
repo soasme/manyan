@@ -28,11 +28,13 @@ gives, error messages included.
 
 | module | operators |
 |---|---|
+| BagsExt | `FoldBag` |
 | CSV | `CSVWrite`, `CSVWriteRecord`, `CSVRead`, `CSVRecords` (a line too short for `CSVRead`'s columns fails in `CSVRead`, where TLC fails when the record is used) |
+| Functions | `FoldFunction`, `FoldFunctionOnSet` |
 | Graphs | `SimplePath`, `AreConnectedIn`, `IsStronglyConnected` |
 | IOUtils | `IOEnv`, `atoi`, `IOExec`, `IOEnvExec`, `Serialize` (format `TXT`; another format is the definition's) |
 | Json | `ToJson`, `ToJsonArray`, `ToJsonObject`, `JsonSerialize`, `ndJsonSerialize`, `JsonDeserialize`, `ndJsonDeserialize` (a record literal in an `ASSUME` is written in TLC's order, where TLC writes it as written) |
-| SequencesExt | `SetToSeq` |
+| SequencesExt | `SetToSeq`, `FoldSeq`, `SelectInSeq`, `SelectInSubSeq`, `SelectLastInSeq`, `SelectLastInSubSeq`, `IsPrefix` |
 | Statistics | `ChiSquare` |
 | SVG | `SVGElemToString`, `NodeOfRingNetwork` |
 | UndirectedGraphs | `ConnectedComponents` |
@@ -77,8 +79,9 @@ made them; a native keeps none past its return. An error does not return:
 prints as it is, and `manyan_throw` for another exception, which TLC prints
 under the Java method that threw it, so memory a native needs across one
 comes from `manyan_alloc`, which lives as values do. `manyan_format` is Java's
-`String.format` on strings, and `manyan_to_string` a value as TLC's
-`toString` writes it, on one line.
+`String.format` on strings, `manyan_to_string` a value as TLC's
+`toString` writes it, on one line, and `manyan_apply` an operator passed as
+an argument, as the folds apply theirs.
 
 Each new native gets a test in `tests/spec/stdlib`, its expected output
 from TLC with the CommunityModules jar (`make bless`), and a stub of the

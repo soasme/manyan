@@ -21,6 +21,7 @@
 #define J_V "tlc2.value.impl.Value"
 #define J_S "tlc2.value.impl.StringValue"
 #define J_I "tlc2.value.impl.IntValue"
+#define J_OP "tlc2.value.impl.OpValue"
 #define J_EVAL "tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context," \
                "tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel"
 
@@ -217,6 +218,123 @@ static ManyanValue *set_to_seq(ManyanCall *call, ManyanValue **a) {
     ManyanValue *t = manyan_tuple(l.n, l.v);
     free(l.v);
     return t;
+}
+
+/* A function's fold, as Functions' FoldFunction: op(f[k], acc) for each k
+   of its domain in TLC's order, from base. */
+static ManyanValue *fold_function(ManyanCall *call, ManyanValue **a) {
+    ManyanKind k = manyan_kind(a[2]);
+    if (k != MANYAN_TUPLE && k != MANYAN_FUNCTION)
+        manyan_fail(call, "The third argument of FoldFunction should be a function, but instead it is:\n%s", manyan_print(a[2]));
+    ManyanValue *acc = a[1];
+    for (size_t i = 0; i < manyan_size(a[2]); i++) {
+        ManyanValue *args[2] = {manyan_value(a[2], i), acc};
+        acc = manyan_apply(call, a[0], 2, args);
+    }
+    return acc;
+}
+
+/* f[x], or TLC's error applying f outside its domain. */
+static ManyanValue *apply_at(ManyanCall *call, ManyanValue *f, ManyanValue *x) {
+    size_t lo = 0, hi = manyan_size(f);   /* its keys in TLC's order: sorted */
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        ManyanValue *key = manyan_key(f, mid);
+        int c = manyan_kind(key) == manyan_kind(x) ? manyan_compare(key, x) : (int)manyan_kind(key) - (int)manyan_kind(x);
+        if (!c) return manyan_value(f, mid);
+        if (c < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    manyan_fail(call, "Attempted to apply function:\n%s\nto argument %s, which is not in the domain of the function.",
+                manyan_print(f), manyan_print(x));
+}
+
+/* FoldFunctionOnSet(op, base, f, S): FoldFunction's on the keys in S. */
+static ManyanValue *fold_function_on_set(ManyanCall *call, ManyanValue **a) {
+    ManyanKind k = manyan_kind(a[2]);
+    if (k != MANYAN_TUPLE && k != MANYAN_FUNCTION)
+        manyan_fail(call, "The third argument of FoldFunctionOnSet should be a function, but instead it is:\n%s", manyan_print(a[2]));
+    ManyanValue *keys = manyan_elements(a[3]), *acc = a[1];
+    if (!keys) manyan_fail(call, "The fourth argument of FoldFunctionOnSet should be a set, but instead it is:\n%s", manyan_print(a[3]));
+    for (size_t i = 0; i < manyan_size(keys); i++) {
+        ManyanValue *args[2] = {apply_at(call, a[2], manyan_element(keys, i)), acc};
+        acc = manyan_apply(call, a[0], 2, args);
+    }
+    return acc;
+}
+
+/* SelectInSeq(s, Test), SelectInSubSeq(s, from, to, Test) and their Last
+   forms: the index of the first (last) element of s, from..to, Test
+   holds for, or 0; with TLC's errors, whose words differ from one to
+   another. */
+static ManyanValue *select_in(ManyanCall *call, ManyanValue **a, const char *op, int sub, int last) {
+    ManyanValue *s = to_tuple(a[0]), *test = a[sub ? 3 : 1];
+    if (!s) manyan_fail(call, "The first argument of %s should be a sequence, but instead it is:\n%s", op, manyan_print(a[0]));
+    int64_t n = (int64_t)manyan_size(s), from = 1, to = n;
+    for (int i = 1; sub && i <= 2; i++) {
+        const char *pos = i == 1 ? "second" : "third";
+        if (manyan_kind(a[i]) != MANYAN_INT)
+            manyan_fail(call, "The %s argument of %s should be a natural, but instead it is:\n%s", pos, op, manyan_print(a[i]));
+    }
+    if (sub) {
+        from = manyan_int_value(a[1]), to = manyan_int_value(a[2]);
+        if (from > to) return manyan_int(0);
+        for (int i = 1; i <= 2; i++) {
+            int64_t k = i == 1 ? from : to;
+            if (k < 1 || k > n)
+                manyan_fail(call, "The %s argument of %s must be in the domain of its first argument:\n%s\n, but instead it is\n%s",
+                            i == 1 ? "second" : "third", op, manyan_print(a[0]), manyan_print(a[i]));
+        }
+    }
+    for (int64_t k = last ? to : from; last ? k >= from : k <= to; k += last ? -1 : 1) {
+        ManyanValue *x = manyan_value(s, (size_t)(k - 1)), *r = manyan_apply(call, test, 1, &x);
+        if (manyan_kind(r) != MANYAN_BOOL)
+            manyan_fail(call, "The %s argument of %s should be a boolean-valued %s, but instead it is:\n%s",
+                        sub ? "fourth" : "third", op, last ? "function" : "operator", manyan_print(test));
+        if (manyan_is_true(r)) return manyan_int(k);
+    }
+    return manyan_int(0);
+}
+static ManyanValue *select_in_seq(ManyanCall *call, ManyanValue **a) { return select_in(call, a, "SelectInSeq", 0, 0); }
+static ManyanValue *select_in_sub_seq(ManyanCall *call, ManyanValue **a) { return select_in(call, a, "SelectInSubSeq", 1, 0); }
+static ManyanValue *select_last_in_seq(ManyanCall *call, ManyanValue **a) { return select_in(call, a, "SelectLastInSeq", 0, 1); }
+static ManyanValue *select_last_in_sub_seq(ManyanCall *call, ManyanValue **a) { return select_in(call, a, "SelectLastInSubSeq", 1, 1); }
+
+/* BagsExt's FoldBag(op, base, B): op(acc, e) for each copy of each
+   element e of B, in TLC's order, from base. */
+static ManyanValue *fold_bag(ManyanCall *call, ManyanValue **a) {
+    ManyanKind k = manyan_kind(a[2]);
+    if (k != MANYAN_TUPLE && k != MANYAN_FUNCTION)
+        manyan_fail(call, "The third argument of FoldBag should be a bag, but instead it is:\n%s", manyan_print(a[2]));
+    ManyanValue *acc = a[1];
+    for (size_t i = 0; i < manyan_size(a[2]); i++) {
+        ManyanValue *e = manyan_key(a[2], i), *c = manyan_value(a[2], i);
+        if (manyan_kind(c) != MANYAN_INT || manyan_int_value(c) <= 0)
+            manyan_fail(call, "Applying FoldBag to the following value,\nwhich is not an element of Nat:\n%s (in: %s:>%s)",
+                        manyan_print(c), manyan_print(e), manyan_print(c));
+        for (int64_t j = 0; j < manyan_int_value(c); j++) {
+            ManyanValue *args[2] = {acc, e};
+            acc = manyan_apply(call, a[0], 2, args);
+        }
+    }
+    return acc;
+}
+
+/* IsPrefix(s, t): of strings, or of sequences, element by element. */
+static ManyanValue *is_prefix(ManyanCall *call, ManyanValue **a) {
+    if (manyan_kind(a[0]) == MANYAN_STRING && manyan_kind(a[1]) == MANYAN_STRING) {
+        size_t m, n;
+        const char *s = manyan_string_value(a[0], &m), *t = manyan_string_value(a[1], &n);
+        return manyan_bool(m <= n && !memcmp(s, t, m));
+    }
+    ManyanValue *s = to_tuple(a[0]), *t = to_tuple(a[1]);
+    if (!s || !t) manyan_throw(call, "Cannot invoke \"tlc2.value.impl.TupleValue.size()\" because \"%s\" is null", !s ? "s" : "t");
+    if (manyan_size(s) > manyan_size(t)) return manyan_bool(0);
+    for (size_t i = 0; i < manyan_size(s); i++) {
+        ManyanValue *x = manyan_value(s, i), *y = manyan_value(t, i);
+        if (manyan_kind(x) != manyan_kind(y) || manyan_compare(x, y)) return manyan_bool(0);
+    }
+    return manyan_bool(1);
 }
 
 /* ---------------------------------------------------------------- SVG */
@@ -1063,6 +1181,18 @@ int manyan_std_init(void) {
         {"IOUtils", "Serialize", MANYAN_LAZY, serialize,
          "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
         {"SequencesExt", "SetToSeq", 1, set_to_seq, OVERRIDE("SequencesExt", "SetToSeq(" J_V ")")},
+        {"SequencesExt", "FoldSeq", 3, fold_function, OVERRIDE("SequencesExt", "foldSeq(" J_OP "," J_V "," J_V ")")},
+        {"SequencesExt", "SelectInSeq", 2, select_in_seq, OVERRIDE("SequencesExt", "selectInSeq(" J_V "," J_OP ")")},
+        {"SequencesExt", "SelectInSubSeq", 4, select_in_sub_seq,
+         OVERRIDE("SequencesExt", "SelectInSubSeq(" J_V "," J_V "," J_V "," J_OP ")")},
+        {"SequencesExt", "SelectLastInSeq", 2, select_last_in_seq, OVERRIDE("SequencesExt", "selectLastInSeq(" J_V "," J_OP ")")},
+        {"SequencesExt", "SelectLastInSubSeq", 4, select_last_in_sub_seq,
+         OVERRIDE("SequencesExt", "SelectLastInSubSeq(" J_V "," J_V "," J_V "," J_OP ")")},
+        {"SequencesExt", "IsPrefix", 2, is_prefix, OVERRIDE("SequencesExt", "isPrefix(" J_V "," J_V ")")},
+        {"BagsExt", "FoldBag", 3, fold_bag, OVERRIDE("BagsExt", "foldBag(" J_OP "," J_V "," J_V ")")},
+        {"Functions", "FoldFunction", 3, fold_function, OVERRIDE("Functions", "foldFunction(" J_OP "," J_V "," J_V ")")},
+        {"Functions", "FoldFunctionOnSet", 4, fold_function_on_set,
+         OVERRIDE("Functions", "foldFunctionOnSet(" J_OP "," J_V "," J_V "," J_V ")")},
         {"SVG", "SVGElemToString", 1, svg_elem_to_string, OVERRIDE("SVG", "SVGElemToString(" J_V ")")},
         {"SVG", "NodeOfRingNetwork", 5, ring_network, OVERRIDE("SVG", "ringNetwork(" J_I "," J_I "," J_I "," J_I "," J_I ")")},
         {"Json", "JsonDeserialize", 1, json_deserialize,

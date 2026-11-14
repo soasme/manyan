@@ -1,0 +1,4 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 53 of module folds_select_boolean failed.
+The third argument of SelectLastInSeq should be a boolean-valued function, but instead it is:
+<Operator LAMBDA>
+exit 10

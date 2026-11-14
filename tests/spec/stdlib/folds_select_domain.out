@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 61 of module folds_select_domain failed.
+The third argument of SelectInSubSeq must be in the domain of its first argument:
+<<1, 2>>
+, but instead it is
+3
+exit 10
