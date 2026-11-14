@@ -2135,6 +2135,7 @@ struct Def {
     Native native;
     ManyanNative api;        /* a native of manyan_define: native is then n_defined, which marks it */
     int lazy;             /* a native of TLC's evaluation methods: it evaluates the call's arguments itself, unless given values */
+    char intop;           /* a native of Naturals on two integers: '<', 'l' (\leq), '>', 'g' (\geq), '+', '-', '*' */
     const char *java;     /* a native's Java method in TLC, as TLC prints it */
     int var_index;        /* D_VAR of the root: index in the state, or -1 */
     Value *value;         /* the configured value of a constant or definition */
@@ -6021,9 +6022,29 @@ static int plain_args(Def *d, Expr *e, Ctx c, Value **vals) {
     return 1;
 }
 
+/* x op y of Naturals' operators on two integers, computed here; any other
+   arguments, or an overflow, by the native, which reports it. */
+static Value *int_call(Def *d, Expr *e, Ctx c) {
+    Value *vals[2] = {eval(e->args[0], c), eval(e->args[1], c)};
+    if (vals[0]->kind == V_INT && vals[1]->kind == V_INT) {
+        int64_t x = vals[0]->u.i, y = vals[1]->u.i, v;
+        switch (d->intop) {
+        case '<': return BOOLV(x < y);
+        case 'l': return BOOLV(x <= y);
+        case '>': return BOOLV(x > y);
+        case 'g': return BOOLV(x >= y);
+        case '+': if (!__builtin_add_overflow(x, y, &v) && (symbolic_mode || v == (int32_t)v)) return mk_int(v); break;
+        case '-': if (!__builtin_sub_overflow(x, y, &v) && (symbolic_mode || v == (int32_t)v)) return mk_int(v); break;
+        case '*': if (!__builtin_mul_overflow(x, y, &v) && (symbolic_mode || v == (int32_t)v)) return mk_int(v); break;
+        }
+    }
+    return call_native(d, e, vals, c);
+}
+
 static __attribute__((noinline)) Value *ev_call(Expr *e, Ctx c) {
     Def *d = e->def;
     if (d->kind == D_VAR && !d->replacement) return decl_value(d, c, e);
+    if (d->intop && e->n == 2 && !d->replacement) return int_call(d, e, c);
     Value *vals[4];
     if (!d->replacement && plain_args(d, e, c, vals)) return call_native(d, e, vals, c);
     return call_def(d, e->args, e->n, c, e);
@@ -8193,6 +8214,11 @@ static int native_arity(const char *method) {
     return n;
 }
 
+static char native_intop(Native f) {
+    return f == n_lt ? '<' : f == n_leq ? 'l' : f == n_gt ? '>' : f == n_geq ? 'g'
+         : f == n_plus ? '+' : f == n_minus ? '-' : f == n_times ? '*' : 0;
+}
+
 /* Attaches the native operators to the modules of the standard modules'
    names, as TLC loads its classes by the module's name: one the user
    supplies too, where an operator of the native's arity is the native. */
@@ -8207,6 +8233,7 @@ static void bind_natives(void) {
                     && (native_arity(natives[k].method) < 0 || d->nparams == native_arity(natives[k].method))) {
                     d->native = natives[k].fn;
                     d->lazy = native_arity(natives[k].method) < 0;
+                    d->intop = native_intop(d->native);
                     /* TLC loads Integers for the trace spec it sets up, which
                        -continue skips, and then takes Naturals' operators from
                        its class; a method may name its own class in tlc2.module,
