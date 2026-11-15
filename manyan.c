@@ -2158,6 +2158,7 @@ struct Def {
     int effectful;        /* one that had an effect as it was computed */
     unsigned char scan;   /* what def_scan found: SCAN_ bits */
     unsigned char memo;   /* 0 unknown, 1 its calls are memoized, 2 not */
+    unsigned char unkept; /* calls in a row whose arguments were not of one value each */
     int local;
     int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
     int self;             /* D_FCN whose body names it: TLC's RecursiveFcnSpec, always lazy (§6.6) */
@@ -9614,13 +9615,21 @@ static Value *memo_call(Def *d, Expr *e, Ctx c) {
         Expr *x = e->args[i];
         Env *b = x->kind == K_BOUND ? env_find(c.env, x->def) : NULL;
         a[i] = b && b->v && !(primed && b->stateful) ? b->v : x->kind == X_NUM || x->kind == X_STR || x->kind == X_BOOL ? eval(x, c) : NULL;
+        if (a[i] && a[i]->kind > V_MODEL) {   /* not kept: after enough such calls, none is */
+            if (++d->unkept == 64) d->memo = 2;
+            return call_def(d, e->args, e->n, c, e);
+        }
         all &= a[i] != NULL;
     }
     if (!all && !memo_args(e, c, a)) return call_def(d, e->args, e->n, c, e);
     Env *env = NULL;
     int scalar = 1;
     for (int i = 0; i < e->n; i++) env = mk_binding(d->params[i], a[i], env), scalar &= a[i]->kind <= V_MODEL;
-    if (!scalar) return eval_body(d->body, (Ctx){env, NULL});
+    if (!scalar) {
+        if (++d->unkept == 64) d->memo = 2;
+        return eval_body(d->body, (Ctx){env, NULL});
+    }
+    d->unkept = 0;
     if (2 * (nmemos + 1) > capmemos && nmemos < MEMO_MAX) {
         Memo *old = memos;
         size_t n = capmemos;

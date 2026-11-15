@@ -84,7 +84,8 @@ output, and 897 of 900 random liveness graphs its counterexample.
    of the next least ahead, MCInnerSerial (1.7x) and EWD998Small (2.2x).
    Huang done: 80% of it was the quadratic GCD of `DyadicRationals`, on
    a few small integers; a constant operator that loops is now computed
-   once for each such argument list, and Huang takes 9.5 s.
+   once for each such argument list, and Huang takes 9.1 s; no model of
+   the Examples is slower than TLC.
 4. **A property's groups in parallel.** The quick bench's liveness takes
    0.17 s with one worker and 0.16 with eight: 0.14 s is `Served`, five
    groups of one error model each, checked in turn by one process. Let
