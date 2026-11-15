@@ -101,9 +101,9 @@ output, and 897 of 900 random liveness graphs its counterexample.
    and each worker hold of their own, and cut it. Begun: a state's record
    48 → 32 bytes, its steps kept apart for liveness only, and a slot of
    the fingerprint set 16 → 8 bytes; MCKVSSafetySmall 798 → 694 MB with
-   one worker, the search 1197 → 1009 MB with four. Of the rest, macOS
-   keeps about 285 MB of the large blocks freed as the store, the records
-   and the set grow.
+   one worker, the search 1197 → 1009 MB with four; then, with one
+   worker, the records mapped once and each fingerprint table unmapped
+   as it grows, where macOS kept the blocks freed: 694 → 511 MB.
 6. **TLC's command lines, as scripts run them.** etcd's script stops at
    `unknown option -lncheck`, though checking liveness at the end is all
    Manyan does. Accept `-lncheck`, `-noGenerateSpecTE`, `-teSpecOutDir`

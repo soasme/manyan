@@ -30,8 +30,10 @@ unreleased:
   print TLC's counterexample, from 897
 - Less memory a state: its steps are kept apart, and only for a temporal
   property, and a slot of the fingerprint set holds half the fingerprint,
-  the state's record the rest. MCKVSSafetySmall holds 694 MB with one
-  worker, from 798, and the search 1009 MB with four, from 1197
+  the state's record the rest. With one worker the records are mapped
+  once and each fingerprint table on its own, unmapped when it grows,
+  where malloc kept the blocks it freed. MCKVSSafetySmall holds 511 MB
+  with one worker, from 798, and the search 1009 MB with four, from 1197
 - A constant operator whose body loops, over a set or by recursion, is
   computed once for each list of arguments of one value each (Booleans,
   integers, strings, model values), where TLC computes it at each call:

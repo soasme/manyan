@@ -9884,6 +9884,24 @@ static void fp_put(FpSlot *table, int size, uint64_t fp, int idx) {
     table[j].state = idx + 1;
 }
 
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+
+/* Memory of one process, zeroed, taken as it is touched and given back
+   as it is unmapped, where malloc keeps a large block freed; NULL if
+   there is none, or where a mapping takes all its memory at once. */
+static void *mapped(size_t bytes) {
+#ifdef __CYGWIN__
+    (void)bytes;
+    return NULL;
+#else
+    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    return p == MAP_FAILED ? NULL : p;
+#endif
+}
+
+static int fp_mapped;         /* the table is mapped, not allocated */
 static char *fp_region;       /* shared memory the tables are taken from, in turn */
 static size_t fp_region_used, fp_region_size;
 
@@ -9893,15 +9911,20 @@ static void fp_insert(int idx) {
         int size = fp_size ? fp_size * 2 : 1 << 16;
         size_t bytes = sizeof(FpSlot) * (size_t)size;
         FpSlot *table;
+        int was_mapped = fp_mapped;
         if (fp_region) {
             if (fp_region_used + bytes > fp_region_size) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
             table = (FpSlot *)(fp_region + fp_region_used);
             fp_region_used += bytes;
+            fp_mapped = 0;
         } else {
-            table = xcalloc((size_t)size, sizeof(FpSlot));
+            table = mapped(bytes);
+            fp_mapped = table != NULL;
+            if (!table) table = xcalloc((size_t)size, sizeof(FpSlot));
         }
         for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, states[fp_table[i].state - 1].fp, fp_table[i].state - 1);
-        if (!fp_region) free(fp_table);
+        if (was_mapped) munmap(fp_table, sizeof(FpSlot) * (size_t)fp_size);
+        else if (!fp_region) free(fp_table);
         fp_table = table;
         fp_size = size;
     }
@@ -10195,11 +10218,12 @@ static uint64_t fingerprint(Value **st) {
 }
 
 static int nworkers = 1;   /* processes expanding states; with more than one, the store is shared */
+static int states_mapped;  /* the records are mapped once, as many as the search can hold */
 
 /* A new state whose encoding ends the store. */
 static int add_record(size_t off, uint64_t fp, int parent, int action, int depth) {
     if (nstates == capstates) {
-        if (nworkers > 1) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
+        if (nworkers > 1 || states_mapped) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
         capstates = capstates ? capstates * 2 : 1024;
         states = xrealloc(states, sizeof(StateRec) * (size_t)capstates);
     }
@@ -11522,10 +11546,6 @@ static size_t w_budget;        /* claims it may still make this level */
 static int w_clean, w_found;
 static Buf w_bytes;
 
-#ifndef MAP_NORESERVE
-#define MAP_NORESERVE 0
-#endif
-
 static void *shared(size_t bytes) {
     void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { fputs("manyan: cannot reserve shared memory for workers\n", stderr); exit(MANYAN_ERROR); }
@@ -12079,6 +12099,7 @@ static void print_unfingerprinted(Expr **fps, int n) {
 static int search(void) {
     if (dump_file || npossibles) nworkers = 1;
     if (nworkers > 1) share_search();
+    else if (!states && (states = mapped(sizeof(StateRec) * ((size_t)1 << 29)))) capstates = 1 << 29, states_mapped = 1;
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
     handler = &here;
