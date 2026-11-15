@@ -20,7 +20,7 @@ With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
 With --strict the exit status is nonzero when the engine fails any test.
 Each run is killed past --memory MB resident (1000, or 3000 with an
-oracle), and only as many run at once as keep to half the machine's memory.
+oracle), pages its processes share counted once, and only as many run at once as keep to half the machine's memory.
 """
 import argparse
 import atexit
@@ -88,10 +88,13 @@ def guarded(command, directory, timeout, memory, input=None):
             process.stdin.close()
         except BrokenPipeError:   # it ended without reading
             pass
-    killed, wait = None, 0.01
+    killed, wait, held_kb, held_at = None, 0.01, 0, 0
     while not finished(process, wait):
         wait = min(2 * wait, 0.25)
-        if resident(process.pid) > memory * 1024:
+        over = resident(process.pid) > memory * 1024
+        if over and time.perf_counter() - held_at > 1:   # held takes a while: once a second
+            held_kb, held_at = held(process.pid), time.perf_counter()
+        if over and held_kb > memory * 1024:
             killed = f"over {memory} MB"
         elif time.perf_counter() - start > timeout:
             killed = f"over {timeout} s"
@@ -105,13 +108,56 @@ def guarded(command, directory, timeout, memory, input=None):
     return time.perf_counter() - start, b"".join(chunks).decode(errors="replace"), process.returncode, killed
 
 
-def resident(group):
-    """The KB a process group holds resident; 0 where ps cannot say (Cygwin)."""
+def ps(group, field):
+    """field of each process of a process group; none where ps cannot say (Cygwin)."""
     try:
-        rss = subprocess.run(["ps", "-o", "rss=", "-g", str(group)], capture_output=True, text=True).stdout
+        out = subprocess.run(["ps", "-o", field + "=", "-g", str(group)], capture_output=True, text=True).stdout
     except OSError:
-        return 0
-    return sum(int(w) for w in rss.split() if w.isdigit())
+        return []
+    return [int(w) for w in out.split() if w.isdigit()]
+
+
+def resident(group):
+    """The KB a process group holds resident, pages its processes share
+    counted in each."""
+    return sum(ps(group, "rss"))
+
+
+def held(group):
+    """The KB a process group holds resident, pages its processes share
+    counted once, as Manyan's workers share the search's: on Linux a share
+    of them each, on macOS each object they map once; elsewhere as
+    resident counts them. Slower than resident."""
+    pids = ps(group, "pid")
+    if sys.platform.startswith("linux"):
+        kb = 0
+        for pid in pids:
+            try:
+                kb += sum(int(line.split()[1]) for line in open(f"/proc/{pid}/smaps_rollup") if line.startswith("Pss:"))
+            except OSError:
+                pass
+        return kb
+    if sys.platform != "darwin":
+        return resident(group)
+    import ctypes
+    import resource
+
+    class Region(ctypes.Structure):   # proc_regioninfo, <sys/proc_info.h>
+        _fields_ = ([(n, ctypes.c_uint32) for n in "protection max_protection inheritance flags".split()] +
+                    [("offset", ctypes.c_uint64)] +
+                    [(n, ctypes.c_uint32) for n in ("behavior user_wired_count user_tag pages_resident pages_shared_now_private "
+                                                    "pages_swapped_out pages_dirtied ref_count shadow_depth share_mode "
+                                                    "private_pages_resident shared_pages_resident obj_id depth").split()] +
+                    [("address", ctypes.c_uint64), ("size", ctypes.c_uint64)])
+    libc, region, private, shared = ctypes.CDLL(None), Region(), 0, {}
+    for pid in pids:
+        address = 0
+        while libc.proc_pidinfo(pid, 7, ctypes.c_uint64(address), ctypes.byref(region), ctypes.sizeof(region)) == ctypes.sizeof(region):
+            private += region.private_pages_resident
+            if region.shared_pages_resident:
+                shared[region.obj_id] = max(shared.get(region.obj_id, 0), region.shared_pages_resident)
+            address = region.address + region.size
+    return (private + sum(shared.values())) * resource.getpagesize() // 1024
 
 
 def finished(process, seconds):

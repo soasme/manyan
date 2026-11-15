@@ -50,11 +50,11 @@ A model leaves this list when it gets a row in the results.
   `manyan -workers 4`): 160 print what TLC prints, as with one worker,
   and the four that differ with one worker differ alike; the run found
   TLCSailfish1's parse failure, since fixed. SlushMedium and
-  MCBoulanger went past the 4 GB guard, which sums the resident memory
-  of the worker processes, pages they share counted in each: on
-  SlushSmall, 242 MB summed with four workers where the search process
-  holds 67 MB, as it does alone (65 MB). With one worker both run in
-  less than 2 GB.
+  MCBoulanger went past the 4 GB guard, which summed the resident memory
+  of the worker processes, pages they share counted in each; it counts
+  them once now, and run again with four workers both print what TLC
+  prints, SlushMedium in 17.45 s (10.1x) and MCBoulanger in 16.64 s
+  (9.6x), holding 2.1 and 1.3 GB, where one worker holds 1.9 and 1.2.
 - Runtime not recorded: CarTalkPuzzle Model_3, SpanTreeTest5Nodes,
   TestMCReachability, BPConProof, c1cs, TLCSailfish2, MC_HDiskSynod,
   EWD998ChanID_export, EWD998ChanID_shiviz, SmokeEWD998_SC. Run once by

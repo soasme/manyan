@@ -107,8 +107,12 @@ output, and 897 of 900 random liveness graphs its counterexample.
    four, the workers put a new state's encoding in the store, where the
    search copied it from regions of their own, and a successor found is
    8 bytes, from 24, its fingerprint kept by its claim if it is new: the
-   search 904 → 753 MB with four. Left with four: the claims, 128 MB at
-   the widest level, and the fingerprint tables outgrown, 63 MB.
+   search 904 → 753 MB with four. A worker holds next to nothing of its
+   own: what passed 4 GB was the bench's guard, which counted the pages
+   the workers share in each and counts them once now. SlushMedium holds
+   2.1 GB with four workers, 1.9 with one; MCBoulanger 1.3 and 1.2. Left
+   with four: the claims, 128 MB at the widest level, and the
+   fingerprint tables outgrown, 63 MB.
 6. **TLC's command lines, as scripts run them.** etcd's script stops at
    `unknown option -lncheck`, though checking liveness at the end is all
    Manyan does. Accept `-lncheck`, `-noGenerateSpecTE`, `-teSpecOutDir`
