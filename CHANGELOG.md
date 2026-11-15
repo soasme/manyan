@@ -22,6 +22,12 @@ unreleased:
   again for each module extending the name's. A constant definition of
   the root module is computed once inside an instance too: etcd's
   probe_and_replicate trace takes 3.5 s, from 44.5 s
+- TLC's fingerprints, with its polynomial `-fp N` (the first by default,
+  where TLC picks one at random): a temporal property's counterexample
+  follows TLC's order of a state's successors, model checking draws as
+  TLC does, and `TLCFP` gives TLC's value (`fp` in `ManyanOptions`).
+  With the same `-fp`, all 900 random graphs of `tests/fuzz.py live`
+  print TLC's counterexample, from 897
 - `TLCEval` converts its value as TLC does: an interval to its elements,
   a tuple, record or `[x \in S |-> e]` to a function of its pairs, which
   fails as a function when applied outside its domain

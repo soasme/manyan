@@ -19,8 +19,8 @@ check: checks models of tests/spec with random options (-deadlock,
 and with TLC; they must print the same.
 
 live: checks a random temporal property of a random state graph under
-random weak and strong fairness with the engine and with TLC; they must
-print the same, for TLC with one of ten fingerprint polynomials.
+random weak and strong fairness with the engine and with TLC, both with
+the same random fingerprint polynomial (-fp); they must print the same.
 
 diff: makes random constant expressions and checks ASSUME PrintT(e) with
 the engine and with TLC; they must print the same. A batch of expressions
@@ -403,21 +403,15 @@ def live(engine, tlc, runs, seed):
     failed = 0
     for _ in range(runs):
         model = live_model(rng)
+        fp = ["-fp", str(rng.randrange(131))]   # which orders a state's successors
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "L.tla"
             path.write_text(model)
-            ours = spec_runner.run(engine, path, MEMORY)
-            theirs = spec_runner.run(spec_runner.oracle_command(tlc), path, MEMORY)
-            # Of several fair lassos, TLC's search meets first the one its
-            # fingerprints' polynomial, picked at random, leads it to.
-            for fp in range(10):
-                if ours == theirs:
-                    break
-                if spec_runner.run(spec_runner.oracle_command(tlc) + ["-fp", str(fp)], path, MEMORY) == ours:
-                    theirs = ours
+            ours = spec_runner.run(engine + fp, path, MEMORY)
+            theirs = spec_runner.run(spec_runner.oracle_command(tlc) + fp, path, MEMORY)
         if ours != theirs:
             failed += 1
-            print(f"DIFF\n{model}--- engine\n{ours}--- TLC\n{theirs}")
+            print(f"DIFF {' '.join(fp)}\n{model}--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} liveness checks printed what TLC prints")
     return failed
 

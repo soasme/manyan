@@ -141,7 +141,7 @@ report as TLC with one worker.
 Left out by decision, each for a reason the
 [manual](docs/manual.md#limitations) gives: TLC's `-terse`, `-maxSetSize`,
 `-dfid`, `-coverage`, `-tool` and `-generateSpecTE`, checkpoints,
-distributed checking, and `TLCFP`. Real numbers and `\AA`/`\EE`
+and distributed checking. Real numbers and `\AA`/`\EE`
 give TLC's errors, as TLC cannot check them either. The proof language is
 parsed and skipped.
 

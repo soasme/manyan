@@ -23,13 +23,13 @@ from TLC.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
 - Give TLC's counterexample to a temporal property. Of 900 random graphs
-  `tests/fuzz.py live` makes on three seeds, the verdict is TLC's on all,
-  the counterexample one TLC prints on 897. Manyan now orders a state's
-  successors as TLC's table of them does, by its own fingerprints in
-  place of TLC's random polynomial, and checks the properties as TLC
-  does, by its possible error models. The rest: TLC's tableau is built of
-  particles, its successors linked in the order of their index, so its
-  product has other nodes and edges than Manyan's.
+  `tests/fuzz.py live` makes on three seeds, each checked with the same
+  random `-fp`, all print what TLC prints: Manyan orders a state's
+  successors as TLC's table of them does, by TLC's fingerprints, and
+  checks the properties as TLC does, by its possible error models. The
+  rest: TLC's tableau is built of particles, its successors linked in the
+  order of their index, so its product may have other nodes and edges
+  than Manyan's.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle and the tableau have models.
@@ -67,7 +67,10 @@ output, and 897 of 900 random liveness graphs its counterexample.
    order of their index, where Manyan's has other nodes
    ([manual](manual.md#limitations)). Build the tableau as TLC does, so
    that the product, and so the cycle found and the path to it, are
-   TLC's: `tests/fuzz.py live` at 900 of 900.
+   TLC's: `tests/fuzz.py live` at 900 of 900. Done for the fuzz: the 3
+   came from successors ordered by Manyan's fingerprints; with TLC's, and
+   its polynomial `-fp`, all 900 print what TLC prints. The tableau stays
+   Manyan's, its nodes not yet TLC's particles.
 2. **Trace validation against TLC.** Checking a system's logged traces
    against its spec is how TLC is used in industry: etcd's raft runs TLC
    once a trace (`tla/validate.sh`), CCF does too. Run etcd's traces with

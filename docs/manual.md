@@ -66,7 +66,8 @@ for it; [std.md](std.md) lists them.
 | `-postCondition M!Op` | also check `Op` of module `M` once the search is done, after the configuration's `POSTCONDITION`s; as TLC, the spec extends `M` |
 | `-dumpTrace json FILE` | write the counterexample to FILE in TLC's JSON: its states, the actions between them and the variables, as `CounterExample` of TLCExt gives them |
 | `-noGenerateSpecTE` | as TLC's: TLC then sets up no trace spec, which shows in the order of `CounterExample`'s fields |
-| `-metadir DIR`, `-fp N`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup`, `-teSpecOutDir DIR`, `-lncheck WHEN` | accepted for TLC's command lines, and ignored: Manyan writes no metadata or trace spec, has its own fingerprints, and checks liveness once the states are found, as `-lncheck final` |
+| `-fp N` | take TLC's fingerprints with its Nth polynomial, 0 to 130 (0 without it, where TLC picks one at random): they order a state's successors in a temporal property's check, and so its counterexample, seed the draws of `RandomElement` and the Randomization module when model checking, and are `TLCFP`'s values |
+| `-metadir DIR`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup`, `-teSpecOutDir DIR`, `-lncheck WHEN` | accepted for TLC's command lines, and ignored: Manyan writes no metadata or trace spec, and checks liveness once the states are found, as `-lncheck final` |
 | `-h` | print the usage and exit |
 
 A run prints TLC's report on standard output: the initial states, then
@@ -399,13 +400,15 @@ Not supported, by decision, each for the reason given:
   TLC's reinforcement learning simulation, which a Java property turns
   on and which learns by TLC's fingerprints. `_POSSIBLE` is not read
   with `-symbolic`.
-- TLC's fingerprints, and so TLCExt's `TLCFP` and the draws of
+- TLC picks its fingerprints' polynomial at random on each run, so a
+  temporal property's counterexample, `TLCFP`, and the draws of
   `RandomElement`, `RandomSubset` and `RandomSetOfSubsets` in `Init` and
   `Next` when model checking, which TLC seeds with the state's
-  fingerprint: TLC picks its fingerprint's polynomial at random on each
-  run (`-fp` fixes it), so they change from run to run, and it
-  fingerprints a model value by its index in SANY's table of names.
-  Manyan's `TLCFP` stops the check, and it draws other values there.
+  fingerprint, change from run to run. Manyan takes TLC's first, or the
+  one `-fp` gives, and so prints what TLC prints with the same `-fp`.
+  TLC fingerprints a model value by its name's index in its table of
+  names, which the configuration's begin; one `TLCModelValue` makes is
+  indexed after the names SANY reads, and Manyan's index is another.
 
 `Trace` is the behavior to the state evaluated; to
 rebuild it TLC evaluates `Init` again, and with more than one initial
@@ -429,11 +432,8 @@ Known gaps, not decisions, each to be closed:
   another one TLC could print. TLC builds its tableau of particles, linked
   in the order of their index, and Manyan's tableau has other nodes, so
   where there is a tableau the cycle found or the path to it may differ.
-  Where there is none, TLC's order of a state's successors comes from its
-  random fingerprint polynomial, and Manyan takes its own fingerprints in
-  its place: the counterexample is one TLC prints with some polynomial,
-  not always one of those `-fp 0` to `-fp 9` give. Of 900 random graphs
-  of `tests/fuzz.py live`, 897 print what TLC prints.
+  Of 900 random graphs of `tests/fuzz.py live`, each checked with the
+  same random `-fp`, all print what TLC prints.
 - `Print` and `PrintT` in a fairness condition or a temporal property
   print what Manyan evaluates, as its search needs each condition; TLC
   evaluates all of them on every state and step as it finds them, and

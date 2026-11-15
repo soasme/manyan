@@ -42,6 +42,7 @@ typedef struct {
     long depth;          /* simulation: states in a behavior, 0 for 100 (-depth) */
     long long seed;      /* the seed, when seed_given (-seed): a simulation's, and model checking's for RandomElement */
     int seed_given;
+    int fp;              /* TLC's fingerprint polynomial, 0 to 130 (-fp): 0 for the first, where TLC picks one at random */
     long long aril;      /* simulation: draws to skip after seeding (-aril) */
     const char *trace_file;  /* simulation: write behavior N to FILE_0_N, or NULL (-simulate file=FILE) */
     const char *const *properties;  /* Java system properties, "k=v" each, NULL-terminated (-Dk=v) */

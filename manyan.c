@@ -7815,14 +7815,13 @@ static int jr_int(JRandom *r, int bound) {
    RandomEnumerableValues, java.util.Random seeded with the seed. A
    simulation draws as TLC's threads do, from one for the model and the
    initial states and another for the behaviors. Model checking draws
-   again for Init and for each state expanded, xored with the state's
-   fingerprint so that a trace can be rebuilt; manyan's fingerprints are not
-   TLC's, so there the draws are not TLC's. */
+   again for Init and for each state expanded, xored with TLC's
+   fingerprint of the state, so that a trace can be rebuilt. */
 static JRandom draw_model, draw_behaviors, *drawing = &draw_model;
 static int64_t draw_seed;
 static Value **draw_from;   /* the state expanded, NULL for Init */
 static int draw_due;        /* to seed at the next draw */
-static uint64_t fingerprint(Value **st);
+static uint64_t tlc_state_fp(Value **st);
 
 /* The generator as Init begins. TLC's main thread generates Init from the
    generator it made at its first draw, which a draw at startup made before
@@ -7839,7 +7838,7 @@ static void draw_restart(Value **from) {
 static JRandom *draws(void) {
     if (in_worker && !draw_from) worker_cannot();   /* Init's draws go on in order */
     effects++;
-    if (draw_due) jr_seed(drawing, draw_seed ^ (int64_t)(draw_from ? fingerprint(draw_from) : 0));
+    if (draw_due) jr_seed(drawing, draw_seed ^ (int64_t)(draw_from ? tlc_state_fp(draw_from) : 0));
     draw_due = 0;
     return drawing;
 }
@@ -8137,14 +8136,6 @@ NATIVE(n_tlcgetordefault) {
 static Value *trace_value(void);
 NATIVE(n_trace) { UNUSED; return trace_value(); }
 
-/* TLCExt's operators that need TLC's own traces, fingerprints or successors. */
-static _Noreturn void unsupported(const char *op) {
-    if (in_worker) worker_cannot();
-    fflush(stdout);
-    fprintf(stderr, "manyan: %s is not supported\n", op);
-    exit(MANYAN_ERROR);
-}
-#define UNSUPPORTED(fn, op) NATIVE(fn) { UNUSED; unsupported(op); }
 /* TLCExt's CounterExample: in a postcondition checked after an error,
    the behavior TLC reports it with (post_behavior), else none. Its
    states are numbered from 1, and each step names its action; a lasso's
@@ -8160,7 +8151,128 @@ NATIVE(n_counterexample) { UNUSED; return counter_example(); }
 NATIVE(n_totrace) { UNUSED; return counter_trace(a[0]); }
 NATIVE(n_picksuccessor);   /* after the search */
 static int npicked_explored;
-UNSUPPORTED(n_tlcfp, "TLCFP")
+/* TLC's fingerprints (FP64): a value's bytes extend a polynomial, picked
+   from TLC's list by -fp, the first by default where TLC picks one at
+   random. TLC orders a state's successors in its temporal checks, and
+   seeds its draws, by them; a value encodes as its kind, then its parts,
+   so equal values of any form agree. */
+static const uint64_t fp_polys[] = {
+    0x911498AE0E66BAD6ULL, 0xda8a0ba66dae0181ULL, 0xc02f176b8f268d9fULL, 0xd617bb1220fc7812ULL,
+    0xc6fd951ad34f9f74ULL, 0xdd1897bd991704d4ULL, 0xf5394c541cbfd343ULL, 0xb1dded37b5c7b8f7ULL,
+    0xb713ff61039dc632ULL, 0xdfb340cb2fb03d43ULL, 0xbc3e7e4c5ecb76a3ULL, 0xdbb4b1349cd7058aULL,
+    0xf53e9dcb9e915cdfULL, 0xca5f58e90dd01848ULL, 0x80e7ff4406891aa1ULL, 0xab541bf881fa8571ULL,
+    0xbf274e07ac5499d5ULL, 0x939b1ea933040a4eULL, 0xb791a595448d75b1ULL, 0x8bf88d6ef85563a2ULL,
+    0xecb33ec339513a53ULL, 0xfa2d3e722db5208aULL, 0xb4e2058aac479d24ULL, 0xafbd6474e7213b82ULL,
+    0x98c1694d14ffaeefULL, 0xe188fb5c0a125e24ULL, 0xfa71cc3865487d80ULL, 0x891135f7c1c94569ULL,
+    0xcf77cdd16d22e3e6ULL, 0xeb5e3a1d2e2bb4b5ULL, 0x92f7f5b69cd00c55ULL, 0xa9fbbe40ca3b9ae9ULL,
+    0x84a7b33d85295bdeULL, 0xebd4680dbb6fdee2ULL, 0xa31fc46a0583b4d0ULL, 0xa792c94f15de3e49ULL,
+    0xd9d60a9feff4521aULL, 0x9227ba31dfdda04bULL, 0xfb4c89c607ce162dULL, 0xa89b3b2e01479cc0ULL,
+    0xb35a0c2a28b89f7dULL, 0x91d0b700b99d9ec2ULL, 0xf0646bbda05020b0ULL, 0xcb5d5f63ce043056ULL,
+    0xd276b6a04f42a1b8ULL, 0xbc1a7a7dbfeb47a3ULL, 0xe138acff7a963036ULL, 0xed860223c1557ee7ULL,
+    0x9b2491e980150ab6ULL, 0xe7e03dd8a5b4e59eULL, 0xaaa3f5eac516783cULL, 0xfe78cc267a724180ULL,
+    0xc22519a21edfac64ULL, 0xcdb2941933fec60fULL, 0xc5f485551ef38aa1ULL, 0xa19293d250bd3335ULL,
+    0xa4d4c215a50b7afeULL, 0xc1155176406a5070ULL, 0xecadaa8200e123ecULL, 0xbacfe629d58b2f08ULL,
+    0xded991082148cb42ULL, 0x9a0ccbe5deaa88dbULL, 0x9a83246f342061bbULL, 0xb71482842297ab05ULL,
+    0xf2407eeb997592bdULL, 0xb7b43d4b5c4c4bccULL, 0xb339a2568221ffe7ULL, 0xdb4b6b379446ef9eULL,
+    0xe43c205bb5c0b2b6ULL, 0xe8e1d141f19d6db0ULL, 0xd19e8710a4ea1c86ULL, 0x9704cecfa8d6d07bULL,
+    0xb0a35716162c3f26ULL, 0xa2a68c0cf56390acULL, 0xe4a74bc601c95b46ULL, 0xe668fff675595e56ULL,
+    0xe0ea77ebe06fabbbULL, 0xa8bb94f585279523ULL, 0xbeb667b42b684f21ULL, 0xd7b65410189e28afULL,
+    0x85722037beffc5b9ULL, 0xe7e7c5f773426204ULL, 0xa5fd0cc8e060c6f4ULL, 0xb8f91ee9065dcf95ULL,
+    0xb4047008040f8b50ULL, 0xecb9ab6291c8cfccULL, 0xe08bb9b70caad6dfULL, 0xd6e086a301d95d56ULL,
+    0xf6a808f5f3fb9da3ULL, 0xfa74b8a8ef86fbc5ULL, 0xa0b6b33ba9e6381cULL, 0x8c78703427873dbbULL,
+    0xc5516ea423011021ULL, 0xb075cce8528ae7e2ULL, 0x92e4a37979e2b13bULL, 0xafc9ab000ed81026ULL,
+    0xf1873f2a861a518aULL, 0xf885d6b35770192cULL, 0xd2a82f27f71f5f7eULL, 0xd5e7a4dd8beb2d9fULL,
+    0xbab9e7e65dc23e0fULL, 0xd5fc877c0bdf5b85ULL, 0xab428169b9f31c02ULL, 0xb7b1351f9266d3eaULL,
+    0xfad564914328f635ULL, 0x9623ecb1000db9bdULL, 0x88d371ec6644c892ULL, 0xd0a71270573e271cULL,
+    0xbd200d763f9d81b4ULL, 0x8484fd96374bf2eaULL, 0xe0d0810749432294ULL, 0x8ebe9dadc88658baULL,
+    0xf6268c58993ae542ULL, 0xd6cc88fed0d359c9ULL, 0xbcaddb8d40a16690ULL, 0x92817c6db421cbf6ULL,
+    0xac63721120a371b5ULL, 0xd6cc137fdced0820ULL, 0xf1c5fbaebb617bd7ULL, 0xac35d78c765237a5ULL,
+    0xbd0a471fa9a23116ULL, 0x943a7031b946a5aeULL, 0xe4e83520cb1aaebbULL, 0xe92a4b73246dd124ULL,
+    0xafc1e070787c4c86ULL, 0xdfe84d42cf06286bULL, 0x8b29ec962e4b964bULL, 0x807eb5de812ede0fULL,
+    0xa3cd71299c8b3bfdULL, 0x845b8031ef886f35ULL, 0x91f5a5fa9c5515a5ULL,
+};
+static int fp_poly;   /* -fp */
+static uint64_t fp_bytes[256];
+
+static void fp_init(int k) {
+    uint64_t power[72], t = 0x8000000000000000ULL, poly = fp_polys[fp_poly = k];
+    for (int i = 0; i < 72; i++) power[i] = t, t = (t >> 1) ^ (t & 1 ? poly : 0);
+    for (int j = 0; j < 256; j++) {
+        uint64_t v = 0;
+        for (int k = 0; k < 8; k++) if (j & (1 << k)) v ^= power[127 - 7 * 8 - k];
+        fp_bytes[j] = v;
+    }
+}
+
+static uint64_t fp_byte(uint64_t fp, unsigned b) { return (fp >> 8) ^ fp_bytes[(b ^ (unsigned)fp) & 0xFF]; }
+
+static uint64_t fp_int(uint64_t fp, int64_t x) {
+    for (int i = 0; i < 4; i++) fp = fp_byte(fp, (unsigned)((uint64_t)x >> (8 * i)));
+    return fp;
+}
+
+enum { FP_BOOL = 0, FP_INT = 1, FP_STRING = 3, FP_SET = 5, FP_FCN = 9, FP_MODEL = 21 };
+
+/* A string as Java's: its length and each char in UTF-16, of which TLC
+   takes the low byte. */
+static uint64_t fp_string(uint64_t fp, const char *s) {
+    int len = 0;
+    unsigned units[2];
+    for (const unsigned char *p = (const unsigned char *)s; *p;) {
+        unsigned c = *p++;
+        int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        if (more) c &= 0x3F >> more;
+        while (more-- && (*p & 0xC0) == 0x80) c = c << 6 | (*p++ & 0x3F);
+        len += c >= 0x10000 ? 2 : 1;
+    }
+    fp = fp_int(fp_byte(fp, FP_STRING), len);
+    for (const unsigned char *p = (const unsigned char *)s; *p;) {
+        unsigned c = *p++;
+        int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0, n = 1;
+        if (more) c &= 0x3F >> more;
+        while (more-- && (*p & 0xC0) == 0x80) c = c << 6 | (*p++ & 0x3F);
+        if (c >= 0x10000) units[0] = 0xD800 | ((c - 0x10000) >> 10), units[1] = 0xDC00 | (c & 0x3FF), n = 2;
+        else units[0] = c;
+        for (int i = 0; i < n; i++) fp = fp_byte(fp, units[i]);
+    }
+    return fp;
+}
+
+static uint64_t fp_interval(uint64_t fp, int64_t lo, int64_t hi) {
+    fp = fp_int(fp_byte(fp, FP_SET), hi >= lo ? hi - lo + 1 : 0);
+    for (int64_t i = lo; i <= hi; i++) fp = fp_int(fp_byte(fp, FP_INT), i);
+    return fp;
+}
+
+static uint64_t fp_value(uint64_t fp, Value *v) {
+    switch (v->kind) {
+    case V_BOOL: return fp_byte(fp_byte(fp, FP_BOOL), v->u.i ? 't' : 'f');
+    case V_INT: return fp_int(fp_byte(fp, FP_INT), v->u.i);
+    case V_STR: return fp_string(fp, S(v->u.i));
+    case V_MODEL: return fp_int(fp_byte(fp, FP_MODEL), v->u.i + 1);   /* its name's index in TLC's table of them, one after ours */
+    case V_TUPLE: case V_FCN:
+        fp = fp_int(fp_byte(fp, FP_FCN), v->n);
+        for (int i = 0; i < v->n; i++) {
+            fp = v->kind == V_TUPLE ? fp_int(fp_byte(fp, FP_INT), i + 1) : fp_value(fp, v->u.fcn.keys[i]);
+            fp = fp_value(fp, v->u.fcn.vals[i]);
+        }
+        return fp;
+    case V_INTERVAL: return fp_interval(fp, v->u.range.lo, v->u.range.hi);
+    case V_SET:
+        fp = fp_int(fp_byte(fp, FP_SET), v->n);
+        for (int i = 0; i < v->n; i++) fp = fp_value(fp, v->u.set.elems[i]);
+        return fp;
+    case V_LAZY: return fp_value(fp, enumerate(v));
+    case V_LAMBDA: return fp_value(fp, realize(v));
+    default: fail("Attempted to fingerprint %s", pretty(v));
+    }
+}
+
+static uint64_t tlc_fp(Value *v) {
+    return fp_value(fp_polys[fp_poly], v);
+}
+
+NATIVE(n_tlcfp) { UNUSED; return mk_int((int32_t)tlc_fp(a[0])); }
 
 /* TLCDefer(e): TRUE. A simulation evaluates e once it picks the successor
    being made, where e was met, as TLC's worker calls the callable its
@@ -9521,6 +9633,32 @@ static Value *decode(const char **p) {
     }
 }
 
+/* fp_value of the value encoded at *p, as decode reads it. */
+static uint64_t fp_encoded(uint64_t fp, const char **p) {
+    char tag = *(*p)++;
+    int n;
+    switch (tag) {
+    case 'b': return fp_byte(fp_byte(fp, FP_BOOL), *(*p)++ ? 't' : 'f');
+    case 'i': return fp_int(fp_byte(fp, FP_INT), get32(p));
+    case 's': return fp_string(fp, S(get32(p)));
+    case 'm': return fp_int(fp_byte(fp, FP_MODEL), get32(p) + 1);
+    case 'I': { int32_t lo = get32(p); return fp_interval(fp, lo, get32(p)); }
+    case 'S':
+        n = get32(p);
+        fp = fp_int(fp_byte(fp, FP_SET), n);
+        for (int i = 0; i < n; i++) fp = fp_encoded(fp, p);
+        return fp;
+    default:
+        n = get32(p);
+        fp = fp_int(fp_byte(fp, FP_FCN), n);
+        for (int i = 0; i < n; i++) {
+            fp = tag == 'T' ? fp_int(fp_byte(fp, FP_INT), i + 1) : fp_encoded(fp, p);
+            fp = fp_encoded(fp, p);
+        }
+        return fp;
+    }
+}
+
 typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int depth; int *edges; int nedges, capedges; } StateRec;
 
 static StateRec *states;
@@ -9795,6 +9933,22 @@ static Value **least_permutation(Value **st) {
         if (c < 0) best = t;
     }
     return best;
+}
+
+/* TLC's fingerprint of a state: its view's, else its variables' in turn,
+   of the least of its permutations under symmetry. */
+static uint64_t tlc_state_fp(Value **st) {
+    Value **least = nsymmetry ? least_permutation(st) : st;
+    if (view_expr) {
+        Value **saved = cur_state;
+        cur_state = least;
+        Value *v = eval(view_expr, root_ctx);
+        cur_state = saved;
+        return tlc_fp(v);
+    }
+    uint64_t fp = fp_polys[fp_poly];
+    for (int i = 0; i < nvars; i++) fp = fp_value(fp, least[i]);
+    return fp;
 }
 
 static uint64_t fingerprint(Value **st) {
@@ -12527,7 +12681,7 @@ static int cfg_token(CfgLexer *L) {
             n++;
         }
         L->pos += cfg_len = n + 1;
-        cfg_str = cfg_scanning ? -1 : intern_n(b.s ? b.s : "", (int)b.n);
+        cfg_str = intern_n(b.s ? b.s : "", (int)b.n);   /* as TLC, in the order it reads them, as model values */
         free(b.s);
         return 's';
     }
@@ -14275,8 +14429,28 @@ static int succ_table_size(int s) {
 static int cmp_int(const void *x, const void *y) { return (*(const int *)x > *(const int *)y) - (*(const int *)x < *(const int *)y); }
 static int cmp_u64(const void *x, const void *y) { return (*(const uint64_t *)x > *(const uint64_t *)y) - (*(const uint64_t *)x < *(const uint64_t *)y); }
 
+static uint64_t *tlc_fps;   /* the TLC fingerprints of the first ntlc_fps states */
+static int ntlc_fps;
+
+/* The fingerprints of the states up to nstates. Under symmetry or a view,
+   a state's is that of another, which is decoded; else none is. */
+static void tlc_fps_fill(void) {
+    tlc_fps = xrealloc(tlc_fps, sizeof(uint64_t) * (size_t)nstates);
+    Arena *saved = arena;
+    arena = &scratch_arena;
+    for (int s = ntlc_fps; s < nstates; s++) {
+        const char *at = store.s + states[s].off;
+        uint64_t fp = fp_polys[fp_poly];
+        if (nsymmetry || view_expr) fp = tlc_state_fp(decode_state(s)), arena_reset(&scratch_arena);
+        else for (int i = 0; i < nvars; i++) fp = fp_encoded(fp, &at);
+        tlc_fps[s] = fp;
+    }
+    arena = saved;
+    ntlc_fps = nstates;
+}
+
 /* The steps e of state s, edge n its stuttering one if stutter is set, in
-   the order TLC's table of them holds the successors: by a fingerprint's
+   the order TLC's table of them holds the successors: by its fingerprint's
    slot, probing linearly, after the successors, the state itself. A node
    TLC adds once its state is expanded takes the stuttering step first,
    then the others as the actions make them; its simulator's take them so
@@ -14291,6 +14465,7 @@ static void succ_order(int p, const int *edges, int n, int stutter, int *order) 
         return;
     }
     static int *slot, cap, *used, *pend, ncap;   /* slot: all -1 between calls; used: the slots taken */
+    if (ntlc_fps < nstates) tlc_fps_fill();
     int len = succ_table_size(s), count = 0;
     if (n + 1 > ncap) {
         ncap = n + 1;
@@ -14312,7 +14487,7 @@ static void succ_order(int p, const int *edges, int n, int stutter, int *order) 
             cap = len;
         }
         for (int i = 0; i < npend; i++) {
-            int x = pend[i], at = (int)((uint32_t)states[x < n ? edges[2 * x] : s].fp & 0x7fffffff) % len;
+            int x = pend[i], at = (int)((uint32_t)tlc_fps[x < n ? edges[2 * x] : s] & 0x7fffffff) % len;
             while (slot[at] >= 0) at = (at + 1) % len;
             slot[at] = x;
             used[count++] = at;
@@ -16187,6 +16362,7 @@ static int pem_violated(void) {
 }
 
 static int live_violated(void) {
+    if (!sim_n) tlc_fps_fill();   /* once, before the workers fork to check */
     int cut = live_cut_violated();
     if (cut) return cut;
     int pem = pem_violated();
@@ -22528,6 +22704,11 @@ static int inv_name(const char *expr) {
 }
 
 int manyan_check(const ManyanOptions *o) {
+    if (o->fp < 0 || o->fp >= (int)(sizeof fp_polys / sizeof *fp_polys)) {
+        fprintf(stderr, "manyan: -fp takes an integer from 0 to %d\n", (int)(sizeof fp_polys / sizeof *fp_polys) - 1);
+        return MANYAN_ERROR;
+    }
+    fp_init(o->fp);
     printf("manyan version %s\n", MANYAN_VERSION);
     stack_limit = o->stack > 0 ? o->stack : 0;
     symbolic_mode = o->symbolic;
@@ -22798,9 +22979,14 @@ int main(int argc, char **argv) {
             o.dump_trace = argv[++i];
         }
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-help") == 0) { printf("%s", usage); return 0; }
-        /* TLC's, for its own files, fingerprints and when it checks liveness: manyan has no files, its own
-           fingerprints, and checks liveness once the states are found */
-        else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fp") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits") ||
+        else if (strcmp(argv[i], "-fp") == 0 && i + 1 < argc) {
+            char *end, *n = argv[++i];
+            long k = strtol(n, &end, 10);
+            o.fp = *n && !*end && k == (int)k ? (int)k : -1;
+        }
+        /* TLC's, for its own files and fingerprints and when it checks liveness: manyan has no files, and
+           checks liveness once the states are found */
+        else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits") ||
                   !strcmp(argv[i], "-teSpecOutDir") || !strcmp(argv[i], "-lncheck")) && i + 1 < argc) i++;
         else if (strcmp(argv[i], "-noGenerateSpecTE") == 0) o.no_te_spec = 1;
         else if (!strcmp(argv[i], "-gzip") || !strcmp(argv[i], "-cleanup")) {}

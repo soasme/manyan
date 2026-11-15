@@ -10,8 +10,9 @@ says how one is written.
 Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
 Randomization, RealTime, Toolbox, TLCExt and Json are built into `manyan.c`: a
 spec need not supply them, and one it supplies is read in their place. Of
-TLCExt, `TLCFP` stops the check: its value is TLC's fingerprint, which
-changes from run to run ([limitations](manual.md#limitations)).
+TLCExt, `TLCFP` is TLC's fingerprint of the value under `-fp`'s
+polynomial, which TLC picks at random without it
+([limitations](manual.md#limitations)).
 `PickSuccessor(e)` asks on standard input, as TLC does, whether to take
 each step to a state not yet seen where `e` is false: yes (or an empty
 line), no, explored (taken, but not expanded), or print the two states or
