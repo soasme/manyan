@@ -28,6 +28,10 @@ unreleased:
   TLC does, and `TLCFP` gives TLC's value (`fp` in `ManyanOptions`).
   With the same `-fp`, all 900 random graphs of `tests/fuzz.py live`
   print TLC's counterexample, from 897
+- Less memory a state: its steps are kept apart, and only for a temporal
+  property, and a slot of the fingerprint set holds half the fingerprint,
+  the state's record the rest. MCKVSSafetySmall holds 694 MB with one
+  worker, from 798, and the search 1009 MB with four, from 1197
 - A constant operator whose body loops, over a set or by recursion, is
   computed once for each list of arguments of one value each (Booleans,
   integers, strings, model values), where TLC computes it at each call:

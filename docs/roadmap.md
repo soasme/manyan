@@ -98,7 +98,12 @@ output, and 897 of 900 random liveness graphs its counterexample.
    worker (190 bytes a state), and the search process 0.93 GB with four;
    SlushMedium and MCBoulanger pass 4 GB with four workers and stay under
    2 GB with one ([fullbench](fullbench.md)). Measure what the search
-   and each worker hold of their own, and cut it.
+   and each worker hold of their own, and cut it. Begun: a state's record
+   48 → 32 bytes, its steps kept apart for liveness only, and a slot of
+   the fingerprint set 16 → 8 bytes; MCKVSSafetySmall 798 → 694 MB with
+   one worker, the search 1197 → 1009 MB with four. Of the rest, macOS
+   keeps about 285 MB of the large blocks freed as the store, the records
+   and the set grow.
 6. **TLC's command lines, as scripts run them.** etcd's script stops at
    `unknown option -lncheck`, though checking liveness at the end is all
    Manyan does. Accept `-lncheck`, `-noGenerateSpecTE`, `-teSpecOutDir`

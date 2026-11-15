@@ -9855,14 +9855,17 @@ static uint64_t fp_encoded(uint64_t fp, const char **p) {
     }
 }
 
-typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int depth; int *edges; int nedges, capedges; } StateRec;
+typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int depth; } StateRec;
+typedef struct { int *edges; int nedges, capedges; } Edges;   /* a state's steps, (target, action) pairs */
 
 static StateRec *states;
+static Edges *state_edges;   /* each state's, kept for liveness checking */
+static int capedges;
 static int nstates, capstates;
 static Buf store;
-/* The fingerprint set: open addressing on the fingerprint, which each
-   slot keeps beside its state's index (0 is an empty slot). */
-typedef struct { uint64_t fp; int state; } FpSlot;
+/* The fingerprint set: open addressing on the fingerprint, each slot
+   its high half beside its state's index (0 is an empty slot). */
+typedef struct { uint32_t tag; int state; } FpSlot;
 
 static FpSlot *fp_table;
 static int fp_size;
@@ -9870,14 +9873,14 @@ static int fp_size;
 static int fp_find(uint64_t fp) {
     if (!fp_size) return -1;
     for (int j = (int)(fp & (uint64_t)(fp_size - 1)); fp_table[j].state; j = (j + 1) & (fp_size - 1))
-        if (fp_table[j].fp == fp) return fp_table[j].state - 1;
+        if (fp_table[j].tag == (uint32_t)(fp >> 32) && states[fp_table[j].state - 1].fp == fp) return fp_table[j].state - 1;
     return -1;
 }
 
 static void fp_put(FpSlot *table, int size, uint64_t fp, int idx) {
     int j = (int)(fp & (uint64_t)(size - 1));
     while (table[j].state) j = (j + 1) & (size - 1);
-    table[j].fp = fp;
+    table[j].tag = (uint32_t)(fp >> 32);
     table[j].state = idx + 1;
 }
 
@@ -9897,7 +9900,7 @@ static void fp_insert(int idx) {
         } else {
             table = xcalloc((size_t)size, sizeof(FpSlot));
         }
-        for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, fp_table[i].fp, fp_table[i].state - 1);
+        for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, states[fp_table[i].state - 1].fp, fp_table[i].state - 1);
         if (!fp_region) free(fp_table);
         fp_table = table;
         fp_size = size;
@@ -10207,8 +10210,12 @@ static int add_record(size_t off, uint64_t fp, int parent, int action, int depth
     r->parent = parent;
     r->action = action;
     r->depth = depth;
-    r->edges = NULL;
-    r->nedges = r->capedges = 0;
+    if (ntemporal_props && nstates == capedges) {
+        int n = capedges ? capedges * 2 : 1024;
+        state_edges = xrealloc(state_edges, sizeof(Edges) * (size_t)n);
+        memset(state_edges + capedges, 0, sizeof(Edges) * (size_t)(n - capedges));
+        capedges = n;
+    }
     fp_insert(nstates);
     return nstates++;
 }
@@ -10872,7 +10879,7 @@ static int check_actions(Check *list, int n, Value **from, Value **to) {
 
 /* An edge of the state graph, kept for liveness checking: target and action. */
 static void add_edge(int from, int to, int action) {
-    StateRec *r = &states[from];
+    Edges *r = &state_edges[from];
     for (int i = 0; i < r->nedges; i++) if (r->edges[2 * i] == to) return;
     if (r->nedges == r->capedges) {
         r->capedges = r->capedges ? r->capedges * 2 : 4;
@@ -11392,7 +11399,7 @@ static int last_seen(int s) {
     for (; nseen_after <= s; nseen_after++) {
         int seen = nseen_after ? seen_after[nseen_after - 1] : 0, i = nseen_after;
         if (!i) while (seen + 1 < nstates && states[seen + 1].parent == -1) seen++;
-        for (int e = 0; e < states[i].nedges; e++) if (states[i].edges[2 * e] > seen) seen = states[i].edges[2 * e];
+        for (int e = 0; e < state_edges[i].nedges; e++) if (state_edges[i].edges[2 * e] > seen) seen = state_edges[i].edges[2 * e];
         seen_after = xrealloc(seen_after, sizeof(int) * (size_t)(nseen_after + 1));
         seen_after[nseen_after] = seen;
     }
@@ -12528,7 +12535,7 @@ static void live_eval(void);
    without its finite stuttering, each state may stutter or take its
    step. */
 static int sim_violates(States *trace) {
-    for (int i = 0; i < nstates; i++) free(states[i].edges);
+    for (int i = 0; i < nstates && state_edges; i++) free(state_edges[i].edges), state_edges[i] = (Edges){0};
     nstates = 0;
     store.n = 0;
     if (fp_size) memset(fp_table, 0, sizeof(FpSlot) * (size_t)fp_size);
@@ -14458,7 +14465,7 @@ static void worker_atoms(int lo, int hi) {
     Arena *saved = arena;
     arena = &scratch_arena;
     for (int s = lo; s < hi; s++) {
-        StateRec *r = &states[s];
+        Edges *r = &state_edges[s];
         Value **cur = decode_state(s);
         for (int e = 0; e <= r->nedges; e++) {
             Value **next = e < r->nedges ? decode_state(r->edges[2 * e]) : cur;
@@ -14614,7 +14621,7 @@ static int *live_cap, nlive_cap, live_mult = 1;
 static int succ_table_size(int s) {
     for (; nlive_cap <= s; nlive_cap++) {
         if (nlive_cap % 1024 == 0) live_cap = xrealloc(live_cap, sizeof(int) * (size_t)(nlive_cap + 1024));
-        StateRec *r = &states[nlive_cap];
+        Edges *r = &state_edges[nlive_cap];
         int len = live_cap[nlive_cap] = 16 * live_mult, count = r->nedges + 1;
         for (int e = 0; e < r->nedges; e++) if (r->edges[2 * e] == nlive_cap) count--;
         for (int i = 0; i < count; i++) if (i >= len / 2) len = 2 * len + 1;
@@ -14700,7 +14707,7 @@ static void succ_order(int p, const int *edges, int n, int stutter, int *order) 
    state graph, n for stuttering. */
 static void pnode_steps(int p, const int *edges, int n, int stutter) {
     static int *found, cap, *order, ncap;   /* (successor, action, step) triples */
-    int s = pnodes[p].state, t = pnodes[p].tnode, m = 0, graph = edges == states[s].edges;
+    int s = pnodes[p].state, t = pnodes[p].tnode, m = 0, graph = edges == state_edges[s].edges;
     tnode_expand(t);
     if (n + 1 > ncap) order = xrealloc(order, sizeof(int) * (size_t)(ncap = n + 1));
     succ_order(p, edges, n, stutter, order);
@@ -14730,7 +14737,7 @@ static void pnode_steps(int p, const int *edges, int n, int stutter) {
    one. A state the search stopped before expanding (TLCSet("exit")) has
    none, as TLC's graph has no such node. */
 static void pnode_successors(int p) {
-    StateRec *r = &states[pnodes[p].state];
+    Edges *r = &state_edges[pnodes[p].state];
     if (exit_requested && pnodes[p].state >= expanded) { pnode_steps(p, NULL, 0, 0); return; }
     int self = 0;
     for (int e = 0; e < r->nedges; e++) self |= r->edges[2 * e] == pnodes[p].state;
@@ -15831,7 +15838,7 @@ static void live_eval(void) {
     }
     for (live_at = 0; live_at < nstates; live_at++) {
         int s = live_at;
-        StateRec *r = &states[s];
+        Edges *r = &state_edges[s];
         for (int e = 0; e <= r->nedges; e++) {
             int t = e < r->nedges ? r->edges[2 * e] : s;   /* the last, stuttering */
             for (int i = 0; i < natoms; i++)
@@ -15888,7 +15895,7 @@ static void atom_cache_reset(void) {
     size_t n = (size_t)nstates * (size_t)natoms;
     free(step_atoms);
     step_atoms = xmalloc(sizeof(size_t) * (size_t)(nstates + 1));
-    for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(states[s].nedges + 1) * (size_t)natoms; }
+    for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(state_edges[s].nedges + 1) * (size_t)natoms; }
     if (atom_cache) munmap(atom_cache, atom_cache_size);
     atom_cache = shared(atom_cache_size = n + 1);
 }
