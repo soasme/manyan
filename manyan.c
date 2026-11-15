@@ -6929,20 +6929,9 @@ static __attribute__((noinline)) Value *cache_def(Def *d) {
     return d->cache;
 }
 
-static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
-    if (d->replacement) {
-        /* TLC computes it again where a name it replaces calls it: once is
-           the same unless it prints, draws or sets */
-        d = d->replacement;
-        if (d->effectful) return eval_body(d->body, (Ctx){NULL, NULL});
-    }
-    if (d->kind == D_CONST || d->kind == D_VAR) {
-        Value *v = decl_value(d, c, call);
-        if (!n || v->kind != V_OPER) return v;   /* F <- C: C's operator takes F's arguments */
-        Value **vals = NEWN(Value *, n);
-        for (int i = 0; i < n; i++) vals[i] = eval(args[i], c);
-        return apply_oper(v, vals, n, call);
-    }
+/* A call of d itself, whatever the configuration replaces it with. */
+static Value *call_own(Def *d, Expr **args, int n, Ctx c, Expr *call) {
+    if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, c, call);
     if (d->value) return d->value;
     if (ngen_values && is_gen(d)) return gen_value(call);
     if (d->kind == D_FCN) {
@@ -6990,6 +6979,25 @@ static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     }
     Ctx inner = {env, c.inst};
     return eval_body(d->body, inner);
+}
+
+/* A call of d, which the configuration replaces: TLC computes the
+   replacement again where a name it replaces calls it, the same once
+   unless it prints, draws or sets; F <- C applies C's operator to F's
+   arguments, and a value applied is the value. */
+static __attribute__((noinline)) Value *call_replaced(Def *d, Expr **args, int n, Ctx c, Expr *call) {
+    d = d->replacement;
+    if (d->effectful) return eval_body(d->body, (Ctx){NULL, NULL});
+    if (!n || d->kind != D_CONST) return call_own(d, args, n, c, call);
+    Value *v = decl_value(d, c, call);
+    if (v->kind != V_OPER) return v;
+    Value **vals = NEWN(Value *, n);
+    for (int i = 0; i < n; i++) vals[i] = eval(args[i], c);
+    return apply_oper(v, vals, n, call);
+}
+
+static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call) {
+    return d->replacement ? call_replaced(d, args, n, c, call) : call_own(d, args, n, c, call);
 }
 
 /* ---------------------------------------------------------------- standard modules */
