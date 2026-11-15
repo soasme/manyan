@@ -10231,8 +10231,8 @@ static uint64_t fingerprint(Value **st) {
 static int nworkers = 1;   /* processes expanding states; with more than one, the store is shared */
 static int states_mapped;  /* the records are mapped once, as many as the search can hold */
 
-/* A new state whose encoding ends the store. */
-static int add_record(size_t off, uint64_t fp, int parent, int action, int depth) {
+/* A new state, encoded at off in the store. */
+static int add_record(size_t off, int len, uint64_t fp, int parent, int action, int depth) {
     if (nstates == capstates) {
         if (nworkers > 1 || states_mapped) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
         capstates = capstates ? capstates * 2 : 1024;
@@ -10241,7 +10241,7 @@ static int add_record(size_t off, uint64_t fp, int parent, int action, int depth
     StateRec *r = &states[nstates];
     r->fp = fp;
     r->off = off;
-    r->len = (int)(store.n - off);
+    r->len = len;
     r->parent = parent;
     r->action = action;
     r->depth = depth;
@@ -10255,15 +10255,10 @@ static int add_record(size_t off, uint64_t fp, int parent, int action, int depth
     return nstates++;
 }
 
-static void store_add(const char *bytes, size_t n) {
-    if (nworkers > 1 && store.n + n + 1 > store.cap) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
-    buf_add(&store, bytes, n);
-}
-
 static int add_state(Value **st, uint64_t fp, int parent, int action, int depth) {
     size_t off = store.n;
     for (int i = 0; i < nvars; i++) encode(&store, st[i]);
-    return add_record(off, fp, parent, action, depth);
+    return add_record(off, (int)(store.n - off), fp, parent, action, depth);
 }
 
 /* ---------------------------------------------------------------- reporting */
@@ -11506,9 +11501,9 @@ static int expand_state(int idx) {
    state, whether it is clean (no error, violation or deadlock to report)
    and its successors in order. A successor not seen as the level started
    is claimed in a table the workers share; the worker that claims it
-   checks the invariants and keeps its encoding, once. The search merges
-   the batches in order as they are done, taking a new state's encoding
-   from its claim; states it adds meanwhile are in a fingerprint table the
+   checks the invariants and puts its encoding in the store, once, in the
+   half the search does not fill. The search merges the batches in order
+   as they are done, adding a new state where its claim put it; states it adds meanwhile are in a fingerprint table the
    workers do not read, so they claim them as new. It
    expands a state that is not clean, or that is the first to reach a
    state whose invariants failed, itself, so it reports exactly what one
@@ -11516,6 +11511,7 @@ static int expand_state(int idx) {
 #define PARALLEL_LEVEL 256    /* smaller levels are expanded by the search alone */
 #define BATCH 32
 #define CLAIM_CHUNK 64
+#define STORE_CHUNK (1 << 16)
 
 /* A successor: the state it is if seen as the level started, NEW with
    its claim, or CONSTRAINED. */
@@ -11535,24 +11531,26 @@ typedef struct {
     int fp_size;
     size_t nclaims;           /* the claim table's size, a power of two */
     atomic_size_t claimed;
+    atomic_size_t encoded;    /* the workers' half of the store, taken a chunk at a time */
 } Control;
 
 static Control *control;
 static Batch *batches;
 static Claim *claims;
-static char **results, **encodings;   /* each worker's regions */
+static char **results;   /* each worker's region */
 static int (*to_worker)[2], (*from_worker)[2];
 static pid_t *worker_pids;
 static int workers_running, forked_strs;
 static double growth = 1;      /* new states per state expanded, on the last level */
-static size_t max_claims, results_size, encodings_size;
+static size_t max_claims, results_size;
 
 /* What a worker's successors may fill of its results, the headers of a
    batch kept. */
 static size_t results_room(void) { return results_size - BATCH * 2 * sizeof(int); }
 
 static int w_id;               /* in a worker: its number */
-static size_t w_n, w_encoded;  /* bytes used of its regions */
+static size_t w_n;             /* bytes used of its region */
+static size_t w_at, w_end;     /* its chunk of the store */
 static size_t w_budget;        /* claims it may still make this level */
 static int w_clean, w_found;
 static Buf w_bytes;
@@ -11573,27 +11571,23 @@ static void share_search(void) {
     size_t memory = (size_t)sysconf(_SC_PHYS_PAGES) * (size_t)sysconf(_SC_PAGESIZE);
     size_t all = ((size_t)1 << 37) + sizeof(StateRec) * ((size_t)1 << 29) + ((size_t)1 << 36) +
                  sizeof(Batch) * ((size_t)1 << 29) / BATCH + sizeof(Claim) * ((size_t)1 << 27) +
-                 (size_t)nworkers * (((size_t)1 << 34) + ((size_t)1 << 36));
+                 (size_t)nworkers * ((size_t)1 << 34);
     while ((all >> shift) > memory / 4) shift++;
 #endif
-    store.cap = ((size_t)1 << 37) >> shift;
-    store.s = shared(store.cap);
+    store.cap = ((size_t)1 << 36) >> shift;   /* the search's half */
+    store.s = shared(2 * store.cap);
     capstates = (1 << 29) >> shift;
     states = shared(sizeof(StateRec) * (size_t)capstates);
     fp_region_size = ((size_t)1 << 36) >> shift;
     fp_region = shared(fp_region_size);
     control = shared(sizeof(Control));
+    control->encoded = store.cap;
     batches = shared(sizeof(Batch) * (size_t)(capstates / BATCH + 1));
     max_claims = ((size_t)1 << 27) >> shift;
     claims = shared(sizeof(Claim) * max_claims);
     results_size = ((size_t)1 << 34) >> shift;
-    encodings_size = ((size_t)1 << 36) >> shift;
     results = xmalloc(sizeof(char *) * (size_t)nworkers);
-    encodings = xmalloc(sizeof(char *) * (size_t)nworkers);
-    for (int i = 0; i < nworkers; i++) {
-        results[i] = shared(results_size);
-        encodings[i] = shared(encodings_size);
-    }
+    for (int i = 0; i < nworkers; i++) results[i] = shared(results_size);
 }
 
 /* The claim of the state fp, made if `make` and there is none; NULL if
@@ -11627,14 +11621,19 @@ static void settle(Claim *c) {
         (!gen_init || check_list(implied_inits, nimplied_inits, succ) < 0)) {
         w_bytes.n = 0;
         for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
-        ok = w_encoded + w_bytes.n <= encodings_size;   /* else the search keeps it */
+        if (w_at + w_bytes.n > w_end) {
+            size_t n = w_bytes.n > STORE_CHUNK ? w_bytes.n : STORE_CHUNK;
+            w_at = atomic_fetch_add(&control->encoded, n);
+            w_end = w_at + n;
+        }
+        ok = w_end <= 2 * store.cap;   /* else the search keeps it */
     }
     eval_restore(s);
     if (ok) {
-        memcpy(encodings[w_id] + w_encoded, w_bytes.s, w_bytes.n);
-        c->loc = (uint64_t)w_id << 40 | w_encoded;
+        memcpy(store.s + w_at, w_bytes.s, w_bytes.n);
+        c->loc = w_at;
         c->len = (int)w_bytes.n;
-        w_encoded += w_bytes.n;
+        w_at += w_bytes.n;
     }
     atomic_store(&c->state, ok ? SETTLED : FAILED);
 }
@@ -11781,12 +11780,13 @@ static _Noreturn void worker_main(int id) {
     in_worker = 1;
     gen_emit = worker_emit;
     w_id = id;
+    w_at = w_end = 0;   /* the search's chunk is its own */
     char c;
     while (read(to_worker[id][0], &c, 1) == 1) {
         fp_table = control->fp_table;
         fp_size = control->fp_size;
         gen_init = 0;   /* forked as Init was computed */
-        w_n = w_encoded = w_budget = 0;
+        w_n = w_budget = 0;
         while (expand_batch()) {}
         fflush(stdout);
         if (write(from_worker[id][1], "x", 1) != 1) _exit(1);
@@ -11850,10 +11850,8 @@ static void merge_found(int parent, const Found *f, int nfound) {
         Claim *c = &claims[f[k].claim];
         /* New this level: merged already, or added by the search itself. */
         if (found == NEW && (found = c->merged - 1) < 0 && (found = fp_find(f[k].fp)) < 0) {
-            size_t off = store.n;
-            store_add(encodings[c->loc >> 40] + (c->loc & (((uint64_t)1 << 40) - 1)), (size_t)c->len);
             int depth = parent < 0 ? 1 : states[parent].depth + 1;
-            found = add_record(off, f[k].fp, parent, f[k].action, depth);
+            found = add_record(c->loc, c->len, f[k].fp, parent, f[k].action, depth);
             if (depth > max_depth) max_depth = depth;
         }
         if (f[k].seen == NEW) c->merged = found + 1;
@@ -11898,7 +11896,7 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
     for (int i = 0; i < nforked; i++)
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
-    w_n = w_encoded = w_budget = 0;
+    w_n = w_budget = 0;
     int r = job == INIT ? merge_init(lo, hi) : job == ATOMS || job == GROUPS || job == OFFERS || job == STEPS || job == PEMS ? merge_atoms() : merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
