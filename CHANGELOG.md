@@ -71,6 +71,10 @@ unreleased:
 - A filter `{x \in U : P}` of a `UNION` TLC keeps tests the elements of
   its sets in turn, duplicates too, as TLC: it tested them sorted, so the
   states counted, the counterexample and an error of `P` could differ
+- Under a `VIEW` or `SYMMETRY`, workers keep the state one process keeps
+  for a fingerprint, the first found: they kept the one a worker claimed
+  first, so the trace, the invariant checked and the verdict could differ
+  from one process's
 
 2026-11-14 0.12.0:
 

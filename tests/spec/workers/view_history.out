@@ -1,0 +1,125 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Mutex is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"a", "a", "a", "a">>
+/\ cnt = <<0, 0, 0, 0>>
+/\ pc = <<"idle", "idle", "idle", "idle">>
+/\ hist = <<>>
+
+State 2: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"a", "a", "a", "a">>
+/\ cnt = <<1, 0, 0, 0>>
+/\ pc = <<"idle", "idle", "idle", "idle">>
+/\ hist = <<1>>
+
+State 3: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"a", "a", "a", "a">>
+/\ cnt = <<2, 0, 0, 0>>
+/\ pc = <<"idle", "idle", "idle", "idle">>
+/\ hist = <<1, 1>>
+
+State 4: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"a", "a", "a", "a">>
+/\ cnt = <<3, 0, 0, 0>>
+/\ pc = <<"idle", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1>>
+
+State 5: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"a", "a", "a", "a">>
+/\ cnt = <<4, 0, 0, 0>>
+/\ pc = <<"idle", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1>>
+
+State 6: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"b", "a", "a", "a">>
+/\ cnt = <<4, 0, 0, 0>>
+/\ pc = <<"idle", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1>>
+
+State 7: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "a", "a", "a">>
+/\ cnt = <<4, 0, 0, 0>>
+/\ pc = <<"idle", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1>>
+
+State 8: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "a", "a", "a">>
+/\ cnt = <<4, 0, 0, 0>>
+/\ pc = <<"set", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1>>
+
+State 9: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "a", "a", "a">>
+/\ cnt = <<4, 1, 0, 0>>
+/\ pc = <<"set", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2>>
+
+State 10: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "a", "a", "a">>
+/\ cnt = <<4, 2, 0, 0>>
+/\ pc = <<"set", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2>>
+
+State 11: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "a", "a", "a">>
+/\ cnt = <<4, 3, 0, 0>>
+/\ pc = <<"set", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2, 2>>
+
+State 12: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "a", "a", "a">>
+/\ cnt = <<4, 4, 0, 0>>
+/\ pc = <<"set", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2>>
+
+State 13: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "b", "a", "a">>
+/\ cnt = <<4, 4, 0, 0>>
+/\ pc = <<"set", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2>>
+
+State 14: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "c", "a", "a">>
+/\ cnt = <<4, 4, 0, 0>>
+/\ pc = <<"set", "idle", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2>>
+
+State 15: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<FALSE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "c", "a", "a">>
+/\ cnt = <<4, 4, 0, 0>>
+/\ pc = <<"set", "set", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2>>
+
+State 16: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<TRUE, FALSE, FALSE, FALSE>>
+/\ mode = <<"c", "c", "a", "a">>
+/\ cnt = <<4, 4, 0, 0>>
+/\ pc = <<"crit", "set", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1>>
+
+State 17: <Next line 32, col 26 to line 33, col 51 of module view_history>
+/\ flag = <<TRUE, TRUE, FALSE, FALSE>>
+/\ mode = <<"c", "c", "a", "a">>
+/\ cnt = <<4, 4, 0, 0>>
+/\ pc = <<"crit", "crit", "idle", "idle">>
+/\ hist = <<1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1, 2>>
+
+344994 states generated, 53679 distinct states found, 7417 states left on queue.
+The depth of the complete state graph search is 17.
+exit 12

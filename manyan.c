@@ -11501,7 +11501,9 @@ static int expand_state(int idx) {
    state, whether it is clean (no error, violation or deadlock to report)
    and its successors in order. A successor not seen as the level started
    is claimed in a table the workers share; the worker that claims it
-   checks the invariants and puts its encoding in the store, once, in the
+   (under symmetry or a view, the one with the earliest state to reach it,
+   whose successor one process keeps) checks the invariants and puts its
+   encoding in the store, once, in the
    half the search does not fill. The search merges the batches in order
    as they are done, adding a new state where its claim put it; states it adds meanwhile are in a fingerprint table the
    workers do not read, so they claim them as new. It
@@ -11519,8 +11521,8 @@ typedef struct { uint64_t fp; int action; int seen; uint32_t claim; } Found;
 enum { NEW = -1, CONSTRAINED = -2 };
 typedef struct { int worker; size_t off; atomic_int done; } Batch;
 enum { EXPAND, INIT, ATOMS, GROUPS, OFFERS, STEPS, PEMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms, check groups of error models, the offers' and the <>[] conditions on the product, search error models */
-typedef struct { _Atomic uint64_t key; atomic_int state; int len; uint64_t loc; int merged; } Claim;
-enum { CLAIMED, SETTLED, FAILED };    /* a claim's state: its invariants unchecked, held, or not */
+typedef struct { _Atomic uint64_t key, owner; uint64_t loc; int len, merged; } Claim;
+enum { CLAIMED, SETTLED, FAILED, WRITING };    /* a claim's state: its invariants unchecked, held, or not, or being kept */
 
 typedef struct {
     atomic_int next;          /* the next batch to take */
@@ -11553,6 +11555,7 @@ static size_t w_n;             /* bytes used of its region */
 static size_t w_at, w_end;     /* its chunk of the store */
 static size_t w_budget;        /* claims it may still make this level */
 static int w_clean, w_found;
+static long w_unit;            /* the state it expands, or Init's slice */
 static Buf w_bytes;
 
 static void *shared(size_t bytes) {
@@ -11611,7 +11614,13 @@ static Claim *claim(uint64_t fp, int make, int *made) {
     }
 }
 
-/* Checks the invariants of the successor a worker claimed and keeps its encoding. */
+/* A claim's owner and state, with the owner as a rank: under symmetry or
+   a view the state kept is the first that one process finds, so the
+   earliest state or slice to reach it owns it, ranked higher; 0 is none. */
+static uint64_t owner(int st) { return (uint64_t)(UINT32_MAX - (uint32_t)w_unit) << 2 | (uint64_t)st; }
+
+/* Checks the invariants of the successor a worker claimed and keeps its
+   encoding, unless an earlier state took the claim meanwhile. */
 static void settle(Claim *c) {
     EvalState s = eval_save();
     sigjmp_buf here;
@@ -11629,13 +11638,26 @@ static void settle(Claim *c) {
         ok = w_end <= 2 * store.cap;   /* else the search keeps it */
     }
     eval_restore(s);
+    uint64_t o = owner(CLAIMED);
+    if (!atomic_compare_exchange_strong(&c->owner, &o, owner(WRITING))) return;
     if (ok) {
         memcpy(store.s + w_at, w_bytes.s, w_bytes.n);
         c->loc = w_at;
         c->len = (int)w_bytes.n;
         w_at += w_bytes.n;
     }
-    atomic_store(&c->state, ok ? SETTLED : FAILED);
+    atomic_store(&c->owner, owner(ok ? SETTLED : FAILED));
+}
+
+/* Settles claim c if the state being expanded is earlier than its owner. */
+static void own(Claim *c) {
+    uint64_t o = atomic_load(&c->owner);
+    for (;;) {
+        if (o >> 2 >= owner(CLAIMED) >> 2) return;   /* an earlier state's, or this one's */
+        if ((o & 3) == WRITING) o = atomic_load(&c->owner);
+        else if (atomic_compare_exchange_weak(&c->owner, &o, owner(CLAIMED))) break;
+    }
+    settle(c);
 }
 
 static long w_slice;     /* slicing Init: the slice whose states are being written */
@@ -11659,6 +11681,7 @@ static int worker_emit(void) {
     if (gen_init) {
         if (!slice_owned()) return 0;
         while (w_slice < slice_seq) { slice_write(); slice_next(); }
+        w_unit = w_slice;
     }
     succ_count++;
     for (int i = 0; i < nvars; i++) if (!succ[i]) { w_clean = 0; return 1; }
@@ -11672,7 +11695,7 @@ static int worker_emit(void) {
             int made = 0;
             Claim *c = claim(f.fp, 1, &made);
             if (!c) { atomic_store(&control->starved, 1); w_clean = 0; return 1; }
-            if (made) settle(c);
+            if (made || nsymmetry || view_expr) own(c);
             f.claim = (uint32_t)(c - claims);
         }
     } else if (check_list(invariants, ninvariants, succ) >= 0 ||
@@ -11688,6 +11711,7 @@ static int worker_emit(void) {
 }
 
 static void worker_expand(int idx) {
+    w_unit = idx;
     size_t head = w_n;
     w_n += 2 * sizeof(int);
     w_clean = 1;
@@ -11834,7 +11858,7 @@ static int mergeable(const Found *f, int nfound) {
         if (f[k].seen != NEW) continue;
         Claim *c = &claims[f[k].claim];
         int st;
-        while ((st = atomic_load(&c->state)) == CLAIMED) sched_yield();
+        while ((st = atomic_load(&c->owner) & 3) == CLAIMED || st == WRITING) sched_yield();
         if (st != SETTLED) return 0;
     }
     return 1;
