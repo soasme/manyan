@@ -2,16 +2,19 @@
 
 <p align="center"><img src="docs/logo.jpg" alt="Manyan logo: a dragon and a koi in a circle" width="240"></p>
 
-A fast, TLC-compatible model checker for TLA⁺.
+A fast model checker for TLA⁺, compatible with TLC and Apalache.
 
 Manyan checks TLA⁺ specifications and model configurations with the same
-semantics and default reporting behavior as TLC, without requiring a JVM. It
-is an independent implementation written in C11, designed for fast feedback,
-predictable results, and embedding in other tools.
+semantics and default reporting behavior as TLC, and checks them
+symbolically and type-checks them as Apalache does, without requiring a
+JVM. It is an independent implementation written in C11, designed for fast
+feedback, predictable results, and embedding in other tools.
 
-Manyan does not extend the TLA⁺ language or fork TLC. TLC 1.8.0 is its
-reference oracle: compatibility tests compare results, output, and exit
-statuses against TLC.
+Manyan does not extend the TLA⁺ language or fork TLC or Apalache. They are
+its reference oracles: TLC 1.8.0 for model checking and simulation,
+Apalache 0.63.0 for symbolic checking (`-symbolic`) and type checking
+(`-typecheck`). Compatibility tests compare results, output, and exit
+statuses against them.
 
 **Naming:** Manyan (曼衍, *màn yǎn*, said "mahn-yen") comes from Zhuangzi's Qi Wu Lun (齐物论):
 “和之以天倪，因之以曼衍.” It evokes continuous unfolding and transformation—a
@@ -64,10 +67,13 @@ manyan -workers auto examples/DieHard   # one worker per core
 
 ## Why Manyan?
 
-**Compatible with TLC.** Manyan accepts TLC-style TLA⁺ modules and `.cfg`
-files. Its default output and exit statuses are tested against TLC so it can
-be used in existing scripts and CI workflows. Some TLC features are left
-out by decision; see [limitations](docs/manual.md#limitations).
+**Compatible with TLC and Apalache.** Manyan accepts TLC-style TLA⁺ modules
+and `.cfg` files. Its default output and exit statuses are tested against
+TLC so it can be used in existing scripts and CI workflows. Some TLC
+features are left out by decision; see [limitations](docs/manual.md#limitations).
+`-symbolic` and `-typecheck` give the outcomes of Apalache's `check` and
+`typecheck`, its counterexamples in ITF, and its type errors; what they
+do not do yet is in [docs/apalache-gaps.md](docs/apalache-gaps.md).
 
 **Fast startup and checking.** A small native executable avoids Java startup
 overhead. Benchmarks on the included models show substantial speedups over
@@ -131,10 +137,12 @@ report as TLC with one worker.
   (`-max-error`, with the configuration's `VIEW`), `--run-dir` (`-run-dir`,
   counterexamples in ITF), action and trace invariants, `Gen` and its
   module, and TLC's fairness; 226 of
-  Apalache's own tests give its outcome, refusing what it refuses (see the
-  [manual](docs/manual.md#symbolic-checking-experimental)).
+  Apalache's own tests give its outcome, refusing what it refuses, and so
+  do all 46 tlaplus/Examples models checked with Apalache (see the
+  [manual](docs/manual.md#symbolic-checking-experimental) and
+  [docs/symbolic-bench.md](docs/symbolic-bench.md)).
 - Experimental: `-typecheck` checks types and `@type` annotations as
-  Apalache's type checker does; all 75 of Apalache's type checking tests
+  Apalache's type checker does; all 71 of Apalache's type checking tests
   give its outcome (see the
   [manual](docs/manual.md#type-checking-experimental)).
 
@@ -148,9 +156,10 @@ parsed and skipped.
 ## How it is tested
 
 `manyan` follows [the Manyan TLA⁺ Standard](docs/standards/tla2.md),
-with TLC 1.8.0 as the oracle for every choice the language leaves open.
-The tests follow it; they need python3, and those that run TLC also need
-Java (they download tla2tools 1.8.0 themselves):
+with TLC 1.8.0 as the oracle for every choice the language leaves open,
+and Apalache 0.63.0 for symbolic checking and type checking. The tests
+follow it; they need python3, and those that run TLC or Apalache also need
+Java (they download tla2tools 1.8.0 and Apalache 0.63.0 themselves):
 
 - `tests/spec`: over 800 models, each with TLC's output and exit status.
   `make test-spec-oracle` runs TLC on every one of them as well, so a test
@@ -169,9 +178,15 @@ Java (they download tla2tools 1.8.0 themselves):
   check.
 - `tests/symbolic`: 290 models for `-symbolic`, 226 of them from Apalache's
   own tests, each with Apalache 0.63.0's outcome; `make
-  test-symbolic-oracle` runs Apalache on them too.
-- `tests/typecheck`: Apalache's 75 type checking tests for `-typecheck`,
-  each with Apalache's outcome.
+  test-symbolic-oracle` runs Apalache on them too, so a test can't drift
+  from what Apalache does.
+- `tests/typecheck`: Apalache's 71 type checking tests for `-typecheck` and
+  two of Manyan's, each with Apalache's outcome; `make
+  test-typecheck-oracle` runs Apalache on them too.
+- `make full-bench` checks tlaplus/Examples' models against TLC
+  ([docs/fullbench.md](docs/fullbench.md)), and `make full-bench-symbolic`
+  those it checks with Apalache against Apalache
+  ([docs/symbolic-bench.md](docs/symbolic-bench.md)).
 
 ## Layout
 
@@ -182,10 +197,14 @@ docs/standards/             the language standard Manyan conforms to
 docs/manual.md              how to use Manyan
 docs/std.md                 the standard modules, and writing an operator in C
 docs/benchmark.md           Manyan against TLC
+docs/fullbench.md           tlaplus/Examples, Manyan against TLC
+docs/symbolic-bench.md      tlaplus/Examples, -symbolic against Apalache
+docs/apalache-gaps.md       what -symbolic does not do yet that Apalache does
 docs/etcd.md                etcd's trace validation, Manyan against TLC
 docs/optimizations.md       what made Manyan fast, and what did not
 docs/roadmap.md             where Manyan is going
 tests/spec/                 conformance tests, by chapter of the standard
+tests/symbolic/, typecheck/ -symbolic's and -typecheck's tests, against Apalache
 tests/tla/                  TLA⁺ models of Manyan's algorithms
 examples/                   a spec and its configuration to try Manyan on
 bench/                      benchmark specs, compare.py (against TLC), quick.sh (two builds)

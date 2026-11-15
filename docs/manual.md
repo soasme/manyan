@@ -255,7 +255,7 @@ a missing or unreadable annotation is a typing input error, and exits
 with 255. Apalache's modules (`Apalache`, `Variants`, `Option`) and the
 types it gives the standard and community modules are built in.
 
-`make test-typecheck` runs Apalache 0.63.0's 75 type checking tests, each
+`make test-typecheck` runs Apalache 0.63.0's 71 type checking tests, each
 with Apalache's outcome (`tests/typecheck/apalache`). Where several
 `CONSTANT`s or `VARIABLE`s lack an annotation, Manyan names the one
 Apalache names: a variable before a constant, the last in the order of
