@@ -79,6 +79,7 @@ In the order they were made.
 | `assignable` with a fast path, an inline front, or a switch | each made partition about 11% slower with the profile-guided build; the loop form stays |
 | `ev_call` computing `+ - < <= > >=` of two integers inline, without the native call | none on the quick bench with the profile-guided build (counters 0.78 → 0.77, others equal): the natives are a few instructions already |
 | The invariants of a state outside the model, kept by its fingerprint, as TLC checks them each time it finds one | Huang finds each such state once: no hit |
+| A state-level value kept under a prime, so MCInnerSerial computes `opId` once for each candidate order, not for each `R` | the next state changes as successors are made, in many places, so a kept value would need the values it read checked (two more words in every binding, and its prints, which TLC repeats); `totalOpOrder` is lazy, so only `opId`, about 15%, is reached |
 
 ## Where the time goes now
 
