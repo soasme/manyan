@@ -60,6 +60,7 @@ In the order they were made.
 | The scratch arena takes regions through the whole search, and a filter's test is one; a region keeps one chunk it drops for the next | Examples' MCInnerSerial: over 4 GB → 0.47 GB, 310 s (TLC 354 s); closure 0.51 → 0.53 s (plain -O2), the rest flat |
 | An argument's value is kept while an initial state's invariants are checked, as for any other state: only a read of the initial state being found changes | tests/tla/MCInitSlices with 5552 initial states (a recursive operator passing its accumulator) 24.5 → 0.61; each `force` evaluated its thunk again, and that its argument's, down the recursion |
 | A constant operator whose body loops is computed once for each list of arguments of one value each, where computing it had no effect; one whose calls keep taking other values stops trying; Naturals' operators reached through an instance take `ev_call`'s integer path | Examples' Huang (1 worker) 36.2 → 9.1 |
+| `vcmp` compares a function's or record's keys and values inline where both are atoms, as it does a tuple's and a set's | Examples' MCInnerSerial 244.9 → 224.4 s, 9% fewer instructions (without PGO) |
 
 ## Tried and dropped
 

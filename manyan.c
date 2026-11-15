@@ -1074,8 +1074,12 @@ static int vcmp(Value *a, Value *b) {
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
         fp_enter(src);
         for (int i = 0; i < a->n && !c; i++) {
-            if (a->kind != V_TUPLE || b->kind != V_TUPLE) c = vcmp(fcn_key(a, i), fcn_key(b, i));
-            if (!c) c = vcmp(a->u.fcn.vals[i], b->u.fcn.vals[i]);
+            if (a->kind != V_TUPLE || b->kind != V_TUPLE) {
+                Value *x = fcn_key(a, i), *y = fcn_key(b, i);
+                c = x->kind == y->kind && x->kind <= V_MODEL ? (x->u.i > y->u.i) - (x->u.i < y->u.i) : vcmp(x, y);
+            }
+            Value *x = a->u.fcn.vals[i], *y = b->u.fcn.vals[i];
+            if (!c) c = x->kind == y->kind && x->kind <= V_MODEL ? (x->u.i > y->u.i) - (x->u.i < y->u.i) : vcmp(x, y);
         }
         fp_leave(src);
         return c;
