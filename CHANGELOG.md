@@ -60,6 +60,17 @@ unreleased:
   batches than workers forks no more workers than it has batches. The
   quick bench's liveness 43% faster with 8 workers, SimpleAllocator 79%,
   MCAlternatingBit 73%, DijkstraMutex 37%
+- An operator `F(a, b)` the configuration substitutes by a constant `C`
+  without parameters (`F <- C`) applies `C`'s value to its arguments, as
+  TLC: an operator table `C(2, 0) = 1` was taken whole, so a violated
+  invariant could pass
+- Under a `VIEW` or `SYMMETRY`, a fairness condition's action is evaluated
+  on the steps to the successors themselves: it was evaluated on the step
+  to the state kept for the successor's fingerprint, so a fair cycle could
+  be missed and a violated property pass
+- A filter `{x \in U : P}` of a `UNION` TLC keeps tests the elements of
+  its sets in turn, duplicates too, as TLC: it tested them sorted, so the
+  states counted, the counterexample and an error of `P` could differ
 
 2026-11-14 0.12.0:
 
@@ -162,17 +173,6 @@ unreleased:
   `<>A` is checked right: their 65th shared the first's mark of being
   deferred, so a fair cycle that fulfils both at different states was
   missed. A tableau node defers `<>A` when it is among its next formulas
-- an operator `F(a, b)` the configuration substitutes by a constant `C`
-  without parameters (`F <- C`) applies `C`'s value to its arguments, as
-  TLC: an operator table `C(2, 0) = 1` was taken whole, so a violated
-  invariant could pass
-- under a `VIEW` or `SYMMETRY`, a fairness condition's action is evaluated
-  on the steps to the successors themselves: it was evaluated on the step
-  to the state kept for the successor's fingerprint, so a fair cycle could
-  be missed and a violated property pass
-- a filter `{x \in U : P}` of a `UNION` TLC keeps tests the elements of
-  its sets in turn, duplicates too, as TLC: it tested them sorted, so the
-  states counted, the counterexample and an error of `P` could differ
 - an error evaluating fairness is the one TLC reports first: weak
   fairness's `ENABLED` is evaluated with the actions on each step, before
   strong fairness's on the state
