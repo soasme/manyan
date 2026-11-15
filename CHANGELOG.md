@@ -1,4 +1,4 @@
-unreleased:
+2026-11-16 0.13.0:
 
 - etcd's raft trace validation gives TLC's output. CommunityModules'
   `FoldSeq`, `SelectInSeq`, `SelectInSubSeq`, `SelectLastInSeq`,

@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MANYAN_VERSION "0.12.0"
+#define MANYAN_VERSION "0.13.0"
 
 /* Exit statuses, as TLC reports them (docs/standards/tla2.md, 11.3). */
 enum {
