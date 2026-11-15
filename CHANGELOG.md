@@ -28,6 +28,14 @@ unreleased:
   TLC does, and `TLCFP` gives TLC's value (`fp` in `ManyanOptions`).
   With the same `-fp`, all 900 random graphs of `tests/fuzz.py live`
   print TLC's counterexample, from 897
+- A constant operator whose body loops, over a set or by recursion, is
+  computed once for each list of arguments of one value each (Booleans,
+  integers, strings, model values), where TLC computes it at each call:
+  again where it prints, draws or reads the run, and with an argument
+  that prints or fails evaluated as TLC does. A native of `manyan.h` that
+  is not a function of its arguments calls `manyan_effect`. Huang's
+  `DyadicRationals`, whose GCD is quadratic, checks in 9.5 s, from 36 s
+  (TLC 34.6 s)
 - `TLCEval` converts its value as TLC does: an interval to its elements,
   a tuple, record or `[x \in S |-> e]` to a function of its pairs, which
   fails as a function when applied outside its domain

@@ -119,6 +119,10 @@ void *manyan_alloc(size_t);   /* zeroed memory that lives as values do: never fr
    the native's, as manyan_throw. */
 ManyanValue *manyan_format(ManyanCall *, const char *fmt, size_t n, const char *const *args);
 ManyanValue *manyan_arg(ManyanCall *, int i);       /* a MANYAN_LAZY native's argument i, evaluated */
+/* A native whose value is not a function of its arguments, or that changes
+   anything, such as a file, calls this as it is called: Manyan then keeps
+   nothing it computed with it, and computes it again where TLC would. */
+void manyan_effect(ManyanCall *);
 /* op, an operator argument (MANYAN_OTHER), applied to n values, as TLC's OpValue.eval. */
 ManyanValue *manyan_apply(ManyanCall *, ManyanValue *op, size_t n, ManyanValue *const *args);
 /* An error in the native: manyan_fail one TLC reports as its own, as an

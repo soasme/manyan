@@ -971,6 +971,7 @@ struct Env {
     Env *next;
     unsigned char perm;   /* allocated in the permanent arena */
     unsigned char stateful;   /* v was read from the current state */
+    unsigned char pure;   /* evaluating e can have no effect: 1 yes, 2 no, 0 unknown (arg_pure) */
 };
 
 /* An instance: the module instance definition and the context of the
@@ -2154,7 +2155,9 @@ struct Def {
     unsigned level_walk;  /* the walk of subst_level that last entered it */
     Value *cache;         /* a constant definition without parameters, once evaluated */
     int uncached;         /* one that failed as TLC started: evaluated each time, as in TLC */
-    int effectful;        /* one that printed, drew or set as it was computed */
+    int effectful;        /* one that had an effect as it was computed */
+    unsigned char scan;   /* what def_scan found: SCAN_ bits */
+    unsigned char memo;   /* 0 unknown, 1 its calls are memoized, 2 not */
     int local;
     int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
     int self;             /* D_FCN whose body names it: TLC's RecursiveFcnSpec, always lazy (§6.6) */
@@ -5619,6 +5622,7 @@ static int64_t int_cast(Value *v) {
 static Value *eval_operator_arg(Expr *a, Ctx c);
 static Value *apply_oper(Value *op, Value **args, int n, Expr *where);
 static Value *call_def(Def *d, Expr **args, int n, Ctx c, Expr *call);
+static Value *memo_call(Def *d, Expr *e, Ctx c);
 static int enabled(Expr *a, Ctx c);
 
 /* The value of a constant or variable, through the substitutions of the
@@ -6088,12 +6092,14 @@ static __attribute__((noinline)) Value *ev_call(Expr *e, Ctx c) {
     Value *vals[4];
     if (!d->replacement && plain_args(d, e, c, vals)) return call_native(d, e, vals, c);
     if (c.inst && d->cache && d->mod == root && !d->replacement) return d->cache;   /* the root module's, the same inside an instance */
+    if (d->memo != 2 && !c.inst) return memo_call(d, e, c);
     return call_def(d, e->args, e->n, c, e);
 }
 
 static __attribute__((noinline)) Value *ev_instcall(Expr *e, Ctx c) {
     Def *d = e->def;
     if (d->replacement) return call_def(d, e->args, e->n, c, e);   /* by the configuration, an operator of the root module */
+    if (d->intop && e->n == 2) return int_call(d, e, c);
     Inst *inst = instance_chain(e, c);
     Ctx ic = {c.env, inst};
     if (d->kind == D_CONST || d->kind == D_VAR) return decl_value(d, ic, e);
@@ -6902,10 +6908,10 @@ static Value **copy_values(Value **vs, int n, long *budget) {
 
 
 static Value *def_value(Def *d);
-static long effects;   /* the prints, draws and TLCSets so far */
+static long effects;   /* the prints, draws, TLCSets and reads of the run so far */
 
-/* Constant definition d, computed and kept; whether it printed, drew or
-   set, kept too. */
+/* Constant definition d, computed and kept; whether it had an effect,
+   kept too. */
 static __attribute__((noinline)) Value *cache_def(Def *d) {
     long seen = effects;
     d->cache = def_value(d);
@@ -7173,6 +7179,8 @@ Value *manyan_format(ManyanCall *call, const char *fmt, size_t n, const char *co
     free(b.s);
     return v;
 }
+
+void manyan_effect(ManyanCall *call) { (void)call; effects++; }
 
 Value *manyan_arg(ManyanCall *call, int i) { return realize(call->args ? call->args[i] : eval(call->call->args[i], call->c)); }
 
@@ -7457,7 +7465,7 @@ NATIVE(n_assert) {
     raise_error();
 }
 
-NATIVE(n_javatime) { UNUSED; return mk_int((int64_t)time(NULL) & 0x7fffffff); }
+NATIVE(n_javatime) { UNUSED; effects++; return mk_int((int64_t)time(NULL) & 0x7fffffff); }
 
 static void encode(Buf *b, Value *v);
 static Value *decode(const char **p);
@@ -7490,6 +7498,7 @@ static int *prop(const char *key) {
 
 NATIVE(n_tlcget) {
     UNUSED;
+    effects++;
     Value *k = a ? a[0] : eval(call->args[0], c);
     if (k->kind == V_STR) {
         const char *key = S(k->u.i);
@@ -8128,13 +8137,14 @@ NATIVE(n_tlcmodelvalue) {
 /* TLCGetOrDefault(i, d): register i, or d when nothing is kept there. */
 NATIVE(n_tlcgetordefault) {
     UNUSED;
+    effects++;
     if (a[0]->kind != V_INT || starting || a[0]->u.i < 0 || a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) return a[1];
     const char *p = registers[a[0]->u.i].s;
     return decode(&p);
 }
 
 static Value *trace_value(void);
-NATIVE(n_trace) { UNUSED; return trace_value(); }
+NATIVE(n_trace) { UNUSED; effects++; return trace_value(); }
 
 /* TLCExt's CounterExample: in a postcondition checked after an error,
    the behavior TLC reports it with (post_behavior), else none. Its
@@ -8147,7 +8157,7 @@ static struct { Value ***st, **rec; int *act, n, loop, loop_act, aliased; Value 
 static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased);
 static Value *counter_example(void);
 static Value *counter_trace(Value *ce);
-NATIVE(n_counterexample) { UNUSED; return counter_example(); }
+NATIVE(n_counterexample) { UNUSED; effects++; return counter_example(); }
 NATIVE(n_totrace) { UNUSED; return counter_trace(a[0]); }
 NATIVE(n_picksuccessor);   /* after the search */
 static int npicked_explored;
@@ -9470,6 +9480,179 @@ static inline uint64_t elem_hash(Value *v) { return v->kind <= V_MODEL ? fmix(at
 
 /* The hashes of the first indices of tuples, 1 to 64. */
 static uint64_t index_hash[64];
+
+/* What a definition's body may do, from what it is made of: loop, over a
+   set or by recursion; or have an effect, as a native that is not a
+   function of its arguments, or an operator not known here. */
+enum { SCAN_DONE = 1, SCAN_BUSY = 2, SCAN_LOOPS = 4, SCAN_IMPURE = 8 };
+
+static int impure_native(Def *d) {
+    Native f = d->native;
+    return d->api || f == n_print || f == n_printt || f == n_tlcset || f == n_randomelement || f == n_randomsubset ||
+           f == n_randomsetofsubsets || f == n_javatime || f == n_tlcget || f == n_tlcgetordefault || f == n_trace ||
+           f == n_counterexample || f == n_picksuccessor || f == n_tlcdefer;
+}
+
+static int def_scan(Def *d);
+
+static int expr_scan(Expr *e) {
+    if (!e) return 0;
+    int f = 0;
+    switch (e->kind) {
+    case X_FILTER: case X_MAP: case X_FORALL: case X_EXISTS: case X_CHOOSE: case X_FCN: f = SCAN_LOOPS; break;
+    case K_PARAMCALL: f = SCAN_IMPURE; break;
+    case K_CALL: case X_OPREF: if (e->def) f = def_scan(e->def); break;
+    case K_INSTCALL:
+        f = def_scan(e->def);
+        for (int i = 0; i < e->ndefs; i++)
+            for (int k = 0; k < e->defs[i]->nsubst; k++) f |= expr_scan(e->defs[i]->subst_expr[k]);
+        break;
+    case X_LAMBDA: f = expr_scan(e->def->body); break;
+    case X_LET: for (int i = 0; i < e->ndefs; i++) f |= expr_scan(e->defs[i]->body); break;
+    default: break;
+    }
+    for (int i = 0; i < e->n; i++) f |= expr_scan(e->args[i]);
+    for (int i = 0; i < e->nb; i++) f |= expr_scan(e->bounds[i].set);
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (e->paths[i].fields[k] < 0) f |= expr_scan(e->paths[i].keys[k]);
+    for (int i = 0; i < e->nseg; i++)
+        for (int k = 0; k < e->segs[i].n; k++) f |= expr_scan(e->segs[i].args[k]);
+    return f;
+}
+
+static int def_scan(Def *d) {
+    if (d->replacement) d = d->replacement;
+    if (d->scan & SCAN_BUSY) return SCAN_LOOPS | SCAN_IMPURE;   /* recursion */
+    if (!(d->scan & SCAN_DONE)) {
+        int f = 0;
+        if (d->native) f = impure_native(d) ? SCAN_IMPURE : 0;
+        else {
+            d->scan = SCAN_BUSY;
+            f = expr_scan(d->body);
+            for (int i = 0; i < d->nb; i++) f |= expr_scan(d->bounds[i].set);
+        }
+        d->scan = (unsigned char)(SCAN_DONE | f);
+    }
+    return d->scan & (SCAN_LOOPS | SCAN_IMPURE);
+}
+
+/* Whether evaluating e in env can have no effect: what its names are bound
+   to evaluated, or itself so. */
+static int arg_pure(Expr *e, Env *env) {
+    if (e->kind == K_BOUND || (e->kind == K_CALL && e->def->local == 2 && !e->def->nparams)) {   /* a LET definition's too */
+        Env *b = env_find(env, e->def);
+        if (!b) return 0;
+        if (b->v && !(primed && b->stateful)) return 1;
+        if (!b->pure) b->pure = b->e && arg_pure(b->e, b->ctx_env) ? 1 : 2;
+        return b->pure == 1;
+    }
+    if (e->kind == K_PARAMCALL || e->kind == X_LET || e->kind == X_LAMBDA || e->nb) return 0;   /* names bound inside, or unknown */
+    if (e->kind == K_CALL || e->kind == K_INSTCALL || e->kind == X_OPREF) {
+        if (!e->def || e->def->local == 2 || (def_scan(e->def) & SCAN_IMPURE)) return 0;
+        for (int i = 0; i < e->ndefs; i++) if (e->defs[i]->nsubst) return 0;
+    }
+    for (int i = 0; i < e->n; i++) if (!arg_pure(e->args[i], env)) return 0;
+    for (int i = 0; i < e->nseg; i++)
+        for (int k = 0; k < e->segs[i].n; k++) if (!arg_pure(e->segs[i].args[k], env)) return 0;
+    return 1;
+}
+
+/* Calls of a constant definition whose body loops, with arguments of
+   one value each (a Boolean, integer, string or model value), each
+   computed once: TLC computes it at each call, the same unless it has an
+   effect, after which nothing is kept. The arguments are evaluated first,
+   which TLC does as the body needs them: only where that can have no
+   effect, and where one fails the call is TLC's. */
+#define MEMO_ARGS 4
+#define MEMO_MAX (1 << 16)   /* the calls kept */
+typedef struct { Def *d; int64_t x[MEMO_ARGS]; unsigned char kind[MEMO_ARGS]; Value *v; } Memo;
+static Memo *memos;
+static size_t nmemos, capmemos;
+
+static int memo_candidate(Def *d) {
+    if (d->kind != D_OP || d->native || d->replacement || !d->body || d->local == 2 || d->nparams < 1 || d->nparams > MEMO_ARGS) return 0;
+    for (int i = 0; i < d->nparams; i++) if (d->params[i]->arity) return 0;
+    return def_level(d) == 0 && (def_scan(d) & SCAN_LOOPS);
+}
+
+/* The arguments not yet evaluated, each that can have no effect; 0 if one
+   fails or might have one. */
+static __attribute__((noinline)) int memo_args(Expr *e, Ctx c, Value **a) {
+    for (int i = 0; i < e->n; i++) if (!a[i] && !arg_pure(e->args[i], c.env)) return 0;
+    EvalState saved = eval_save();
+    sigjmp_buf here;
+    handler = &here;
+    volatile int ok = 0;
+    if (!sigsetjmp(here, 0)) {
+        for (int i = 0; i < e->n; i++) if (!a[i]) a[i] = eval(e->args[i], c);
+        ok = 1;
+    }
+    eval_restore(saved);
+    return ok;
+}
+
+static size_t memo_slot(Def *d, Value **a, int n) {
+    uint64_t h = (uint64_t)(uintptr_t)d;
+    for (int i = 0; i < n; i++) h = fmix(h ^ atom_word(a[i]->kind, a[i]->u.i));
+    size_t j = h & (capmemos - 1);
+    for (;; j = (j + 1) & (capmemos - 1)) {
+        Memo *m = &memos[j];
+        if (!m->d) return j;
+        int same = m->d == d;
+        for (int i = 0; i < n && same; i++) same = m->kind[i] == a[i]->kind && m->x[i] == a[i]->u.i;
+        if (same) return j;
+    }
+}
+
+static Value *memo_call(Def *d, Expr *e, Ctx c) {
+    if (!d->memo) d->memo = memo_candidate(d) ? 1 : 2;
+    if (d->memo == 2 || keep_lazy || e->n != d->nparams) return call_def(d, e->args, e->n, c, e);
+    Value *a[MEMO_ARGS];
+    int all = 1;
+    for (int i = 0; i < e->n; i++) {
+        Expr *x = e->args[i];
+        Env *b = x->kind == K_BOUND ? env_find(c.env, x->def) : NULL;
+        a[i] = b && b->v && !(primed && b->stateful) ? b->v : x->kind == X_NUM || x->kind == X_STR || x->kind == X_BOOL ? eval(x, c) : NULL;
+        all &= a[i] != NULL;
+    }
+    if (!all && !memo_args(e, c, a)) return call_def(d, e->args, e->n, c, e);
+    Env *env = NULL;
+    int scalar = 1;
+    for (int i = 0; i < e->n; i++) env = mk_binding(d->params[i], a[i], env), scalar &= a[i]->kind <= V_MODEL;
+    if (!scalar) return eval_body(d->body, (Ctx){env, NULL});
+    if (2 * (nmemos + 1) > capmemos && nmemos < MEMO_MAX) {
+        Memo *old = memos;
+        size_t n = capmemos;
+        capmemos = capmemos ? 2 * capmemos : 1024;
+        memos = xcalloc(capmemos, sizeof(Memo));
+        for (size_t i = 0; i < n; i++)
+            if (old[i].d) {
+                Value *k[MEMO_ARGS];
+                Value kv[MEMO_ARGS];
+                for (int j = 0; j < old[i].d->nparams; j++) kv[j].kind = old[i].kind[j], kv[j].u.i = old[i].x[j], k[j] = &kv[j];
+                memos[memo_slot(old[i].d, k, old[i].d->nparams)] = old[i];
+            }
+        free(old);
+    }
+    size_t j = memo_slot(d, a, e->n);
+    if (memos[j].d) return memos[j].v;
+    long seen = effects;
+    Value *v = eval_body(d->body, (Ctx){env, NULL});
+    if (effects != seen || nmemos >= MEMO_MAX || v->kind == V_LAZY || v->kind == V_LAMBDA || v->kind == V_OPER) return v;
+    Arena *saved = arena;
+    arena = &perm_arena;
+    long budget = 256;
+    Value *kept = copy_value(v, &budget);
+    arena = saved;
+    if (!kept) return v;
+    j = memo_slot(d, a, e->n);   /* the body may have kept others */
+    Memo m = {d, {0}, {0}, kept};
+    for (int i = 0; i < e->n; i++) m.x[i] = a[i]->u.i, m.kind[i] = (unsigned char)a[i]->kind;
+    memos[j] = m;
+    nmemos++;
+    return kept;
+}
 
 /* The hash of pair i of f, with value val: the key's hash and the value's,
    or an atom's word, which the pair's mixing spreads. */
@@ -10807,6 +10990,7 @@ static int picked_seen(uint64_t fp) {
 }
 NATIVE(n_picksuccessor) {
     UNUSED;
+    effects++;
     if (a) return TRUEV;
     if (in_worker) worker_cannot();
     int complete = next_state != NULL;

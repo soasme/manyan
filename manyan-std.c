@@ -82,6 +82,7 @@ static void add(Values *l, ManyanValue *v) {
 extern char **environ;
 
 static ManyanValue *io_env(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     (void)call, (void)a;
     Values names = {0}, values = {0};
     for (char **e = environ; *e; e++) {
@@ -126,6 +127,7 @@ static ManyanValue *exec_record(int64_t code, const char *out, size_t nout, cons
 
 /* Runs argv with env's variables added, its standard input empty. */
 static ManyanValue *run_process(ManyanCall *call, char **argv, ManyanValue *env) {
+    manyan_effect(call);
     int out[2], err[2];
     fflush(stdout);
     if (pipe(out) || pipe(err)) manyan_fail(call, "Cannot run program \"%s\": %s", argv[0], strerror(errno));
@@ -177,6 +179,7 @@ static ManyanValue *io_env_exec(ManyanCall *call, ManyanValue **a) {
    writes the string payload to file, with Java's StandardOpenOptions; TLC
    leaves another format to the definition. */
 static ManyanValue *serialize(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     (void)a;
     ManyanValue *opts = manyan_arg(call, 2), *format = manyan_field(opts, "format");
     if (!format || manyan_kind(format) != MANYAN_STRING || strcmp(manyan_string_value(format, NULL), "TXT")) return NULL;
@@ -535,6 +538,7 @@ static char *json_file(ManyanCall *call, ManyanValue *path, size_t *n) {
 }
 
 static ManyanValue *json_deserialize(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     size_t n;
     char *text = json_file(call, a[0], &n);
     Json j = {call, text, text + n};
@@ -547,6 +551,7 @@ static ManyanValue *json_deserialize(ManyanCall *call, ManyanValue **a) {
 
 /* Each line not blank a value: ndJSON. */
 static ManyanValue *nd_json_deserialize(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     size_t n;
     char *text = json_file(call, a[0], &n);
     Values lines = {0};
@@ -711,6 +716,7 @@ static void json_write(ManyanCall *call, ManyanValue *path, Text *t) {
 }
 
 static ManyanValue *json_serialize(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     if (!to_tuple(a[1]) && !is_record(a[1]))
         manyan_fail(call, "The second argument of JsonSerialize should be a sequence or record, but instead it is:\n%s", manyan_print(a[1]));
     Text t = {0};
@@ -720,6 +726,7 @@ static ManyanValue *json_serialize(ManyanCall *call, ManyanValue **a) {
 }
 
 static ManyanValue *nd_json_serialize(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     ManyanValue *v = to_tuple(a[1]);
     if (!v) manyan_fail(call, "The second argument of ndJsonSerialize should be a sequence, but instead it is:\n%s", manyan_print(a[1]));
     Text t = {0};
@@ -884,6 +891,7 @@ static void append_line(ManyanCall *call, ManyanValue *file, const char *text) {
 /* CSVWrite(template, val, file): val's elements, as TLC writes them,
    put in the template by Java's String.format. */
 static ManyanValue *csv_write(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     ManyanValue *vals = to_tuple(a[1]);
     if (!vals) manyan_fail(call, "The argument of CSVWrite should be a sequence, but instead it is:\n%s", manyan_print(a[1]));
     size_t n = manyan_size(vals);
@@ -909,6 +917,7 @@ static void write_fields(ManyanCall *call, ManyanValue *file, ManyanValue *r, in
 /* CSVWriteRecord(record, delimiter, headers, file): its fields in order,
    after a line of their names if headers. */
 static ManyanValue *csv_write_record(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     if (!is_record(a[0])) manyan_fail(call, "The argument of CSVWriteRecord should be a record, but instead it is:\n%s", manyan_print(a[0]));
     if (manyan_is_true(a[2])) write_fields(call, a[3], a[0], 1, manyan_string_value(a[1], NULL));
     write_fields(call, a[3], a[0], 0, manyan_string_value(a[1], NULL));
@@ -941,6 +950,7 @@ static char **lines_of(ManyanCall *call, ManyanValue *file, size_t *n) {
 }
 
 static ManyanValue *csv_records(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     size_t n = 0;
     char **lines = lines_of(call, a[0], &n);
     if (lines) free(lines[n]), free(lines);
@@ -977,6 +987,7 @@ static void split(ManyanCall *call, const char *line, const char *delimiter, Val
 /* CSVRead(columns, delimiter, file): a record of each line, its fields
    named by columns. */
 static ManyanValue *csv_read(ManyanCall *call, ManyanValue **a) {
+    manyan_effect(call);
     ManyanValue *columns = to_tuple(a[0]);
     if (!columns) manyan_fail(call, "The argument of CSVRead should be a sequence, but instead it is:\n%s", manyan_print(a[0]));
     size_t n = 0, ncols = manyan_size(columns);

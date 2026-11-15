@@ -1,0 +1,30 @@
+<<"loud", 2>>
+<<"loud", 2>>
+<<"first", 1>>
+"arg"
+<<"below", 1, {}>>
+Finished computing initial states: 1 distinct state generated.
+<<"loud", 2>>
+<<"loud", 2>>
+<<"first", 1>>
+"arg"
+<<"below", 2, {1}>>
+<<"loud", 2>>
+<<"loud", 2>>
+<<"first", 1>>
+"arg"
+<<"below", 3, {1, 2}>>
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 1
+
+State 2: <Next line 14, col 9 to line 14, col 27 of module memo_effects>
+x = 2
+
+State 3: <Next line 14, col 9 to line 14, col 27 of module memo_effects>
+x = 3
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 11
