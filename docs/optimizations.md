@@ -63,6 +63,7 @@ In the order they were made.
 | `vcmp` compares a function's or record's keys and values inline where both are atoms, as it does a tuple's and a set's | Examples' MCInnerSerial 244.9 → 224.4 s, 9% fewer instructions (without PGO) |
 | A state's steps kept in their own array, only with a temporal property; a fingerprint slot holds the fingerprint's high half and the state, the record the whole | memory: MCKVSSafetySmall 798 → 694 MB with 1 worker, 1197 → 1009 MB with 4; time unchanged |
 | With one worker, the state records are one mapping, reserved, and each fingerprint table its own, unmapped as it grows (macOS's malloc keeps a large block freed) | memory: MCKVSSafetySmall 695 → 511 MB with 1 worker; time unchanged |
+| With workers, a new state's encoding goes in the store's other half, not a worker's region the search copies from; a successor found is its action and its state or claim, 8 bytes, the claim keeping a new one's fingerprint | memory: MCKVSSafetySmall's search with 4 workers 1009 → 753 MB (the found successors 229 → 79 MB); time unchanged |
 
 ## Tried and dropped
 

@@ -105,9 +105,10 @@ output, and 897 of 900 random liveness graphs its counterexample.
    worker, the records mapped once and each fingerprint table unmapped
    as it grows, where macOS kept the blocks freed: 694 → 511 MB. With
    four, the workers put a new state's encoding in the store, where the
-   search copied it from regions of their own: 54 MB fewer pages
-   touched. Left with four: the found successors, 230 MB at the widest
-   level, the claims, 128 MB, and the fingerprint tables outgrown, 63 MB.
+   search copied it from regions of their own, and a successor found is
+   8 bytes, from 24, its fingerprint kept by its claim if it is new: the
+   search 904 → 753 MB with four. Left with four: the claims, 128 MB at
+   the widest level, and the fingerprint tables outgrown, 63 MB.
 6. **TLC's command lines, as scripts run them.** etcd's script stops at
    `unknown option -lncheck`, though checking liveness at the end is all
    Manyan does. Accept `-lncheck`, `-noGenerateSpecTE`, `-teSpecOutDir`

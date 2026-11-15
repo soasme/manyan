@@ -11515,10 +11515,11 @@ static int expand_state(int idx) {
 #define CLAIM_CHUNK 64
 #define STORE_CHUNK (1 << 16)
 
-/* A successor: the state it is if seen as the level started, NEW with
-   its claim, or CONSTRAINED. */
-typedef struct { uint64_t fp; int action; int seen; uint32_t claim; } Found;
-enum { NEW = -1, CONSTRAINED = -2 };
+/* A successor: the state it is if seen as the level started,
+   CONSTRAINED, or new, as CLAIM minus its claim, which keeps its
+   fingerprint. */
+typedef struct { int action, seen; } Found;
+enum { CONSTRAINED = -2, CLAIM = -3 };
 typedef struct { int worker; size_t off; atomic_int done; } Batch;
 enum { EXPAND, INIT, ATOMS, GROUPS, OFFERS, STEPS, PEMS };   /* a batch's job: expand states, compute Init's slices, a property's atoms, check groups of error models, the offers' and the <>[] conditions on the product, search error models */
 typedef struct { _Atomic uint64_t key, owner; uint64_t loc; int len, merged; } Claim;
@@ -11593,24 +11594,22 @@ static void share_search(void) {
     for (int i = 0; i < nworkers; i++) results[i] = shared(results_size);
 }
 
-/* The claim of the state fp, made if `make` and there is none; NULL if
-   there is none, or no room for it. */
-static Claim *claim(uint64_t fp, int make, int *made) {
-    uint64_t key = fp ? fp : 1;   /* 0 marks a free entry */
+/* The claim of the state fp, not 0, which marks a free entry: made if
+   there is none, or NULL if there is no room for it. */
+static Claim *claim(uint64_t fp, int *made) {
     size_t mask = control->nclaims - 1;
-    for (size_t j = key & mask;; j = (j + 1) & mask) {
+    for (size_t j = fp & mask;; j = (j + 1) & mask) {
         uint64_t k = atomic_load(&claims[j].key);
-        if (k == key) return &claims[j];
+        if (k == fp) return &claims[j];
         if (k) continue;
-        if (!make) return NULL;
         if (!w_budget) {
             /* Room for claims is taken a chunk at a time: the count is shared. */
             if (atomic_fetch_add(&control->claimed, CLAIM_CHUNK) + CLAIM_CHUNK > control->nclaims / 2) return NULL;
             w_budget = CLAIM_CHUNK;
         }
         w_budget--;
-        if (atomic_compare_exchange_strong(&claims[j].key, &k, key)) { *made = 1; return &claims[j]; }
-        if (k == key) return &claims[j];
+        if (atomic_compare_exchange_strong(&claims[j].key, &k, fp)) { *made = 1; return &claims[j]; }
+        if (k == fp) return &claims[j];
     }
 }
 
@@ -11685,18 +11684,18 @@ static int worker_emit(void) {
     }
     succ_count++;
     for (int i = 0; i < nvars; i++) if (!succ[i]) { w_clean = 0; return 1; }
-    Found f = {0, cur_action, CONSTRAINED, 0};
+    Found f = {cur_action, CONSTRAINED};
     if (check_list(constraints, nconstraints, succ) < 0 &&
         (gen_init || check_actions(action_constraints, naction_constraints, cur_state, succ) < 0)) {
-        f.fp = fingerprint(succ);
-        if (!gen_init && check_actions(action_props, naction_props, cur_state, succ) >= 0) { w_clean = 0; return 1; }
-        f.seen = fp_find(f.fp);
-        if (f.seen == NEW) {
+        uint64_t fp = fingerprint(succ);
+        if (!fp || (!gen_init && check_actions(action_props, naction_props, cur_state, succ) >= 0)) { w_clean = 0; return 1; }
+        f.seen = fp_find(fp);
+        if (f.seen < 0) {
             int made = 0;
-            Claim *c = claim(f.fp, 1, &made);
+            Claim *c = claim(fp, &made);
             if (!c) { atomic_store(&control->starved, 1); w_clean = 0; return 1; }
             if (made || nsymmetry || view_expr) own(c);
-            f.claim = (uint32_t)(c - claims);
+            f.seen = CLAIM - (int)(c - claims);
         }
     } else if (check_list(invariants, ninvariants, succ) >= 0 ||
                (gen_init ? check_list(implied_inits, nimplied_inits, succ) : check_actions(action_props, naction_props, cur_state, succ)) >= 0) {
@@ -11855,8 +11854,8 @@ static void stop_workers(void) {
    settled by the worker that claimed it, which may still be at it. */
 static int mergeable(const Found *f, int nfound) {
     for (int k = 0; k < nfound; k++) {
-        if (f[k].seen != NEW) continue;
-        Claim *c = &claims[f[k].claim];
+        if (f[k].seen > CLAIM) continue;
+        Claim *c = &claims[CLAIM - f[k].seen];
         int st;
         while ((st = atomic_load(&c->owner) & 3) == CLAIMED || st == WRITING) sched_yield();
         if (st != SETTLED) return 0;
@@ -11869,16 +11868,18 @@ static int mergeable(const Found *f, int nfound) {
 static void merge_found(int parent, const Found *f, int nfound) {
     for (int k = 0; k < nfound; k++) {
         generated++;
-        if (f[k].seen == CONSTRAINED) continue;
         int found = f[k].seen;
-        Claim *c = &claims[f[k].claim];
-        /* New this level: merged already, or added by the search itself. */
-        if (found == NEW && (found = c->merged - 1) < 0 && (found = fp_find(f[k].fp)) < 0) {
-            int depth = parent < 0 ? 1 : states[parent].depth + 1;
-            found = add_record(c->loc, c->len, f[k].fp, parent, f[k].action, depth);
-            if (depth > max_depth) max_depth = depth;
+        if (found == CONSTRAINED) continue;
+        if (found <= CLAIM) {
+            /* New this level: merged already, or added by the search itself. */
+            Claim *c = &claims[CLAIM - found];
+            if ((found = c->merged - 1) < 0 && (found = fp_find(c->key)) < 0) {
+                int depth = parent < 0 ? 1 : states[parent].depth + 1;
+                found = add_record(c->loc, c->len, c->key, parent, f[k].action, depth);
+                if (depth > max_depth) max_depth = depth;
+            }
+            c->merged = found + 1;
         }
-        if (f[k].seen == NEW) c->merged = found + 1;
         if (ntemporal_props && parent >= 0) add_edge(parent, found, f[k].action);
     }
 }
