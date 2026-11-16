@@ -1,4 +1,4 @@
-unreleased:
+2026-11-16 0.14.0:
 
 - `pip install manyan`: wheels of the executable a release ships, for
   macOS, Linux and Windows, installed onto the PATH; `python -m manyan`
