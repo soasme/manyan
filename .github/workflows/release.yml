@@ -1,5 +1,6 @@
 # Pushing a tag vX.Y.Z builds manyan on each platform, runs the conformance
-# suite with each build, and publishes them as the release X.Y.Z.
+# suite with each build, and publishes them as the release X.Y.Z, as wheels
+# of the same executables on PyPI, and as the WebAssembly build on npm.
 # Run by hand, it builds and tests without publishing.
 name: release
 
@@ -25,6 +26,8 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME, but manyan.h says $version"; exit 1
           fi
           grep -q " $version:$" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          npm=$(node -p 'require("./javascript/package.json").version')
+          [ "$npm" = "$version" ] || { echo "::error::javascript/package.json says $npm, but manyan.h says $version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   macos:
@@ -52,10 +55,18 @@ jobs:
             mkdir $dir && cp $arch/manyan README.md CHANGELOG.md LICENSE $dir
             tar -czf $dir.tar.gz $dir
           done
+      - run: |
+          python3 python/wheel.py macosx_11_0_arm64 wheels arm64/manyan
+          python3 python/wheel.py macosx_11_0_x86_64 wheels x86_64/manyan
+          python3 -m venv venv && venv/bin/pip install -q wheels/*arm64.whl && venv/bin/manyan -version
       - uses: actions/upload-artifact@v4
         with:
-          name: macos
+          name: release-macos
           path: "*.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos
+          path: wheels/*.whl
 
   linux:
     needs: version
@@ -64,8 +75,10 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-24.04
+            wheel: x86_64
           - arch: arm64
             runner: ubuntu-24.04-arm
+            wheel: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -77,10 +90,18 @@ jobs:
           dir=manyan-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
           mkdir $dir && cp manyan README.md CHANGELOG.md LICENSE $dir
           tar -czf $dir.tar.gz $dir
+      # Linked statically, it runs on any Linux libc.
+      - run: |
+          python3 python/wheel.py manylinux_2_17_${{ matrix.wheel }}.musllinux_1_1_${{ matrix.wheel }} wheels manyan
+          python3 -m venv venv && venv/bin/pip install -q wheels/*.whl && venv/bin/manyan -version
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-${{ matrix.arch }}
+          name: release-linux-${{ matrix.arch }}
           path: "*.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.arch }}
+          path: wheels/*.whl
 
   # Workers fork and share memory, so Windows gets Cygwin's POSIX.
   windows:
@@ -110,10 +131,23 @@ jobs:
         run: |
           .\manyan-${{ needs.version.outputs.version }}-windows-x86_64\manyan.exe -version
           if ($LASTEXITCODE) { exit 1 }
+      # Windows on Arm runs the same files, emulated (windows-arm).
+      - run: |
+          for tag in win_amd64 win_arm64; do python3 python/wheel.py $tag wheels manyan.exe /usr/bin/cygwin1.dll; done
+      - shell: pwsh
+        run: |
+          python -m venv venv
+          venv\Scripts\pip install -q (Get-Item wheels\*win_amd64.whl)
+          venv\Scripts\manyan.exe -version
+          if ($LASTEXITCODE) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
-          name: windows
+          name: release-windows
           path: "*.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows
+          path: wheels/*.whl
 
   # Cygwin has no arm64 port: Windows on Arm runs the x86_64 build, emulated.
   windows-arm:
@@ -133,7 +167,17 @@ jobs:
           packages: python3 unzip
       - uses: actions/download-artifact@v4
         with:
-          name: windows
+          name: release-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows
+          path: wheels
+      - shell: pwsh
+        run: |
+          python -m venv venv
+          venv\Scripts\pip install -q (Get-Item wheels\*win_arm64.whl)
+          venv\Scripts\manyan.exe -version
+          if ($LASTEXITCODE) { exit 1 }
       - run: unzip -q manyan-${{ needs.version.outputs.version }}-windows-x86_64.zip
       # As it ships, from Windows; then the suite in Cygwin, whose own dll
       # it must use there, as two Cygwin dlls in one session conflict.
@@ -156,6 +200,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: dist
           merge-multiple: true
       - env:
@@ -165,3 +210,69 @@ jobs:
           (cd dist && sha256sum -- * > SHA256SUMS)
           awk -v v="$VERSION:" '/^[0-9-]+ [0-9.]+:$/ {on = $2 == v; next} on' CHANGELOG.md > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "Manyan $VERSION" --notes-file notes.md
+
+  # The wheels to PyPI by trusted publishing: PyPI trusts this workflow and
+  # the pypi environment, so no token is stored.
+  pypi:
+    if: github.ref_type == 'tag'
+    needs: [version, macos, linux, windows, windows-arm]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  # The WebAssembly build, tested with the conformance suite as each
+  # platform's executable is (Makefile, test-javascript).
+  wasm:
+    needs: version
+    runs-on: ubuntu-latest
+    container: emscripten/emsdk:7.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-javascript
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: |
+            javascript/manyan.mjs
+            javascript/manyan.wasm
+
+  # Trusted publishing too: npm trusts this workflow and the npm environment.
+  npm:
+    if: github.ref_type == 'tag'
+    needs: [version, wasm, publish]
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: javascript
+      - working-directory: javascript
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cp ../LICENSE .
+          npm install -g npm@latest
+          if [ -n "$(npm view "manyan@$VERSION" version 2>/dev/null)" ]; then
+            echo "manyan@$VERSION is already on npm"
+          else
+            npm publish
+          fi

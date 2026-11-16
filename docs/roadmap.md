@@ -49,85 +49,39 @@ from TLC.
 
 - Make `manyan.h` a stable C API: load a spec, check it, and walk the result
   without parsing printed text.
+- Ship it where people install their tools: the executable on PyPI, a
+  WebAssembly build on npm.
 - Build bindings on that API: Python first, then an editor or language
   server integration.
-- Compile Manyan to WebAssembly for a browser playground, where anyone can paste
-  a spec and check it with nothing installed.
+- A browser playground, where anyone can paste a spec and check it with
+  nothing installed.
 
-## Next: 0.13.0
+## Next: 0.14.0
 
-In the order of the goals above. 0.12.0 made evaluation faster
-(refinement and recursion 7%, counters 5%) and moved liveness checking
-with workers off one process (ReadersWriters and MCLiveWriteThroughCache
-twice as fast with 4 workers); 172 of the 176 Examples checked give TLC's
-output, and 897 of 900 random liveness graphs its counterexample.
+0.13.0 made the Examples nowhere slower than TLC (Huang 41.0 → 9.1 s),
+etcd's trace validation print TLC's output on all 28 traces, a property's
+groups run in parallel, and a worker hold next to nothing of its own.
+0.14.0 puts Manyan where people install their tools.
 
-1. **TLC's tableau.** The 3 of 900 counterexamples that differ come from
-   TLC's tableau, built of particles and its successors linked in the
-   order of their index, where Manyan's has other nodes
-   ([manual](manual.md#limitations)). Build the tableau as TLC does, so
-   that the product, and so the cycle found and the path to it, are
-   TLC's: `tests/fuzz.py live` at 900 of 900. Done for the fuzz: the 3
-   came from successors ordered by Manyan's fingerprints; with TLC's, and
-   its polynomial `-fp`, all 900 print what TLC prints. The tableau stays
-   Manyan's, its nodes not yet TLC's particles.
-2. **Trace validation against TLC.** Checking a system's logged traces
-   against its spec is how TLC is used in industry: etcd's raft runs TLC
-   once a trace (`tla/validate.sh`), CCF does too. Run etcd's traces with
-   Manyan and with TLC and compare what they print, as the full bench
-   does the Examples. Done: `make etcd-bench` logs a trace from each of
-   etcd's interaction tests and checks it as `validate.sh` does; all 28,
-   and the trace etcd ships, give TLC's output ([etcd](etcd.md)).
-3. **Nowhere slower than TLC.** Huang is the one model of the Examples
-   where Manyan is slower than TLC: 41.0 s against 34.6 s with one worker
-   ([fullbench](fullbench.md)). Find where its time goes, and then that
-   of the next least ahead, MCInnerSerial (1.7x) and EWD998Small (2.2x).
-   Huang done: 80% of it was the quadratic GCD of `DyadicRationals`, on
-   a few small integers; a constant operator that loops is now computed
-   once for each such argument list, and Huang takes 9.1 s; no model of
-   the Examples is slower than TLC.
-4. **A property's groups in parallel.** The quick bench's liveness takes
-   0.17 s with one worker and 0.16 with eight: 0.14 s is `Served`, five
-   groups of one error model each, checked in turn by one process. Let
-   each worker check a group, product and search, and the search check
-   again in order only one found violated or not known, as for error
-   models. Done: the quick bench's liveness 0.168 → 0.097 s with 8
-   workers; for more than two groups, as two keep two workers busy where
-   each group's own search keeps them all.
-5. **Memory with workers.** MCKVSSafetySmall holds 651 MB with one
-   worker (190 bytes a state), and the search process 0.93 GB with four;
-   SlushMedium and MCBoulanger pass 4 GB with four workers and stay under
-   2 GB with one ([fullbench](fullbench.md)). Measure what the search
-   and each worker hold of their own, and cut it. Begun: a state's record
-   48 → 32 bytes, its steps kept apart for liveness only, and a slot of
-   the fingerprint set 16 → 8 bytes; MCKVSSafetySmall 798 → 694 MB with
-   one worker, the search 1197 → 1009 MB with four; then, with one
-   worker, the records mapped once and each fingerprint table unmapped
-   as it grows, where macOS kept the blocks freed: 694 → 511 MB. With
-   four, the workers put a new state's encoding in the store, where the
-   search copied it from regions of their own, and a successor found is
-   8 bytes, from 24, its fingerprint kept by its claim if it is new: the
-   search 904 → 753 MB with four. A worker holds next to nothing of its
-   own: what passed 4 GB was the bench's guard, which counted the pages
-   the workers share in each and counts them once now. SlushMedium holds
-   2.1 GB with four workers, 1.9 with one; MCBoulanger 1.3 and 1.2. Left
-   with four: the claims, 128 MB at the widest level, and the
-   fingerprint tables outgrown, 63 MB.
-6. **TLC's command lines, as scripts run them.** etcd's script stops at
-   `unknown option -lncheck`, though checking liveness at the end is all
-   Manyan does. Accept `-lncheck`, `-noGenerateSpecTE`, `-teSpecOutDir`
-   and `-h` as `-metadir` is; take `-inv`, `-invlevel` and
-   `-postCondition`; and write `-dumpTrace json`, TLC's counterexample for
-   other tools to read. Done: each as TLC, `-inv` an invariant of a
-   module extending the spec, `-postCondition` and `-dumpTrace json`
-   postconditions of a module the spec extends, the latter TLC's own
-   `_JsonTrace`.
-7. **A result to walk.** `manyan_check` gives an exit status, and the rest
+1. **A result to walk.** `manyan_check` gives an exit status, and the rest
    is printed text. Give the C API the result itself: the verdict, the
    property or invariant violated, the counterexample's states, actions
-   and loop, and the counts, as values `manyan.h` already reads. A
-   binding needs it before anything else; `-dumpTrace json` is the same
-   result printed.
+   and loop, and the counts, as values `manyan.h` already reads. Every
+   binding needs it; `-dumpTrace json` is the same result printed.
+2. **`pip install manyan`.** The executable a release ships, in a wheel
+   for each of its platforms, installed onto the PATH as ruff installs
+   its own: the same program, workers and all, with no Python between.
+   Begun: `python/wheel.py` packs a release's executable, and the release
+   publishes the wheels to PyPI.
+3. **`npm install manyan`.** Manyan compiled to WebAssembly, run on files
+   in memory in a Worker of its own, in a browser or Node.js. One worker,
+   as WebAssembly cannot fork, which prints what any number print.
+   Begun: the conformance suite gives the executable's output with it,
+   but for the 2 tests that run a process (`IOExec`); a browser's 1 MB
+   stack holds a few hundred nested calls, where TLC's holds thousands.
+4. **A playground.** A page where anyone pastes a spec and checks it,
+   with nothing installed, built from main on each push and served from
+   gh-pages. Begun: `playground/`.
 
 ## What stays
 

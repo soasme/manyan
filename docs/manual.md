@@ -21,6 +21,13 @@ plain `-O2` build. It needs python3 to run the suite and, with clang,
 Manyan is one C file with no dependencies beyond the C library and POSIX
 (`fork`, `mmap` for workers).
 
+`pip install manyan` installs the executable a release ships, onto the
+PATH; `python/wheel.py` packs it. `npm install manyan` is Manyan compiled
+to WebAssembly with Emscripten (`make wasm`), which runs in a browser or
+Node.js on files given in memory: one worker, as WebAssembly cannot fork,
+and no `IOExec` (javascript/README.md). The
+[playground](https://soasme.github.io/manyan/) runs it, built from main.
+
 ## Running
 
 ```sh
@@ -318,6 +325,7 @@ own, as std.md shows.
 
 ```sh
 make test              # tests/spec with 1 and with 4 workers
+make test-javascript   # tests/spec with the WebAssembly build, but for IOExec (needs emcc and node)
 make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)
 make bless ONLY=name   # writes a test's expected output from TLC
 make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)

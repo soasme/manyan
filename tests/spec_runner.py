@@ -1,6 +1,6 @@
 """Run the specification tests (tests/spec) on a model checker.
 
-usage: spec_runner.py "ENGINE [ARGS]" [--oracle TLC] [--bless] [--only SUBSTRING] [--strict]
+usage: spec_runner.py "ENGINE [ARGS]" [--oracle TLC] [--bless] [--only SUBSTRING] [--strict] [--no-exec]
 
 A test is NAME.tla: a module, then, after the line that ends it, the model
 configuration (SANY ignores text after a module). NAME.out is the
@@ -19,6 +19,8 @@ behaviors it writes (`-simulate file=FILE`) and the counterexample
 With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
 With --strict the exit status is nonzero when the engine fails any test.
+With --no-exec, a test that runs a process (IOExec) is left out, for an
+engine that cannot, as WebAssembly.
 Each run is killed past --memory MB resident (1000, or 3000 with an
 oracle), pages its processes share counted once, and only as many run at once as keep to half the machine's memory.
 """
@@ -282,12 +284,14 @@ def main():
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--memory", type=int)
+    parser.add_argument("--no-exec", action="store_true")
     args = parser.parse_args()
     memory = args.memory or (3000 if args.oracle else 1000)
     engine = shlex.split(args.engine)
     if "/" in engine[0]:
         engine[0] = str(Path(engine[0]).resolve())
-    tests = sorted(p for p in SPEC.rglob("*.tla") if ".files" not in str(p) and args.only in str(p))
+    tests = sorted(p for p in SPEC.rglob("*.tla") if ".files" not in str(p) and args.only in str(p)
+                   and not (args.no_exec and re.search(r"\bIO(Env)?Exec", p.read_text())))
 
     def check(path):
         expected_path = path.with_suffix(".out")

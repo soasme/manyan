@@ -23,7 +23,15 @@ fitting image for exploring the possible states of a system.
 ## Getting started
 
 Each [release](https://github.com/soasme/manyan/releases) has `manyan`
-built for macOS, Linux and Windows. To build it instead:
+built for macOS, Linux and Windows, and so does PyPI:
+
+```sh
+pip install manyan            # or uv tool install manyan
+```
+
+`npm install manyan` is Manyan compiled to WebAssembly, for a web page or
+Node.js; the [playground](https://soasme.github.io/manyan/) checks a spec
+in your browser with it. To build it instead:
 
 ```sh
 make                          # builds ./manyan; needs a C11 compiler

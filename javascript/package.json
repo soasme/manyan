@@ -1,0 +1,44 @@
+{
+  "name": "manyan",
+  "version": "0.13.0",
+  "description": "A fast model checker for TLA+, compatible with TLC and Apalache, compiled to WebAssembly.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "types": "./index.d.ts",
+  "bin": {
+    "manyan-wasm": "cli.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "engine.js",
+    "worker.js",
+    "cli.js",
+    "manyan.mjs",
+    "manyan.wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soasme/manyan.git",
+    "directory": "javascript"
+  },
+  "author": "Ju Lin",
+  "license": "MIT",
+  "keywords": [
+    "tla+",
+    "tlaplus",
+    "model-checker",
+    "tlc",
+    "webassembly"
+  ]
+}

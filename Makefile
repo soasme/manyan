@@ -44,7 +44,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools wasm test-javascript playground sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -218,10 +218,37 @@ $(COMMUNITY):
 	cd $@.tmp && unzip -q modules.jar '*.tla'
 	mv $@.tmp $@
 
+# The npm package (javascript/): manyan compiled to WebAssembly with
+# Emscripten, its files in memory; the conformance suite runs it through
+# javascript/cli.js. Evaluation nests as deep as natively, on a stack as
+# large as Cygwin's.
+EMCC ?= emcc
+WASM_FLAGS = -O3 -std=c11 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions
+WASM_LDFLAGS = -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,worker,node -sINVOKE_RUN=0 -sEXIT_RUNTIME \
+	-sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=64MB -sINITIAL_MEMORY=128MB -sFORCE_FILESYSTEM \
+	-sEXPORTED_RUNTIME_METHODS=callMain,FS
+
+wasm: javascript/manyan.mjs
+javascript/manyan.mjs: $(SRC) $(HDR)
+	$(EMCC) $(WASM_FLAGS) $(WASM_LDFLAGS) $(SRC) -o $@
+	cp LICENSE javascript/LICENSE
+
+test-javascript: javascript/manyan.mjs
+	python3 tests/spec_runner.py "node $(abspath javascript/cli.js)" --strict --no-exec
+
+# The playground's site, as gh-pages serves it: the page, the npm
+# package's files beside it, and DieHard to start from.
+playground: javascript/manyan.mjs
+	rm -rf $(OBJDIR)/playground && mkdir -p $(OBJDIR)/playground/manyan
+	cp playground/index.html examples/DieHard.tla examples/DieHard.cfg $(OBJDIR)/playground/
+	cp javascript/index.js javascript/engine.js javascript/worker.js javascript/manyan.mjs javascript/manyan.wasm $(OBJDIR)/playground/manyan/
+	git rev-parse HEAD > $(OBJDIR)/playground/commit.txt
+	touch $(OBJDIR)/playground/.nojekyll
+
 install: manyan
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/include
 	install manyan $(DESTDIR)$(PREFIX)/bin/manyan
 	install -m 644 manyan.h manyan-std.h $(DESTDIR)$(PREFIX)/include/
 
 clean:
-	rm -f manyan
+	rm -f manyan javascript/manyan.mjs javascript/manyan.wasm

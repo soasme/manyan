@@ -1,3 +1,17 @@
+unreleased:
+
+- `pip install manyan`: wheels of the executable a release ships, for
+  macOS, Linux and Windows, installed onto the PATH; `python -m manyan`
+  runs it too
+- `npm install manyan`: Manyan compiled to WebAssembly, run on files in
+  memory in a Worker, in a browser or Node.js; one worker, which prints
+  what any number print. tests/spec gives the executable's output with it
+  but for the tests that run a process (`make test-javascript`)
+- a playground at soasme.github.io/manyan, built from main on each push
+- where `long` is 32 bits, as in WebAssembly: an `ALIAS`'s `_format`
+  index past an int is TLC's `IllegalFormatArgumentIndexException`, and
+  the count of states generated passes 2^31
+
 2026-11-16 0.13.0:
 
 - etcd's raft trace validation gives TLC's output. CommunityModules'
