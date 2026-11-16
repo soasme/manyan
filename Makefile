@@ -44,7 +44,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools wasm test-javascript playground sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -236,14 +236,16 @@ javascript/manyan.mjs: $(SRC) $(HDR)
 test-javascript: javascript/manyan.mjs
 	python3 tests/spec_runner.py "node $(abspath javascript/cli.js)" --strict --no-exec
 
-# The playground's site, as gh-pages serves it: the page, the npm
-# package's files beside it, and DieHard to start from.
-playground: javascript/manyan.mjs
-	rm -rf $(OBJDIR)/playground && mkdir -p $(OBJDIR)/playground/manyan
-	cp playground/index.html examples/DieHard.tla examples/DieHard.cfg $(OBJDIR)/playground/
-	cp javascript/index.js javascript/engine.js javascript/worker.js javascript/manyan.mjs javascript/manyan.wasm $(OBJDIR)/playground/manyan/
-	git rev-parse HEAD > $(OBJDIR)/playground/commit.txt
-	touch $(OBJDIR)/playground/.nojekyll
+# The site gh-pages serves: docs/ as HTML pages (docs/site.py, which needs
+# Python-Markdown), the playground's WebAssembly beside them, and DieHard
+# for it to start from.
+site: javascript/manyan.mjs
+	rm -rf $(OBJDIR)/site && mkdir -p $(OBJDIR)/site/manyan
+	python3 docs/site.py $(OBJDIR)/site
+	cp docs/logo.jpg examples/DieHard.tla examples/DieHard.cfg $(OBJDIR)/site/
+	cp javascript/index.js javascript/engine.js javascript/worker.js javascript/manyan.mjs javascript/manyan.wasm $(OBJDIR)/site/manyan/
+	git rev-parse HEAD > $(OBJDIR)/site/commit.txt
+	touch $(OBJDIR)/site/.nojekyll
 
 install: manyan
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/include

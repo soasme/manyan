@@ -1,57 +1,37 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Manyan Playground</title>
-<meta name="description" content="Check a TLA+ specification in your browser with Manyan, compiled to WebAssembly from the main branch.">
 <style>
-  :root {
-    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2;
-    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c;
-      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header, main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-top: 20px; padding-bottom: 12px; }
-  h1 { font-size: 20px; margin: 0; }
-  header p { margin: 0; color: var(--muted); }
-  header a { color: inherit; }
-  main { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; padding-bottom: 24px; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
-  section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-  label { font-size: 13px; color: var(--muted); }
-  textarea, input, pre {
+  /* The page's body, in layout.html: the editor needs the full width. */
+  article { max-width: 1200px; }
+  .intro { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 20px 0 12px; }
+  .intro h1 { font-size: 20px; margin: 0; }
+  .intro p { margin: 0; color: var(--muted); }
+  .intro a { color: inherit; }
+  .play { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; font-size: 15px; line-height: 1.5; }
+  @media (max-width: 800px) { .play { grid-template-columns: 1fr; } }
+  .play section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .play label { font-size: 13px; color: var(--muted); }
+  .play textarea, .play input, .play pre {
     width: 100%; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
     background: var(--panel); color: var(--fg);
     font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 4;
   }
-  textarea { resize: vertical; }
+  .play textarea { resize: vertical; }
   #tla { min-height: 360px; }
   #cfg { min-height: 90px; }
   .bar { display: flex; gap: 8px; align-items: center; }
   .bar input { flex: 1; }
-  button { padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-fg);
+  .play button { padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-fg);
     font: inherit; font-weight: 600; cursor: pointer; }
-  button.quiet { background: transparent; color: var(--fg); border: 1px solid var(--line); font-weight: 400; }
-  button:disabled { opacity: .5; cursor: default; }
-  pre { flex: 1; min-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  .play button.quiet { background: transparent; color: var(--fg); border: 1px solid var(--line); font-weight: 400; }
+  .play pre { flex: 1; min-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
   #status { font-size: 13px; color: var(--muted); }
   #status.bad { color: var(--bad); }
   #status.good { color: var(--good); }
 </style>
-</head>
-<body>
-<header>
-  <h1>Manyan Playground</h1>
+<div class="intro">
+  <h1>Playground</h1>
   <p>Check a TLA⁺ spec in your browser, as TLC would. Built from <a id="commit" href="https://github.com/soasme/manyan">main</a>.</p>
-</header>
-<main>
+</div>
+<div class="play">
   <section>
     <label for="tla">Module</label>
     <textarea id="tla" spellcheck="false"></textarea>
@@ -68,7 +48,7 @@
     <span id="status">Ready.</span>
     <pre id="out"></pre>
   </section>
-</main>
+</div>
 <script type="module">
   import { run } from "./manyan/index.js";
 
@@ -118,5 +98,3 @@
   };
   document.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") button.click(); });
 </script>
-</body>
-</html>

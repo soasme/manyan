@@ -26,7 +26,7 @@ PATH; `python/wheel.py` packs it. `npm install @soasme/manyan` is Manyan compile
 to WebAssembly with Emscripten (`make wasm`), which runs in a browser or
 Node.js on files given in memory: one worker, as WebAssembly cannot fork,
 and no `IOExec` (javascript/README.md). The
-[playground](https://soasme.github.io/manyan/) runs it, built from main.
+[playground](playground.html) runs it, built from main.
 
 ## Running
 
@@ -326,6 +326,7 @@ own, as std.md shows.
 ```sh
 make test              # tests/spec with 1 and with 4 workers
 make test-javascript   # tests/spec with the WebAssembly build, but for IOExec (needs emcc and node)
+make site              # docs/ as the site's HTML pages, with the playground, in .obj/site (needs Python-Markdown)
 make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)
 make bless ONLY=name   # writes a test's expected output from TLC
 make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)

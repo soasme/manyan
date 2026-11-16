@@ -62,7 +62,7 @@ from TLC.
 the executable a release ships, workers and all; `npm install
 @soasme/manyan`, compiled to WebAssembly, which gives the executable's
 output on all of tests/spec but the 2 tests that run a process; and a
-playground at soasme.github.io/manyan, built from main on each push.
+[playground](playground.html), built from main on each push.
 
 1. **A result to walk.** `manyan_check` gives an exit status, and the rest
    is printed text. Give the C API the result itself: the verdict, the

@@ -1,3 +1,8 @@
+unreleased:
+
+- the site at soasme.github.io/manyan: docs/ as HTML pages, a home page
+  (docs/index.md), and the playground at playground.html (`make site`)
+
 2026-11-16 0.14.0:
 
 - `pip install manyan`: wheels of the executable a release ships, for

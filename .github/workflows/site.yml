@@ -1,0 +1,55 @@
+# Each push to main builds manyan for WebAssembly and runs the conformance
+# suite with it, then serves the site from the gh-pages branch: docs/ as
+# HTML pages, with the playground (make site).
+name: site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: site
+  cancel-in-progress: true
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    container: emscripten/emsdk:7.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-javascript
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: |
+            javascript/manyan.mjs
+            javascript/manyan.wasm
+
+  deploy:
+    needs: wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install markdown==3.7
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: javascript
+      # The WebAssembly is the one just tested: make takes it as it is.
+      - run: make -o javascript/manyan.mjs site
+      - working-directory: .obj/site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Site at $GITHUB_SHA"
+          git push -qf "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" gh-pages
