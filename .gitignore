@@ -1,5 +1,5 @@
 .obj/
-manyan
+/manyan
 *.dSYM/
 states/
 __pycache__/
