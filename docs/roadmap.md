@@ -50,38 +50,37 @@ from TLC.
 - Make `manyan.h` a stable C API: load a spec, check it, and walk the result
   without parsing printed text.
 - Ship it where people install their tools: the executable on PyPI, a
-  WebAssembly build on npm.
+  WebAssembly build on npm. Done in 0.14.0.
 - Build bindings on that API: Python first, then an editor or language
   server integration.
 - A browser playground, where anyone can paste a spec and check it with
-  nothing installed.
+  nothing installed. Done in 0.14.0.
 
-## Next: 0.14.0
+## Next: 0.15.0
 
-0.13.0 made the Examples nowhere slower than TLC (Huang 41.0 → 9.1 s),
-etcd's trace validation print TLC's output on all 28 traces, a property's
-groups run in parallel, and a worker hold next to nothing of its own.
-0.14.0 puts Manyan where people install their tools.
+0.14.0 put Manyan where people install their tools: `pip install manyan`,
+the executable a release ships, workers and all; `npm install
+@soasme/manyan`, compiled to WebAssembly, which gives the executable's
+output on all of tests/spec but the 2 tests that run a process; and a
+playground at soasme.github.io/manyan, built from main on each push.
 
 1. **A result to walk.** `manyan_check` gives an exit status, and the rest
    is printed text. Give the C API the result itself: the verdict, the
    property or invariant violated, the counterexample's states, actions
    and loop, and the counts, as values `manyan.h` already reads. Every
    binding needs it; `-dumpTrace json` is the same result printed.
-2. **`pip install manyan`.** The executable a release ships, in a wheel
-   for each of its platforms, installed onto the PATH as ruff installs
-   its own: the same program, workers and all, with no Python between.
-   Begun: `python/wheel.py` packs a release's executable, and the release
-   publishes the wheels to PyPI.
-3. **`npm install @soasme/manyan`.** Manyan compiled to WebAssembly, run on files
-   in memory in a Worker of its own, in a browser or Node.js. One worker,
-   as WebAssembly cannot fork, which prints what any number print.
-   Begun: the conformance suite gives the executable's output with it,
-   but for the 2 tests that run a process (`IOExec`); a browser's 1 MB
-   stack holds a few hundred nested calls, where TLC's holds thousands.
-4. **A playground.** A page where anyone pastes a spec and checks it,
-   with nothing installed, built from main on each push and served from
-   gh-pages. Begun: `playground/`.
+2. **The result in JavaScript and Python.** `run` of the npm package
+   gives the result as values beside the output, from the C API's; so
+   does a Python call next to the executable. A web page then shows a
+   counterexample state by state without parsing what TLC prints.
+3. **The full bench's gaps.** 17 models of the Examples are not compared
+   yet: 10 with no runtime recorded, 4 TLC takes past 15 minutes, 7
+   recorded past 10 ([fullbench](fullbench.md#gaps)). Run each once with
+   a longer cap, its TLC results cached, and give it a row.
+4. **Deeper in a browser.** A browser gives a Worker about 1 MB of stack,
+   which holds about 400 nested calls where TLC's holds 5000. Find what
+   each nesting holds of the stack and cut it, so that a browser holds
+   the depths specifications reach.
 
 ## What stays
 
