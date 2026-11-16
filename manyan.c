@@ -16,12 +16,14 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <math.h>
 #include <poll.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <stdarg.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -5274,8 +5276,8 @@ static Value **next_state;      /* the next state an action assigns; NULL entrie
 static Value **gen_target;      /* the state being assigned */
 static int primed;              /* reading the next state */
 static int gen_init;            /* assigning unprimed variables: an initial predicate */
-static long state_reads;        /* incremented by each read of a variable */
-static long moving_reads;       /* by each read of one that may change: primed, or of the initial state being found */
+static unsigned long state_reads;        /* incremented by each read of a variable */
+static unsigned long moving_reads;       /* by each read of one that may change: primed, or of the initial state being found */
 static Value *at_value;         /* @ in an EXCEPT */
 static int keep_lazy;           /* TLC's KeepLazy: evaluating a function to apply it (§6.6) */
 static int64_t cur_level;       /* TLCGet("level") */
@@ -5541,7 +5543,7 @@ static Env *mk_arg(Def *d, Expr *e, Ctx c, Env *next) {
    no longer than one state's expansion, as the scratch arena does. */
 static Value *force(Env *b) {
     if (b->v && !(primed && b->stateful)) return b->v;
-    long reads = state_reads, moving = moving_reads;
+    unsigned long reads = state_reads, moving = moving_reads;
     Ctx c = {b->ctx_env, b->ctx_inst};
     Arena *saved = keeping(b->perm);
     Value *v = eval(b->e, c);
@@ -6918,12 +6920,12 @@ static Value **copy_values(Value **vs, int n, long *budget) {
 
 
 static Value *def_value(Def *d);
-static long effects;   /* the prints, draws, TLCSets and reads of the run so far */
+static unsigned long effects;   /* the prints, draws, TLCSets and reads of the run so far */
 
 /* Constant definition d, computed and kept; whether it had an effect,
    kept too. */
 static __attribute__((noinline)) Value *cache_def(Def *d) {
-    long seen = effects;
+    unsigned long seen = effects;
     d->cache = def_value(d);
     d->effectful = effects != seen;
     return d->cache;
@@ -7128,7 +7130,7 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
     for (const char *p = f; *p; p++) {
         if (*p != '%') { buf_add(b, p, 1); continue; }
         const char *spec = p++;
-        long index = 0;
+        int64_t index = 0;
         int left = 0, width = 0, prec = -1;
         const char *q = p;
         for (; isdigit((unsigned char)*q); q++) if (index <= INT32_MAX) index = index * 10 + (*q - '0');
@@ -8144,7 +8146,7 @@ NATIVE(n_tlccache) {
     }
     Arena *saved = arena;
     arena = &perm_arena;
-    long budget = INT64_MAX;
+    long budget = LONG_MAX;
     Value *kept = copy_value(v, &budget);
     arena = saved;
     if (!kept) return v;
@@ -8520,7 +8522,7 @@ static int rng_prime(void) {
 typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont;   /* unchanged: the conjunct is UNCHANGED e */
 
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
-static long generated;          /* states generated, as TLC counts them */
+static int64_t generated;          /* states generated, as TLC counts them */
 
 /* -generate: TLC builds a behavior's successor by random choices, of a
    disjunct, a binding or a value, each ending once a successor is kept. */
@@ -9669,7 +9671,7 @@ static Value *memo_call(Def *d, Expr *e, Ctx c) {
     }
     size_t j = memo_slot(d, a, e->n);
     if (memos[j].d) return memos[j].v;
-    long seen = effects;
+    unsigned long seen = effects;
     Value *v = eval_body(d->body, (Ctx){env, NULL});
     if (effects != seen || nmemos >= MEMO_MAX || v->kind == V_LAZY || v->kind == V_LAMBDA || v->kind == V_OPER) return v;
     Arena *saved = arena;
@@ -9907,11 +9909,15 @@ static void fp_put(FpSlot *table, int size, uint64_t fp, int idx) {
 #define MAP_NORESERVE 0
 #endif
 
+/* A 64-bit build. A 32-bit one, as WebAssembly, which cannot fork either,
+   has not the room to reserve the regions workers share or a mapping. */
+#define WIDE (SIZE_MAX > UINT32_MAX)
+
 /* Memory of one process, zeroed, taken as it is touched and given back
    as it is unmapped, where malloc keeps a large block freed; NULL if
    there is none, or where a mapping takes all its memory at once. */
 static void *mapped(size_t bytes) {
-#ifdef __CYGWIN__
+#if defined(__CYGWIN__) || !WIDE
     (void)bytes;
     return NULL;
 #else
@@ -10811,7 +10817,7 @@ static void print_next_failure(int s1, Value **s2, int action, int status) {
 }
 
 static void print_counts(int queued) {
-    printf("%ld states generated, %d distinct states found, %d states left on queue.\n", generated, nstates + npicked_explored, queued);
+    printf("%" PRId64 " states generated, %d distinct states found, %d states left on queue.\n", generated, nstates + npicked_explored, queued);
     printf("The depth of the complete state graph search is %d.\n", generated ? max_depth : 0);
     fflush(stdout);
 }
@@ -11266,7 +11272,7 @@ static void post_behavior(Value ***st, const int *act, int n, int loop, int loop
         post_trace.st[i] = NEWN(Value *, nvars);
         for (int v = 0; v <= nvars; v++) {
             Value *x = v < nvars ? st[i][v] : rec[i];
-            long budget = INT64_MAX;
+            long budget = LONG_MAX;
             Value *kept = x ? copy_value(x, &budget) : NULL;
             *(v < nvars ? &post_trace.st[i][v] : &post_trace.rec[i]) = kept ? kept : x;
         }
@@ -11375,7 +11381,7 @@ static int live_cut_violated(void);
 static int live_error(void);
 /* The states generated when each state had been expanded, with temporal
    properties: TLC reports an error in them with these counts. */
-static long *gen_after;
+static int64_t *gen_after;
 static int ngen_after;
 static int live_cut = -1;   /* the state TLC stopped expanding at in its temporal checks */
 static void print_counts_after(int s);
@@ -11385,7 +11391,7 @@ static void note_expanded(int idx) {
     if (!ntemporal_props) return;
     if (idx >= ngen_after) {
         int n = idx + 1 > 2 * ngen_after ? idx + 1 : 2 * ngen_after;
-        gen_after = xrealloc(gen_after, sizeof(long) * (size_t)n);
+        gen_after = xrealloc(gen_after, sizeof(int64_t) * (size_t)n);
         printed = xrealloc(printed, (size_t)n);
         memset(printed + ngen_after, 0, (size_t)(n - ngen_after));
         ngen_after = n;
@@ -11448,7 +11454,7 @@ static int last_seen(int s) {
    state s had been expanded. */
 static void print_counts_after(int s) {
     int seen = last_seen(s);
-    printf("%ld states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
+    printf("%" PRId64 " states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
     printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
 }
 
@@ -11578,6 +11584,7 @@ static void *shared(size_t bytes) {
    Cygwin maps, so there every region is halved until all fit in a quarter
    of the memory. */
 static void share_search(void) {
+#if WIDE
     int shift = 0;
 #ifdef __CYGWIN__
     size_t memory = (size_t)sysconf(_SC_PHYS_PAGES) * (size_t)sysconf(_SC_PAGESIZE);
@@ -11600,6 +11607,7 @@ static void share_search(void) {
     results_size = ((size_t)1 << 34) >> shift;
     results = xmalloc(sizeof(char *) * (size_t)nworkers);
     for (int i = 0; i < nworkers; i++) results[i] = shared(results_size);
+#endif
 }
 
 /* The claim of the state fp, not 0, which marks a free entry: made if
@@ -12279,7 +12287,7 @@ static int search(void) {
     if (generated == nstates)
         printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
     else
-        printf("Finished computing initial states: %ld state%s generated, with %d of them distinct.\n", generated, generated == 1 ? "" : "s", nstates);
+        printf("Finished computing initial states: %" PRId64 " state%s generated, with %d of them distinct.\n", generated, generated == 1 ? "" : "s", nstates);
     fflush(stdout);
     if (!next_expr) {
         printf("Error: No next state actions defined to generate successor states from.\n");
@@ -12633,7 +12641,7 @@ static int sim_violates(States *trace) {
 }
 
 static void sim_summary(int64_t seed, int64_t aril) {
-    printf("The number of states generated: %ld\n", generated);
+    printf("The number of states generated: %" PRId64 "\n", generated);
     printf("Simulation using seed %lld and aril %lld\n", (long long)seed, (long long)aril);
 }
 
@@ -12816,7 +12824,7 @@ static int simulate(const ManyanOptions *o) {
     }
     handler = NULL;
     int post = check_posts(0);
-    printf("Progress: %ld states checked.\n", generated);
+    printf("Progress: %" PRId64 " states checked.\n", generated);
     Value *periodic = periodic_expr ? eval(periodic_expr, root_ctx) : NULL;
     if (periodic && periodic->kind == V_BOOL && !periodic->u.i) {
         Buf b = {0};
@@ -23157,8 +23165,9 @@ int manyan_check(const ManyanOptions *o) {
         fputs("strict digraph DiskGraph {\nnode [shape=box,style=rounded]\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
         dump_actions = o->dump_actions;
     }
-    /* A simulation is TLC's with one worker; -continue reports in the search's order. */
-    nworkers = o->workers > 1 && !o->simulate && !o->keep_going ? o->workers : 1;
+    /* A simulation is TLC's with one worker; -continue reports in the search's order.
+       A 32-bit build has one worker, which prints what any number print. */
+    nworkers = o->workers > 1 && !o->simulate && !o->keep_going && WIDE ? o->workers : 1;
     sym_length = o->length ? o->length : 10;
     sym_max_error = o->max_error > 0 ? o->max_error : 1;
     sym_run_dir = o->symbolic ? o->run_dir : NULL;
