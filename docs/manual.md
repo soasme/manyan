@@ -22,7 +22,7 @@ Manyan is one C file with no dependencies beyond the C library and POSIX
 (`fork`, `mmap` for workers).
 
 `pip install manyan` installs the executable a release ships, onto the
-PATH; `python/wheel.py` packs it. `npm install manyan` is Manyan compiled
+PATH; `python/wheel.py` packs it. `npm install @soasme/manyan` is Manyan compiled
 to WebAssembly with Emscripten (`make wasm`), which runs in a browser or
 Node.js on files given in memory: one worker, as WebAssembly cannot fork,
 and no `IOExec` (javascript/README.md). The

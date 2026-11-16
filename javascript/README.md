@@ -1,15 +1,15 @@
-# manyan
+# @soasme/manyan
 
 [Manyan](https://github.com/soasme/manyan), a fast model checker for TLA⁺
 compatible with TLC and Apalache, compiled to WebAssembly: check a spec in a
 web page or in Node.js with nothing else installed.
 
 ```sh
-npm install manyan
+npm install @soasme/manyan
 ```
 
 ```js
-import { run } from "manyan";
+import { run } from "@soasme/manyan";
 
 const { status, output } = await run(["DieHard"], {
   files: { "DieHard.tla": tla, "DieHard.cfg": cfg },

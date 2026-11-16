@@ -3,7 +3,7 @@ unreleased:
 - `pip install manyan`: wheels of the executable a release ships, for
   macOS, Linux and Windows, installed onto the PATH; `python -m manyan`
   runs it too
-- `npm install manyan`: Manyan compiled to WebAssembly, run on files in
+- `npm install @soasme/manyan`: Manyan compiled to WebAssembly, run on files in
   memory in a Worker, in a browser or Node.js; one worker, which prints
   what any number print. tests/spec gives the executable's output with it
   but for the tests that run a process (`make test-javascript`)

@@ -73,7 +73,7 @@ groups run in parallel, and a worker hold next to nothing of its own.
    its own: the same program, workers and all, with no Python between.
    Begun: `python/wheel.py` packs a release's executable, and the release
    publishes the wheels to PyPI.
-3. **`npm install manyan`.** Manyan compiled to WebAssembly, run on files
+3. **`npm install @soasme/manyan`.** Manyan compiled to WebAssembly, run on files
    in memory in a Worker of its own, in a browser or Node.js. One worker,
    as WebAssembly cannot fork, which prints what any number print.
    Begun: the conformance suite gives the executable's output with it,

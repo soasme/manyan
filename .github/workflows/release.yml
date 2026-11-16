@@ -271,8 +271,8 @@ jobs:
         run: |
           cp ../LICENSE .
           npm install -g npm@latest
-          if [ -n "$(npm view "manyan@$VERSION" version 2>/dev/null)" ]; then
-            echo "manyan@$VERSION is already on npm"
+          if [ -n "$(npm view "@soasme/manyan@$VERSION" version 2>/dev/null)" ]; then
+            echo "@soasme/manyan@$VERSION is already on npm"
           else
-            npm publish
+            npm publish --access public
           fi

@@ -29,7 +29,7 @@ built for macOS, Linux and Windows, and so does PyPI:
 pip install manyan            # or uv tool install manyan
 ```
 
-`npm install manyan` is Manyan compiled to WebAssembly, for a web page or
+`npm install @soasme/manyan` is Manyan compiled to WebAssembly, for a web page or
 Node.js; the [playground](https://soasme.github.io/manyan/) checks a spec
 in your browser with it. To build it instead:
 
