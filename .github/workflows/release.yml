@@ -134,6 +134,10 @@ jobs:
       # Windows on Arm runs the same files, emulated (windows-arm).
       - run: |
           for tag in win_amd64 win_arm64; do python3 python/wheel.py $tag wheels manyan.exe /usr/bin/cygwin1.dll; done
+      # Windows' own Python, where Cygwin's comes first on the PATH.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - shell: pwsh
         run: |
           python -m venv venv
@@ -172,6 +176,9 @@ jobs:
         with:
           name: wheels-windows
           path: wheels
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - shell: pwsh
         run: |
           python -m venv venv
