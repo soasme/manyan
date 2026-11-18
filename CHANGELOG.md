@@ -1,5 +1,8 @@
 unreleased:
 
+- fixed: a recursion of constant operators that kept more calls than the
+  table had room for when it began, as one over about a thousand deep,
+  hung; the table grows as a call is kept too
 - `ManyanOptions.result`: what a check found, as values `manyan.h` reads:
   the first counterexample's states, actions and loop, what it violates,
   and the counts reported. `make test` checks it against the printed

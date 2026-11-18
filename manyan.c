@@ -9649,6 +9649,23 @@ static size_t memo_slot(Def *d, Value **a, int n) {
     }
 }
 
+/* Room for one more call: the table is at most half full, so a slot is free. */
+static void memo_room(void) {
+    if (2 * (nmemos + 1) <= capmemos || nmemos >= MEMO_MAX) return;
+    Memo *old = memos;
+    size_t n = capmemos;
+    capmemos = capmemos ? 2 * capmemos : 1024;
+    memos = xcalloc(capmemos, sizeof(Memo));
+    for (size_t i = 0; i < n; i++)
+        if (old[i].d) {
+            Value *k[MEMO_ARGS];
+            Value kv[MEMO_ARGS];
+            for (int j = 0; j < old[i].d->nparams; j++) kv[j].kind = old[i].kind[j], kv[j].u.i = old[i].x[j], k[j] = &kv[j];
+            memos[memo_slot(old[i].d, k, old[i].d->nparams)] = old[i];
+        }
+    free(old);
+}
+
 static Value *memo_call(Def *d, Expr *e, Ctx c) {
     if (!d->memo) d->memo = memo_candidate(d) ? 1 : 2;
     if (d->memo == 2 || keep_lazy || e->n != d->nparams) return call_def(d, e->args, e->n, c, e);
@@ -9673,20 +9690,7 @@ static Value *memo_call(Def *d, Expr *e, Ctx c) {
         return eval_body(d->body, (Ctx){env, NULL});
     }
     d->unkept = 0;
-    if (2 * (nmemos + 1) > capmemos && nmemos < MEMO_MAX) {
-        Memo *old = memos;
-        size_t n = capmemos;
-        capmemos = capmemos ? 2 * capmemos : 1024;
-        memos = xcalloc(capmemos, sizeof(Memo));
-        for (size_t i = 0; i < n; i++)
-            if (old[i].d) {
-                Value *k[MEMO_ARGS];
-                Value kv[MEMO_ARGS];
-                for (int j = 0; j < old[i].d->nparams; j++) kv[j].kind = old[i].kind[j], kv[j].u.i = old[i].x[j], k[j] = &kv[j];
-                memos[memo_slot(old[i].d, k, old[i].d->nparams)] = old[i];
-            }
-        free(old);
-    }
+    memo_room();
     size_t j = memo_slot(d, a, e->n);
     if (memos[j].d) return memos[j].v;
     unsigned long seen = effects;
@@ -9698,7 +9702,8 @@ static Value *memo_call(Def *d, Expr *e, Ctx c) {
     Value *kept = copy_value(v, &budget);
     arena = saved;
     if (!kept) return v;
-    j = memo_slot(d, a, e->n);   /* the body may have kept others */
+    memo_room();   /* the body may have kept others: a recursion keeps each call as it returns */
+    j = memo_slot(d, a, e->n);
     Memo m = {d, {0}, {0}, kept};
     for (int i = 0; i < e->n; i++) m.x[i] = a[i]->u.i, m.kind[i] = (unsigned char)a[i]->kind;
     memos[j] = m;
