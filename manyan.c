@@ -8181,6 +8181,7 @@ NATIVE(n_trace) { UNUSED; effects++; return trace_value(); }
    2 when CounterExample is, where TLC uses those it printed. */
 static struct { Value ***st, **rec; int *act, n, loop, loop_act, aliased; Value *value; } post_trace;
 static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased);
+static void found_behavior(Value ***st, const int *act, int n, int loop, int loop_act);
 static Value *counter_example(void);
 static Value *counter_trace(Value *ce);
 NATIVE(n_counterexample) { UNUSED; effects++; return counter_example(); }
@@ -8523,6 +8524,23 @@ typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont; 
 
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
 static int64_t generated;          /* states generated, as TLC counts them */
+
+/* What the check found, where the caller wants it: the counts TLC reports
+   last, and the names and counterexample of its first error. */
+static ManyanResult *found;
+static void found_counts(int64_t generated, int64_t distinct, int64_t left, int64_t depth) {
+    if (found) found->generated = generated, found->distinct = distinct, found->left = left, found->depth = depth;
+}
+static void found_violated(int name) {
+    if (!found || found->length) return;
+    size_t n = 0;
+    for (; found->violated[n]; n++) if (found->violated[n] == S(name)) return;
+    const char **v = xmalloc(sizeof(char *) * (n + 2));
+    memcpy(v, found->violated, sizeof(char *) * n);
+    v[n] = S(name), v[n + 1] = NULL;
+    if (n) free((void *)found->violated);
+    found->violated = v;
+}
 
 /* -generate: TLC builds a behavior's successor by random choices, of a
    disjunct, a binding or a value, each ending once a successor is kept. */
@@ -10641,12 +10659,11 @@ static void print_trace_states(int s1, Value **s2, int action, int print) {
         ntrace_path = n + 1;
         if (print) print_numbered(n + 1, action, s2, NULL, s2);
     }
-    if (!print) {
-        int *acts = NEWN(int, n + 1);
-        for (int i = 0; i < n; i++) acts[i] = i ? states[path[i]].action : -1;
-        acts[n] = action;
-        post_behavior(st, acts, n + (s2 != NULL), 0, 0, 1);
-    }
+    int *acts = NEWN(int, n + 1);
+    for (int i = 0; i < n; i++) acts[i] = i ? states[path[i]].action : -1;
+    acts[n] = action;
+    if (print) found_behavior(st, acts, n + (s2 != NULL), 0, 0);
+    else post_behavior(st, acts, n + (s2 != NULL), 0, 0, 1);
 }
 
 /* The error that failed the last behavior printed: its text, its Java exception. */
@@ -10819,6 +10836,7 @@ static void print_next_failure(int s1, Value **s2, int action, int status) {
 static void print_counts(int queued) {
     printf("%" PRId64 " states generated, %d distinct states found, %d states left on queue.\n", generated, nstates + npicked_explored, queued);
     printf("The depth of the complete state graph search is %d.\n", generated ? max_depth : 0);
+    found_counts(generated, nstates + npicked_explored, queued, generated ? max_depth : 0);
     fflush(stdout);
 }
 
@@ -10992,15 +11010,17 @@ static void dump_close(void) {
 static int check_initial(Value **st) {
     int bad = check_list(invariants, ninvariants, st);
     if (bad >= 0) {
-        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
+        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
         if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
+        found_behavior(&st, (int[]){-1}, 1, 0, 0);
         post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         if (!keep_going || simulating) return MANYAN_VIOLATION_SAFETY;   /* TLC's simulator stops */
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
-        printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name));
+        printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name)), found_violated(implied_inits[bad].name);
         if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
+        found_behavior(&st, (int[]){-1}, 1, 0, 0);
         post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         return MANYAN_VIOLATION_LIVENESS;
     }
@@ -11136,11 +11156,11 @@ static int continued_trace(const char *check, int name, Value **st) {
 static int action_violated(Value **st) {
     int bad = check_actions(action_props, naction_props, cur_state, st);
     if (bad < 0) return 0;
-    printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
+    printf("Error: Action property %s is violated.\n", S(action_props[bad].name)), found_violated(action_props[bad].name);
     if (keep_going) {
         if (!continued_trace("action property", action_props[bad].name, st)) return 0;
         /* TLC checks the step again as it replays it, to the same error. */
-        printf("Error: Action property %s is violated.\n", S(action_props[bad].name));
+        printf("Error: Action property %s is violated.\n", S(action_props[bad].name)), found_violated(action_props[bad].name);
         violation = continued_trace("action property", action_props[bad].name, st);
         return 1;
     }
@@ -11181,7 +11201,7 @@ static int next_emit(void) {
         int bad = check_list(invariants, ninvariants, st);
         violation_fresh = 0;
         if (bad >= 0) {
-            printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+            printf("Error: Invariant %s is violated.\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
             if (keep_going) {
                 if (continued_trace("invariant", invariants[bad].name, st)) return 1;
             } else {
@@ -11208,7 +11228,7 @@ static int next_emit(void) {
         int bad = check_list(invariants, ninvariants, st);
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (bad >= 0) {
-            printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+            printf("Error: Invariant %s is violated.\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
             if (keep_going) {
                 if (continued_trace("invariant", invariants[bad].name, st)) return 1;
             } else {
@@ -11258,6 +11278,37 @@ static Value *post_state(Value ***st, int n, int i, int aliased) {
     return r;
 }
 
+/* v copied into the current arena, or v itself where it cannot be copied. */
+static Value *kept_for_good(Value *v) {
+    long budget = LONG_MAX;
+    Value *c = copy_value(v, &budget);
+    return c ? c : v;
+}
+
+/* The first behavior TLC prints of an error, printed whole, kept for good
+   as the result. */
+static void found_behavior(Value ***st, const int *act, int n, int loop, int loop_act) {
+    if (!found || found->length) return;
+    Arena *saved = arena;
+    arena = &perm_arena;
+    Value **states = NEWN(Value *, n), **acts = NEWN(Value *, n + (loop > 0));
+    for (int i = 0; i < n + (loop > 0); i++) {
+        if (i < n) {   /* the variables that have a value: an incomplete successor leaves some out */
+            List keys = {0}, vals = {0};
+            for (int v = 0; v < nvars; v++)
+                if (st[i][v]) list_add(&keys, mk_str(vars[v]->name)), list_add(&vals, st[i][v]);
+            Value *x = mk_fcn_from(&keys, &vals);
+            x->made = MADE_RECORD;
+            x->range = x->n == nvars;   /* printed as TLC prints a state */
+            states[i] = kept_for_good(x);
+        }
+        acts[i] = kept_for_good(action_value(i == 0 ? -1 : i == n ? (loop_act < 0 ? -2 : loop_act) : act[i] < 0 ? -2 : act[i]));
+    }
+    arena = saved;
+    found->states = states, found->actions = acts;
+    found->length = (size_t)n, found->loop = (size_t)loop;
+}
+
 static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased) {
     aliased = alias_name ? aliased : 0;
     Value **rec = NEWN(Value *, n);
@@ -11272,9 +11323,7 @@ static void post_behavior(Value ***st, const int *act, int n, int loop, int loop
         post_trace.st[i] = NEWN(Value *, nvars);
         for (int v = 0; v <= nvars; v++) {
             Value *x = v < nvars ? st[i][v] : rec[i];
-            long budget = LONG_MAX;
-            Value *kept = x ? copy_value(x, &budget) : NULL;
-            *(v < nvars ? &post_trace.st[i][v] : &post_trace.rec[i]) = kept ? kept : x;
+            *(v < nvars ? &post_trace.st[i][v] : &post_trace.rec[i]) = x ? kept_for_good(x) : x;
         }
     }
     arena = saved;
@@ -11456,6 +11505,7 @@ static void print_counts_after(int s) {
     int seen = last_seen(s);
     printf("%" PRId64 " states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
     printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
+    found_counts(gen_after[s], seen + 1, seen - s, states[seen].depth);
 }
 
 /* Expands state idx: its successors join the search. Returns the exit
@@ -12582,6 +12632,7 @@ static void sim_print(States *trace) {
     }
     trace_path = NULL;
     sim_printing = 0;
+    found_behavior(trace->a, trace->act, trace->n, 0, 0);
 }
 
 /* An error TLC catches as an exception: one raised outside its evaluator,
@@ -12642,6 +12693,7 @@ static int sim_violates(States *trace) {
 
 static void sim_summary(int64_t seed, int64_t aril) {
     printf("The number of states generated: %" PRId64 "\n", generated);
+    found_counts(generated, -1, -1, -1);
     printf("Simulation using seed %lld and aril %lld\n", (long long)seed, (long long)aril);
 }
 
@@ -12792,7 +12844,7 @@ static int simulate(const ManyanOptions *o) {
                 States *b = sim_behavior(trace, sim_failed ? sim_checked : NULL, cur_action);
                 if (sim_failed) {
                     Check *list = sim_failed == 2 ? invariants : action_props;
-                    printf("Error: %s %s is violated.\n", sim_failed == 2 ? "Invariant" : "Action property", S(list[sim_bad].name));
+                    printf("Error: %s %s is violated.\n", sim_failed == 2 ? "Invariant" : "Action property", S(list[sim_bad].name)), found_violated(list[sim_bad].name);
                     status = sim_failed == 2 ? MANYAN_VIOLATION_SAFETY : MANYAN_VIOLATION_LIVENESS;
                 } else if (check_deadlock) {
                     printf("Error: Deadlock reached.\n");
@@ -15216,6 +15268,7 @@ static void print_violated(Value ***ls, int n, int cyc) {
     }
     natoms = saved_atoms;
     neventualities = saved_eventualities;
+    for (int i = 0; i < nnames; i++) found_violated(names[i]);
     if (nnames == 1) printf("Error: Temporal property %s was violated.\n\n", S(names[0]));
     else if (nnames == 0) printf("Error: Temporal properties were violated.\n\n");
     else {
@@ -15389,12 +15442,14 @@ static void print_lasso(int *ls, int *la, int n, int entry, int back, int cyc) {
         printf("State %d: Stuttering\n", n + 1);
         warn_stuttering();
         post_behavior(lasso_values(ls, n), la, n, n, back, 0);
+        found_behavior(lasso_values(ls, n), la, n, n, back);
         return;
     }
     replay(state_values(ls[n - 1]), state_values(ls[entry]), n);
     printf("Back to state %d: ", entry + 1);
     action_label(back);
     printf("\n\n");
+    found_behavior(lasso_values(ls, n), la, n, entry + 1, back);
 }
 
 static void print_counterexample(int *inits, int ninits) {
@@ -15834,6 +15889,7 @@ static void print_cut(int at) {
     for (int i = 0; i < n; i++) print_live_state(i + 1, ls[i], i ? act[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : i]);
     act[0] = -1;
     post_behavior(lasso_values(ls, n), act, n, 0, 0, 2);
+    found_behavior(lasso_values(ls, n), act, n, 0, 0);
 }
 
 /* What TLC evaluates of the properties on each initial state, before its
@@ -19837,15 +19893,16 @@ static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int
     int *act_of, loop;
     if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, -1, 0, &loop, &states, &act_of)) return 0;
     if (bad >= 0 && !depth) {   /* as TLC reports it */
-        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name));
+        printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
         print_trace_state(states[0], states[0], 1);
         printf("\n");
     } else {
-        if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name));
+        if (bad >= 0) printf("Error: Invariant %s is violated.\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
         else printf("Error: Deadlock reached.\n");
         sym_print(states, act_of, depth + 1);
     }
     itf_write(states, depth + 1, -1, bad >= 0 ? index : 0);
+    found_behavior(states, act_of, depth + 1, 0, 0);
     return 1;
 }
 
@@ -20018,6 +20075,7 @@ static int symbolic(void) {
     int n = lasso_depth + stutter;
     print_violated(states, n, loop);   /* as TLC prints a lasso */
     itf_write(states, n, loop, 1);
+    found_behavior(states, act_of, n, stutter ? n : loop + 1, stutter ? -1 : act_of[lasso_depth]);
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     for (int i = 0; i < n; i++) print_numbered(i + 1, act_of[i], states[i], i ? states[i - 1] : NULL, states[i + (i < lasso_depth)]);
     if (stutter) {
@@ -22996,6 +23054,8 @@ int manyan_check(const ManyanOptions *o) {
     fp_init(o->fp);
     printf("manyan version %s\n", MANYAN_VERSION);
     stack_limit = o->stack > 0 ? o->stack : 0;
+    static const char *none[] = {NULL};
+    if ((found = o->result)) *found = (ManyanResult){.violated = none, .generated = -1, .distinct = -1, .left = -1, .depth = -1};
     symbolic_mode = o->symbolic;
     sym_cinit_name = o->symbolic ? o->cinit : NULL;
     size_t len = strlen(o->spec);
@@ -23184,9 +23244,11 @@ int manyan_check(const ManyanOptions *o) {
 #include <sanitizer/lsan_interface.h>
 #endif
 
+static ManyanResult main_result;   /* what the executable found, for a program wrapping it: tests/result.c */
+
 int main(int argc, char **argv) {
     if (manyan_std_init()) { fprintf(stderr, "manyan: out of memory\n"); return MANYAN_ERROR; }
-    ManyanOptions o = {0};
+    ManyanOptions o = {.result = &main_result};
     o.check_deadlock = 1;
     const char **properties = xcalloc((size_t)argc, sizeof(char *));
     const char **invariants = xcalloc((size_t)argc, sizeof(char *));

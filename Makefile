@@ -80,11 +80,20 @@ else
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
-test: test-spec test-symbolic test-typecheck
+test: test-spec test-result test-symbolic test-typecheck
 
 test-spec: manyan
 	python3 tests/spec_runner.py ./manyan --strict
 	python3 tests/spec_runner.py "./manyan -workers 4" --strict
+
+# What a check found (ManyanOptions.result) is what it printed.
+$(OBJDIR)/manyan-result: tests/result.c $(SRC) $(HDR)
+	mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) tests/result.c manyan-std.c $(LDLIBS) -o $@
+
+test-result: $(OBJDIR)/manyan-result
+	python3 tests/spec_runner.py $(OBJDIR)/manyan-result --strict
+	python3 tests/spec_runner.py "$(OBJDIR)/manyan-result -workers 4" --strict
 
 # The oracle must agree with every expected output, which validates the tests.
 test-spec-oracle: manyan $(TLA_JAR) $(COMMUNITY)

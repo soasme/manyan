@@ -1,5 +1,9 @@
 unreleased:
 
+- `ManyanOptions.result`: what a check found, as values `manyan.h` reads:
+  the first counterexample's states, actions and loop, what it violates,
+  and the counts reported. `make test` checks it against the printed
+  report on every test (tests/result.c)
 - the site at soasme.github.io/manyan: docs/ as HTML pages, a home page
   (docs/index.md), and the playground at playground.html (`make site`)
 

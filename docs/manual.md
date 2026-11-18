@@ -312,9 +312,27 @@ so is a slice whose states report anything, in its turn.
 ```c
 #include "manyan.h"
 
-ManyanOptions o = {.spec = "MySpec", .check_deadlock = 1, .workers = 1};
+ManyanResult r;
+ManyanOptions o = {.spec = "MySpec", .check_deadlock = 1, .workers = 1, .result = &r};
 int status = manyan_check(&o);   /* prints the report; returns an exit status */
 ```
+
+The result is what the report says, as values to walk with `manyan.h`'s
+`manyan_kind`, `manyan_field` and the rest, not text to parse:
+
+- `r.length` states of the first counterexample the report prints whole, 0
+  for none. A behavior cut short by an error rebuilding it has none.
+- `r.states[i]`: a record of the variables that have a value (a successor an
+  action leaves incomplete lacks some).
+- `r.actions[i]`: the step into state `i`, as `TLCGet("action")` gives it,
+  the initial predicate's for the first; with `r.loop`, `r.actions[r.length]`
+  is the step back.
+- `r.loop`: the state, from 1, the last steps back to, its own where it
+  stutters; 0 for a behavior that ends.
+- `r.violated`: the invariants and properties the report names violated,
+  NULL-terminated.
+- `r.generated`, `r.distinct`, `r.left`, `r.depth`: the counts it reports
+  last, -1 where it reports none (a simulation reports only `generated`).
 
 Compile `manyan.c` with `-DMANYAN_NO_MAIN` to link it into another program, with
 `manyan-std.c` and a call of `manyan_std_init()` before `manyan_check` for the
@@ -324,7 +342,7 @@ own, as std.md shows.
 ## Testing
 
 ```sh
-make test              # tests/spec with 1 and with 4 workers
+make test              # tests/spec with 1 and with 4 workers, also checking each result against its report
 make test-javascript   # tests/spec with the WebAssembly build, but for IOExec (needs emcc and node)
 make site              # docs/ as the site's HTML pages, with the playground, in .obj/site (needs Python-Markdown)
 make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)

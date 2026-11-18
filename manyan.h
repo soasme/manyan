@@ -23,6 +23,19 @@ enum {
     MANYAN_ERROR = 255
 };
 
+/* What a check found, as values (below): manyan_check fills it in where
+   ManyanOptions.result points. The values live until the process ends. */
+typedef struct ManyanValue ManyanValue;
+typedef struct {
+    size_t length;                /* the states of the first counterexample TLC reports, 0 for none */
+    ManyanValue *const *states;   /* each a record of the variables that have a value */
+    ManyanValue *const *actions;  /* the step into each state, as TLCGet("action") gives it, the
+                                     initial predicate's for the first; with a loop, actions[length] steps back */
+    size_t loop;                  /* the state, from 1, the last steps back to: its own where it stutters; 0 for none */
+    const char *const *violated;  /* the invariants and properties TLC names violated, NULL-terminated */
+    int64_t generated, distinct, left, depth;   /* the counts TLC reports last, -1 where it reports none */
+} ManyanResult;
+
 typedef struct {
     const char *spec;    /* path of the root module, with or without .tla */
     const char *config;  /* path of the model configuration; NULL for SPEC.cfg */
@@ -56,6 +69,7 @@ typedef struct {
     const char *const *postconditions;  /* "Module!Operator" each, checked after the configuration's postconditions, NULL-terminated (-postCondition) */
     const char *dump_trace;  /* write a counterexample to this file in TLC's JSON, or NULL (-dumpTrace json) */
     int no_te_spec;      /* TLC sets up no trace exploration spec, which shows in the order of CounterExample's fields (-noGenerateSpecTE) */
+    ManyanResult *result;  /* filled in with what the check found, or NULL */
 } ManyanOptions;
 
 /* Check the model and print TLC's report to standard output. Returns an
@@ -73,7 +87,6 @@ int manyan_check(const ManyanOptions *options);
    leaves the call to the definition. manyan-std.c defines TLC's own modules
    and CommunityModules' with these (docs/std.md). Define before
    manyan_check; returns 0, or -1 when out of memory. */
-typedef struct ManyanValue ManyanValue;
 typedef struct ManyanCall ManyanCall;   /* the call being evaluated */
 typedef ManyanValue *(*ManyanNative)(ManyanCall *call, ManyanValue **args);
 #define MANYAN_LAZY (-1)
