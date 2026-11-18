@@ -343,7 +343,7 @@ own, as std.md shows.
 
 ```sh
 make test              # tests/spec with 1 and with 4 workers, also checking each result against its report
-make test-javascript   # tests/spec with the WebAssembly build, but for IOExec (needs emcc and node)
+make test-javascript   # tests/spec with the WebAssembly build, but for IOExec, and its result in JavaScript (needs emcc and node)
 make site              # docs/ as the site's HTML pages, with the playground, in .obj/site (needs Python-Markdown)
 make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)
 make bless ONLY=name   # writes a test's expected output from TLC

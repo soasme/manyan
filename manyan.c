@@ -23244,7 +23244,16 @@ int manyan_check(const ManyanOptions *o) {
 #include <sanitizer/lsan_interface.h>
 #endif
 
-static ManyanResult main_result;   /* what the executable found, for a program wrapping it: tests/result.c */
+static ManyanResult main_result;   /* what the executable found, for a program wrapping it: tests/result.c, javascript/engine.js */
+
+#ifdef __EMSCRIPTEN__
+#include <stddef.h>
+/* engine.js reads the result at these offsets. */
+_Static_assert(offsetof(ManyanResult, states) == 4 && offsetof(ManyanResult, actions) == 8 && offsetof(ManyanResult, loop) == 12 &&
+               offsetof(ManyanResult, violated) == 16 && offsetof(ManyanResult, generated) == 24 && offsetof(ManyanResult, depth) == 48,
+               "javascript/engine.js reads ManyanResult so");
+const ManyanResult *manyan_main_result(void) { return &main_result; }
+#endif
 
 int main(int argc, char **argv) {
     if (manyan_std_init()) { fprintf(stderr, "manyan: out of memory\n"); return MANYAN_ERROR; }

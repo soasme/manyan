@@ -23,6 +23,21 @@
     font: inherit; font-weight: 600; cursor: pointer; }
   .play button.quiet { background: transparent; color: var(--fg); border: 1px solid var(--line); font-weight: 400; }
   .play pre { flex: 1; min-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  .views { display: flex; gap: 4px; }
+  .views button { padding: 4px 12px; font-size: 13px; }
+  .views button[aria-pressed="true"] { background: var(--panel); border-color: var(--fg); font-weight: 600; }
+  .views button:disabled { opacity: .4; cursor: default; }
+  #trace { flex: 1; min-height: 360px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+  #trace[hidden], #out[hidden] { display: none; }
+  .state { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 8px 12px;
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .state header { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; }
+  .state header b { font-weight: 600; }
+  .state header a { color: var(--muted); font-size: 12px; cursor: pointer; }
+  .state div { white-space: pre-wrap; word-break: break-word; padding: 0 4px; border-radius: 3px; }
+  .state div.changed { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .state.loop { border-style: dashed; color: var(--muted); }
+  .state.loop header { margin: 0; }
   #status { font-size: 13px; color: var(--muted); }
   #status.bad { color: var(--bad); }
   #status.good { color: var(--good); }
@@ -46,7 +61,12 @@
       <button id="share" class="quiet">Share</button>
     </div>
     <span id="status">Ready.</span>
+    <div class="views">
+      <button id="show-out" class="quiet" aria-pressed="true">Output</button>
+      <button id="show-trace" class="quiet" aria-pressed="false" disabled>Trace</button>
+    </div>
     <pre id="out"></pre>
+    <div id="trace" hidden></div>
   </section>
 </div>
 <script type="module">
@@ -77,11 +97,13 @@
     button.textContent = "Stop";
     status.textContent = "Checking…"; status.className = "";
     out.textContent = "";
+    showTrace(null);
     const started = performance.now();
     try {
       const options = args.value.trim() ? args.value.trim().split(/\s+/) : [];
       const r = await run([...options, name], { files: { [name + ".tla"]: tla.value, [name + ".cfg"]: cfg.value }, signal: controller.signal });
       out.textContent = r.output;
+      showTrace(r.result);
       status.textContent = `${STATUS[r.status] ?? "Exit status " + r.status} (exit ${r.status}, ${((performance.now() - started) / 1000).toFixed(2)} s)`;
       status.className = r.status ? "bad" : "good";
     } catch (e) {
@@ -91,6 +113,63 @@
       button.textContent = "Check";
     }
   };
+  // The counterexample state by state: each step's action, which selects it in
+  // the module, and the variables, those the step changed marked.
+  const show = (v) =>
+    typeof v === "boolean" ? (v ? "TRUE" : "FALSE") : typeof v === "number" ? String(v) :
+    typeof v === "string" ? JSON.stringify(v) : Array.isArray(v) ? `<<${v.map(show).join(", ")}>>` :
+    v instanceof Set ? `{${[...v].map(show).join(", ")}}` :
+    v instanceof Map ? `(${[...v].map(([k, x]) => `${show(k)} :> ${show(x)}`).join(" @@ ") || "<< >>"})` :
+    "#tla" in v ? v["#tla"] : `[${Object.entries(v).map(([k, x]) => `${k} |-> ${show(x)}`).join(", ")}]`;
+  const trace = $("trace"), views = { out: $("show-out"), trace: $("show-trace") };
+  const view = (which) => {
+    out.hidden = which !== "out", trace.hidden = which !== "trace";
+    for (const [k, b] of Object.entries(views)) b.setAttribute("aria-pressed", String(k === which));
+  };
+  views.out.onclick = () => view("out");
+  views.trace.onclick = () => view("trace");
+  const step = (action, label) => {
+    const h = document.createElement("header"), b = document.createElement("b"), at = action.location;
+    b.textContent = label;
+    h.append(b, " " + action.name);
+    if (at?.module === tla.value.match(/-{4,}\s*MODULE\s+(\w+)/)?.[1] && at.beginLine > 0) {
+      const a = document.createElement("a");
+      a.textContent = `line ${at.beginLine}, col ${at.beginColumn}`;
+      a.onclick = () => {
+        const lines = tla.value.split("\n"), offset = (l, c) => lines.slice(0, l - 1).reduce((n, s) => n + s.length + 1, 0) + c - 1;
+        tla.focus();
+        tla.setSelectionRange(offset(at.beginLine, at.beginColumn), offset(at.endLine, at.endColumn) + 1);
+      };
+      h.append(a);
+    }
+    return h;
+  };
+  function showTrace(r) {
+    trace.replaceChildren();
+    views.trace.disabled = !r?.states.length;
+    if (!r?.states.length) return view("out");
+    r.states.forEach((state, i) => {
+      const card = document.createElement("section");
+      card.className = "state";
+      card.append(step(r.actions[i], `State ${i + 1}`));
+      for (const [name, v] of Object.entries(state)) {
+        const row = document.createElement("div");
+        row.textContent = `${name} = ${show(v)}`;
+        if (i && !(name in r.states[i - 1] && show(r.states[i - 1][name]) === show(v))) row.className = "changed";
+        card.append(row);
+      }
+      trace.append(card);
+    });
+    if (r.loop) {
+      const note = document.createElement("div");
+      note.className = "state loop";
+      if (r.loop === r.states.length) note.textContent = "Then it stutters.";
+      else note.append(step(r.actions.at(-1), `Back to state ${r.loop}`));
+      trace.append(note);
+    }
+    view("trace");
+  }
+
   $("share").onclick = async () => {
     location.hash = btoa(unescape(encodeURIComponent(JSON.stringify({ tla: tla.value, cfg: cfg.value, args: args.value }))));
     await navigator.clipboard?.writeText(location.href).catch(() => {});

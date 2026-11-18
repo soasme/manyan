@@ -25,6 +25,27 @@ directory's files afterwards, so a counterexample written with
 `-dumpTrace json trace.json` is `files["trace.json"]`. Aborting `signal`
 stops the run.
 
+It also resolves to `result`, what the check found as values, with no
+text to parse:
+
+```js
+const { result } = await run(["DieHard"], { files });
+result.violated;              // ["NotSolved"]
+result.states.at(-1);         // { big: 4, small: 3 }
+result.actions[1].name;       // "Next"
+result.loop;                  // 0: the behavior ends; else the state it steps back to
+result.distinct;              // 14
+```
+
+`states` holds the first counterexample the report prints whole, each a
+record of the variables; `actions` the step into each, as
+`TLCGet("action")` gives it, one more stepping back where there is a
+loop. A TLA+ value is a boolean, number or string as itself, a tuple an
+Array, a record (a function from names) an Object, another function a
+Map, a set a Set, and any other, such as a model value, `{ "#tla": text }`,
+TLC's text of it, which no record is: no name holds a `#`. See [index.d.ts](index.d.ts) and the manual's
+[Library](https://github.com/soasme/manyan/blob/main/docs/manual.md#library).
+
 Each run has a Worker of its own, so it does not block the page.
 `npx manyan-wasm DieHard` runs it on the current directory's files.
 
