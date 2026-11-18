@@ -59,6 +59,7 @@ LOW_MEMORY = re.compile(
 
 
 OUTPUT_LIMIT = 64 << 20
+DISK_FLOOR = 4 << 30   # a run is killed once the disk it writes to has less free
 
 # Options a test may give that the oracle cannot run: TLC reads a
 # configuration only from a file whose name ends in .cfg, and has no -stack.
@@ -68,7 +69,9 @@ ORACLE_SKIPS = {"-config", "-stack"}
 def guarded(command, directory, timeout, memory, input=None):
     """The seconds command takes, its output and exit status, or why it was
     killed: past timeout seconds, memory MB resident (with what it starts),
-    or OUTPUT_LIMIT bytes of output. input, if given, is its standard input."""
+    OUTPUT_LIMIT bytes of output, or with DISK_FLOOR left on the disk of
+    directory, as TLC spilling states can leave. input, if given, is its
+    standard input."""
     start = time.perf_counter()
     try:
         process = subprocess.Popen(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -102,6 +105,8 @@ def guarded(command, directory, timeout, memory, input=None):
             killed = f"over {timeout} s"
         elif size[0] > OUTPUT_LIMIT:
             killed = f"over {OUTPUT_LIMIT >> 20} MB of output"
+        elif shutil.disk_usage(directory).free < DISK_FLOOR:
+            killed = f"under {DISK_FLOOR >> 30} GB of disk left"
         if killed:
             os.killpg(process.pid, signal.SIGKILL)
             break
@@ -121,15 +126,26 @@ def ps(group, field):
 
 def resident(group):
     """The KB a process group holds resident, pages its processes share
-    counted in each."""
-    return sum(ps(group, "rss"))
+    counted in each; on macOS those it swapped or compressed too, which
+    it holds as well though they are not resident."""
+    pids = ps(group, "pid")
+    if sys.platform != "darwin":
+        return sum(ps(group, "rss"))
+    import ctypes
+    libc, usage = ctypes.CDLL(None), (ctypes.c_uint64 * 12)()   # rusage_info_v0, <sys/resource.h>
+    kb = 0
+    for pid in pids:
+        if libc.proc_pid_rusage(pid, 0, usage) == 0:
+            kb += max(usage[8], usage[9]) // 1024   # resident_size, phys_footprint
+    return kb
 
 
 def held(group):
     """The KB a process group holds resident, pages its processes share
     counted once, as Manyan's workers share the search's: on Linux a share
-    of them each, on macOS each object they map once; elsewhere as
-    resident counts them. Slower than resident."""
+    of them each, on macOS each object they map once, with what it swapped
+    or compressed; elsewhere as resident counts them. Slower than
+    resident."""
     pids = ps(group, "pid")
     if sys.platform.startswith("linux"):
         kb = 0
@@ -156,8 +172,9 @@ def held(group):
         address = 0
         while libc.proc_pidinfo(pid, 7, ctypes.c_uint64(address), ctypes.byref(region), ctypes.sizeof(region)) == ctypes.sizeof(region):
             private += region.private_pages_resident
-            if region.shared_pages_resident:
-                shared[region.obj_id] = max(shared.get(region.obj_id, 0), region.shared_pages_resident)
+            if region.shared_pages_resident or region.pages_swapped_out:
+                shared[region.obj_id] = max(shared.get(region.obj_id, 0),
+                                            region.shared_pages_resident + region.pages_swapped_out)
             address = region.address + region.size
     return (private + sum(shared.values())) * resource.getpagesize() // 1024
 

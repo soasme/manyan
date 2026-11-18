@@ -7,7 +7,9 @@ quick one for day-to-day work; this one takes hours and asks a stronger
 question: does Manyan print what TLC prints on specs it was not written for?
 
 Examples, CommunityModules and TLAPS are pinned in the Makefile. Each model
-runs once with one worker, killed past 15 minutes or 4 GB. TLC's results are
+runs once with one worker, killed past 15 minutes (`TIMEOUT=` seconds), 4 GB
+held, swapped out too, or once the disk has under 4 GB free, as TLC's states
+spilled to disk can leave it. TLC's results are
 cached under `.obj` and the diffs of the models that differ are written to
 `.obj/fullbench.diff`. `ONLY=DieHard` runs the models whose path contains
 DieHard; `MAX_RUNTIME=00:00:30` keeps those recorded to run in 30 seconds.
