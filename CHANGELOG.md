@@ -4,7 +4,10 @@ unreleased:
   the first counterexample's states, actions and loop, what it violates,
   and the counts reported. `make test` checks it against the printed
   report on every test (tests/result.c)
-- npm: `run()` resolves to `result` too, the C API's result as JavaScript
+- `-result FILE` writes that result in JSON, its values as Apalache's ITF
+  writes them; Python's `manyan.run(args)` gives it as Python values
+  (python/README.md)
+- npm: `run()` resolves to `result` too, the result as JavaScript
   values (javascript/README.md); the playground shows a counterexample
   state by state, the variables each step changes marked, and a step's
   location selects its action in the module

@@ -30,8 +30,8 @@ export interface Result {
   output: string;
   /** The directory's files after the run, those manyan wrote among them. */
   files: Record<string, Uint8Array>;
-  /** What the check found, as values. */
-  result: ManyanResult;
+  /** What the check found, as values; null where no check began, as for a usage error. */
+  result: ManyanResult | null;
 }
 
 /** Run manyan with the command line `args` in a directory holding `files`. */

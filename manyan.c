@@ -23047,6 +23047,8 @@ static int inv_name(const char *expr) {
 }
 
 int manyan_check(const ManyanOptions *o) {
+    static const char *none[] = {NULL};
+    if ((found = o->result)) *found = (ManyanResult){.violated = none, .generated = -1, .distinct = -1, .left = -1, .depth = -1};
     if (o->fp < 0 || o->fp >= (int)(sizeof fp_polys / sizeof *fp_polys)) {
         fprintf(stderr, "manyan: -fp takes an integer from 0 to %d\n", (int)(sizeof fp_polys / sizeof *fp_polys) - 1);
         return MANYAN_ERROR;
@@ -23054,8 +23056,6 @@ int manyan_check(const ManyanOptions *o) {
     fp_init(o->fp);
     printf("manyan version %s\n", MANYAN_VERSION);
     stack_limit = o->stack > 0 ? o->stack : 0;
-    static const char *none[] = {NULL};
-    if ((found = o->result)) *found = (ManyanResult){.violated = none, .generated = -1, .distinct = -1, .left = -1, .depth = -1};
     symbolic_mode = o->symbolic;
     sym_cinit_name = o->symbolic ? o->cinit : NULL;
     size_t len = strlen(o->spec);
@@ -23244,16 +23244,78 @@ int manyan_check(const ManyanOptions *o) {
 #include <sanitizer/lsan_interface.h>
 #endif
 
-static ManyanResult main_result;   /* what the executable found, for a program wrapping it: tests/result.c, javascript/engine.js */
+static ManyanResult main_result;   /* what the executable found, for a program wrapping it: tests/result.c */
+static FILE *result_file;          /* -result FILE */
 
-#ifdef __EMSCRIPTEN__
-#include <stddef.h>
-/* engine.js reads the result at these offsets. */
-_Static_assert(offsetof(ManyanResult, states) == 4 && offsetof(ManyanResult, actions) == 8 && offsetof(ManyanResult, loop) == 12 &&
-               offsetof(ManyanResult, violated) == 16 && offsetof(ManyanResult, generated) == 24 && offsetof(ManyanResult, depth) == 48,
-               "javascript/engine.js reads ManyanResult so");
-const ManyanResult *manyan_main_result(void) { return &main_result; }
-#endif
+/* A value in JSON, as Apalache's ITF writes one: a record (a function from
+   names) an object, another function {"#map": [[key, value], ...]}, a set
+   {"#set": [...]}, a tuple a list; any other {"#tla": TLC's text of it},
+   which no record is, as no name holds a #. */
+static void json_value(Buf *b, Value *v) {
+    size_t n = manyan_size(v);
+    switch (manyan_kind(v)) {
+    case MANYAN_BOOL: buf_puts(b, manyan_is_true(v) ? "true" : "false"); return;
+    case MANYAN_INT: buf_printf(b, "%" PRId64, manyan_int_value(v)); return;
+    case MANYAN_STRING: itf_string(b, manyan_string_value(v, NULL)); return;
+    case MANYAN_TUPLE:
+        buf_puts(b, "[");
+        for (size_t i = 0; i < n; i++) buf_puts(b, i ? "," : ""), json_value(b, manyan_value(v, i));
+        buf_puts(b, "]");
+        return;
+    case MANYAN_FUNCTION: {
+        int record = 1;
+        for (size_t i = 0; i < n && record; i++) {
+            Value *k = manyan_key(v, i);
+            const char *s = manyan_kind(k) == MANYAN_STRING ? manyan_string_value(k, NULL) : "";
+            record = s[strspn(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")] == 0 && strpbrk(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        }
+        buf_puts(b, record ? "{" : "{\"#map\":[");
+        for (size_t i = 0; i < n; i++) {
+            buf_puts(b, i ? (record ? "," : ",[") : (record ? "" : "["));
+            json_value(b, manyan_key(v, i));
+            buf_puts(b, record ? ":" : ",");
+            json_value(b, manyan_value(v, i));
+            if (!record) buf_puts(b, "]");
+        }
+        buf_puts(b, record ? "}" : "]}");
+        return;
+    }
+    case MANYAN_SET: {
+        Value *e = manyan_elements(v);
+        if (!e) break;
+        buf_puts(b, "{\"#set\":[");
+        for (size_t i = 0; i < manyan_size(e); i++) buf_puts(b, i ? "," : ""), json_value(b, manyan_element(e, i));
+        buf_puts(b, "]}");
+        return;
+    }
+    default: break;
+    }
+    buf_puts(b, "{\"#tla\":");
+    itf_string(b, manyan_print(v));
+    buf_puts(b, "}");
+}
+
+/* The result in JSON, as the executable ends: as the npm package's result is. */
+static void write_result(void) {
+    const ManyanResult *r = &main_result;
+    Buf b = {0};
+    buf_puts(&b, "{\"states\":[");
+    for (size_t i = 0; i < r->length; i++) buf_puts(&b, i ? "," : ""), json_value(&b, r->states[i]);
+    buf_puts(&b, "],\"actions\":[");
+    for (size_t i = 0; i < r->length + (r->loop > 0); i++) buf_puts(&b, i ? "," : ""), json_value(&b, r->actions[i]);
+    buf_printf(&b, "],\"loop\":%zu,\"violated\":[", r->loop);
+    for (size_t i = 0; r->violated[i]; i++) buf_puts(&b, i ? "," : ""), itf_string(&b, r->violated[i]);
+    buf_puts(&b, "]");
+    const char *names[] = {"generated", "distinct", "left", "depth"};
+    int64_t counts[] = {r->generated, r->distinct, r->left, r->depth};
+    for (int i = 0; i < 4; i++)
+        if (counts[i] < 0) buf_printf(&b, ",\"%s\":null", names[i]);
+        else buf_printf(&b, ",\"%s\":%" PRId64, names[i], counts[i]);
+    buf_puts(&b, "}\n");
+    fwrite(b.s, 1, b.n, result_file);
+    fclose(result_file);
+    free(b.s);
+}
 
 int main(int argc, char **argv) {
     if (manyan_std_init()) { fprintf(stderr, "manyan: out of memory\n"); return MANYAN_ERROR; }
@@ -23312,6 +23374,11 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-continue") == 0) o.keep_going = 1;
         else if (strcmp(argv[i], "-view") == 0) o.view = 1;
         else if (strcmp(argv[i], "-userFile") == 0 && i + 1 < argc) o.user_file = argv[++i];
+        else if (strcmp(argv[i], "-result") == 0 && i + 1 < argc) {
+            /* what the check found, in JSON, written as it ends however it ends */
+            if (result_file) fclose(result_file);
+            if (!(result_file = fopen(argv[++i], "w"))) { fprintf(stderr, "manyan: cannot write %s\n", argv[i]); return MANYAN_ERROR; }
+        }
         else if (!strncmp(argv[i], "-D", 2) && strchr(argv[i], '=')) properties[nproperties++] = argv[i] + 2;
         else if (strcmp(argv[i], "-inv") == 0 && i + 1 < argc) invariants[ninvariants++] = argv[++i];
         else if (strcmp(argv[i], "-invlevel") == 0 && i + 1 < argc) {
@@ -23354,6 +23421,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "%s", usage);
         return MANYAN_ERROR;
     }
+    if (result_file) atexit(write_result);
     int status = manyan_check(&o);
 #ifdef MANYAN_LEAK_CHECK
     __lsan_do_leak_check();   /* what manyan_check made and returned without is lost */

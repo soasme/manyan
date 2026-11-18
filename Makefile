@@ -80,7 +80,7 @@ else
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
-test: test-spec test-result test-symbolic test-typecheck
+test: test-spec test-result test-python test-symbolic test-typecheck
 
 test-spec: manyan
 	python3 tests/spec_runner.py ./manyan --strict
@@ -93,7 +93,11 @@ $(OBJDIR)/manyan-result: tests/result.c $(SRC) $(HDR)
 
 test-result: $(OBJDIR)/manyan-result
 	python3 tests/spec_runner.py $(OBJDIR)/manyan-result --strict
-	python3 tests/spec_runner.py "$(OBJDIR)/manyan-result -workers 4" --strict
+	python3 tests/spec_runner.py "$(OBJDIR)/manyan-result -workers 4 -result result.json" --strict
+
+# The Python package's run(), on this executable.
+test-python: manyan
+	python3 python/test_manyan.py
 
 # The oracle must agree with every expected output, which validates the tests.
 test-spec-oracle: manyan $(TLA_JAR) $(COMMUNITY)
@@ -229,14 +233,13 @@ $(COMMUNITY):
 
 # The npm package (javascript/): manyan compiled to WebAssembly with
 # Emscripten, its files in memory; the conformance suite runs it through
-# javascript/cli.js. engine.js reads the run's result with the C API. Evaluation nests as deep as natively, on a stack as
+# javascript/cli.js. Evaluation nests as deep as natively, on a stack as
 # large as Cygwin's.
 EMCC ?= emcc
 WASM_FLAGS = -O3 -std=c11 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions
 WASM_LDFLAGS = -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,worker,node -sINVOKE_RUN=0 -sEXIT_RUNTIME \
 	-sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=64MB -sINITIAL_MEMORY=128MB -sFORCE_FILESYSTEM \
-	-sEXPORTED_RUNTIME_METHODS=callMain,FS,getValue,UTF8ToString \
-	-sEXPORTED_FUNCTIONS=_main,_manyan_main_result,_manyan_kind,_manyan_is_true,_manyan_int_value,_manyan_string_value,_manyan_size,_manyan_key,_manyan_value,_manyan_elements,_manyan_element,_manyan_print
+	-sEXPORTED_RUNTIME_METHODS=callMain,FS
 
 wasm: javascript/manyan.mjs
 javascript/manyan.mjs: $(SRC) $(HDR)

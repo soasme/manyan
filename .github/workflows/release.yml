@@ -59,6 +59,7 @@ jobs:
           python3 python/wheel.py macosx_11_0_arm64 wheels arm64/manyan
           python3 python/wheel.py macosx_11_0_x86_64 wheels x86_64/manyan
           python3 -m venv venv && venv/bin/pip install -q wheels/*arm64.whl && venv/bin/manyan -version
+          venv/bin/python -c "import manyan; r = manyan.run(['DieHard'], cwd='examples'); assert r.status == 12 and len(r.result.states) == 7, r.output"
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
@@ -94,6 +95,7 @@ jobs:
       - run: |
           python3 python/wheel.py manylinux_2_17_${{ matrix.wheel }}.musllinux_1_1_${{ matrix.wheel }} wheels manyan
           python3 -m venv venv && venv/bin/pip install -q wheels/*.whl && venv/bin/manyan -version
+          venv/bin/python -c "import manyan; r = manyan.run(['DieHard'], cwd='examples'); assert r.status == 12 and len(r.result.states) == 7, r.output"
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}
@@ -144,6 +146,8 @@ jobs:
           venv\Scripts\pip install -q (Get-Item wheels\*win_amd64.whl)
           venv\Scripts\manyan.exe -version
           if ($LASTEXITCODE) { exit 1 }
+          venv\Scripts\python -c "import manyan; r = manyan.run(['DieHard'], cwd='examples'); assert r.status == 12 and len(r.result.states) == 7, r.output"
+          if ($LASTEXITCODE) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
@@ -184,6 +188,8 @@ jobs:
           python -m venv venv
           venv\Scripts\pip install -q (Get-Item wheels\*win_arm64.whl)
           venv\Scripts\manyan.exe -version
+          if ($LASTEXITCODE) { exit 1 }
+          venv\Scripts\python -c "import manyan; r = manyan.run(['DieHard'], cwd='examples'); assert r.status == 12 and len(r.result.states) == 7, r.output"
           if ($LASTEXITCODE) { exit 1 }
       - run: unzip -q manyan-${{ needs.version.outputs.version }}-windows-x86_64.zip
       # As it ships, from Windows; then the suite in Cygwin, whose own dll
