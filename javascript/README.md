@@ -56,9 +56,11 @@ Each run has a Worker of its own, so it does not block the page.
 - `IOExec` and `IOEnvExec` cannot run a process.
 - Memory is at most 4 GB.
 - A browser gives a Worker about 1 MB of stack, where Node.js gives each
-  run 64 MB: past a few hundred nested calls, as a runaway recursion
-  makes, the run rejects instead of printing TLC's StackOverflowError.
-  `-stack 300` makes manyan print that error at a depth the browser holds.
+  run 64 MB: it holds a recursion about a thousand calls deep (1,600 of
+  one through arithmetic, as `Sum(n) == n + Sum(n - 1)`), where TLC and
+  the executable hold 5000. Past that, as a runaway recursion goes, the
+  run rejects instead of printing TLC's StackOverflowError; `-stack 300`
+  makes manyan print that error at a depth the browser holds.
 
 For the full command line, see [the manual](https://github.com/soasme/manyan/blob/main/docs/manual.md);
 for the native executable, `pip install manyan` or a

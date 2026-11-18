@@ -1,5 +1,8 @@
 unreleased:
 
+- WebAssembly: a browser's stack holds a recursion deeper, 1,647 levels of
+  one through arithmetic where 939 were: Binaryen inlines nothing into the
+  evaluator, and arithmetic is computed in the call's frame
 - fixed: a recursion of constant operators that kept more calls than the
   table had room for when it began, as one over about a thousand deep,
   hung; the table grows as a call is kept too

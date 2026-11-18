@@ -234,9 +234,11 @@ $(COMMUNITY):
 # The npm package (javascript/): manyan compiled to WebAssembly with
 # Emscripten, its files in memory; the conformance suite runs it through
 # javascript/cli.js. Evaluation nests as deep as natively, on a stack as
-# large as Cygwin's.
+# large as Cygwin's. Binaryen inlines no function into another: the
+# evaluator's frames stay small, so a browser's stack holds more of them.
 EMCC ?= emcc
-WASM_FLAGS = -O3 -std=c11 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions
+WASM_FLAGS = -O3 -std=c11 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions \
+	-sBINARYEN_EXTRA_PASSES=--one-caller-inline-max-function-size=0,--flexible-inline-max-function-size=0
 WASM_LDFLAGS = -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,worker,node -sINVOKE_RUN=0 -sEXIT_RUNTIME \
 	-sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=64MB -sINITIAL_MEMORY=128MB -sFORCE_FILESYSTEM \
 	-sEXPORTED_RUNTIME_METHODS=callMain,FS

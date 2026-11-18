@@ -78,9 +78,12 @@ output on all of tests/spec but the 2 tests that run a process; and a
    recorded past 10 ([fullbench](fullbench.md#gaps)). Run each once with
    a longer cap, its TLC results cached, and give it a row.
 4. **Deeper in a browser.** A browser gives a Worker about 1 MB of stack,
-   which holds about 400 nested calls where TLC's holds 5000. Find what
-   each nesting holds of the stack and cut it, so that a browser holds
-   the depths specifications reach.
+   which held about 940 levels of a recursion where TLC's holds 5000.
+   Binaryen no longer inlines into the evaluator, whose frames stay small,
+   and arithmetic is computed in the call's frame: 1,647 levels of `Sum(n)
+   == n + Sum(n - 1)`, 1,073 of a recursion through a set map. Each
+   construct a recursion passes through is a frame; folding more of them
+   is what is left.
 
 ## What stays
 

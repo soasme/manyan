@@ -6075,8 +6075,10 @@ static int plain_args(Def *d, Expr *e, Ctx c, Value **vals) {
 }
 
 /* x op y of Naturals' operators on two integers, computed here; any other
-   arguments, or an overflow, by the native, which reports it. */
-static Value *int_call(Def *d, Expr *e, Ctx c) {
+   arguments, or an overflow, by the native, which reports it. Inline in
+   its callers: a recursion through arithmetic, as Sum(n) == n + Sum(n - 1),
+   nests a frame fewer, which a browser's stack holds more of. */
+static inline __attribute__((always_inline)) Value *int_call(Def *d, Expr *e, Ctx c) {
     Value *vals[2] = {eval(e->args[0], c), eval(e->args[1], c)};
     if (vals[0]->kind == V_INT && vals[1]->kind == V_INT) {
         int64_t x = vals[0]->u.i, y = vals[1]->u.i, v;
