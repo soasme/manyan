@@ -189,11 +189,12 @@ EXAMPLES = $(OBJDIR)/Examples-$(EXAMPLES_REV)
 TLAPM = $(OBJDIR)/tlapm-$(TLAPM_REV)
 FULL_TLC = $(JAVA) -XX:+UseParallelGC -cp $(TLC_CP):$(abspath $(TLAPM)/library) tlc2.TLC
 
-# ONLY=PATTERN picks models; MAX_RUNTIME=hh:mm:ss caps the manifest's runtime.
+# ONLY=PATTERN picks models; MAX_RUNTIME=hh:mm:ss caps the manifest's runtime,
+# or all takes every model; TIMEOUT=S kills a run past S seconds (900).
 full-bench: manyan $(TLA_JAR) $(COMMUNITY) $(EXAMPLES) $(TLAPM)
 	python3 bench/examples.py ./manyan --tlc "$(FULL_TLC)" --examples $(EXAMPLES) \
 		--library $(COMMUNITY) --library $(TLAPM)/library \
-		$(if $(ONLY),--only $(ONLY)) $(if $(MAX_RUNTIME),--max-runtime $(MAX_RUNTIME))
+		$(if $(ONLY),--only $(ONLY)) $(if $(MAX_RUNTIME),--max-runtime $(MAX_RUNTIME)) $(if $(TIMEOUT),--timeout $(TIMEOUT))
 
 # The models tlaplus/Examples checks with Apalache, with -symbolic.
 full-bench-symbolic: manyan $(APALACHE) $(COMMUNITY) $(EXAMPLES) $(TLAPM)

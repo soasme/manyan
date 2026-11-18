@@ -4,14 +4,16 @@ usage: examples.py ENGINE --tlc "TLC CMD" --examples DIR [--library DIR]...
                    [--only SUBSTRING] [--max-runtime HH:MM:SS] [--timeout S] [--memory MB]
 
 Every exhaustive-search model whose recorded runtime is at most
---max-runtime, and every simulation and generation model, its behaviors
+--max-runtime (all of them, those with none recorded too, for `all`), and
+every simulation and generation model, its behaviors
 fixed by a seed and their number, runs once with each engine and one
 worker, killed past --timeout seconds or --memory MB resident. manyan must
 print what TLC prints.
 Each library's modules are staged beside the spec unless the spec has one
 of that name or manyan builds it in, as TLC finds them on its class path.
 TLC's results are cached next to the Examples checkout: they change only
-with the pins, and normalizing them again follows changes to normalize. The diffs of the models that differ go to fullbench.diff.
+with the pins, and normalizing them again follows changes to normalize; a
+run killed for time runs again under a longer --timeout. The diffs of the models that differ go to fullbench.diff.
 """
 import argparse
 import difflib
@@ -64,8 +66,8 @@ def models(examples, only, max_runtime):
     for manifest in sorted(examples.glob("specifications/*/manifest.json")):
         for module in json.loads(manifest.read_text())["modules"]:
             for model in module["models"]:
-                exhaustive = (model["mode"] == "exhaustive search" and model["runtime"] != "unknown"
-                              and model["runtime"] <= max_runtime)
+                exhaustive = model["mode"] == "exhaustive search" and (
+                    max_runtime == "all" or model["runtime"] != "unknown" and model["runtime"] <= max_runtime)
                 if (exhaustive or options(model)) and only in model["path"]:
                     yield module, model
 
@@ -97,7 +99,9 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp).resolve() / "spec"
             stage(examples / Path(path).parent, args.library, directory)
-            if cached not in cache:
+            timed_out = cache.get(cached, {}).get("killed") or ""
+            if cached not in cache or (timed_out.startswith("over") and timed_out.endswith(" s")
+                                       and float(timed_out.split()[1]) < args.timeout):
                 tlc = spec_runner.place(args.tlc.split(), java + ["-workers", "1", "-metadir", str(Path(tmp) / "meta")])
                 seconds, output, killed = run(tlc + command, directory, args.timeout, args.memory)
                 cache[cached] = {"seconds": seconds, "output": output, "killed": killed}
@@ -128,8 +132,10 @@ def main():
     report = ROOT / "docs/fullbench.md"
     head = report.read_text().split("<!-- results -->")[0] if report.exists() else "# Full benchmark\n\n"
     report.write_text(head + "<!-- results -->\n\n"
-                      f"tlaplus/Examples at {examples.name.removeprefix('Examples-')[:12]}, the exhaustive-search "
-                      f"models recorded to run in at most {args.max_runtime}, and the simulation and generation "
+                      f"tlaplus/Examples at {examples.name.removeprefix('Examples-')[:12]}, "
+                      + ("every exhaustive-search model" if args.max_runtime == "all" else
+                         f"the exhaustive-search models recorded to run in at most {args.max_runtime}")
+                      + f" (each run killed past {args.timeout:.0f} s), and the simulation and generation "
                       f"models with `-seed 1` and `num=` their traceCount, or 100. Measured on {platform.machine()} "
                       f"{platform.system()} {platform.release()}, one run, wall-clock seconds, one worker.\n\n"
                       f"{len(rows)} models: {summary}. Where manyan prints what TLC prints, "
