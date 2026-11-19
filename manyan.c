@@ -9835,9 +9835,12 @@ static int32_t get32(const char **p) {
     return (int32_t)(z >> 1 ^ -(z & 1));
 }
 
+static const char *interned_at(const char **p);
+
 /* A value of a state, with its hash: the successors that keep or update it
    need not hash it again. */
 static Value *decode(const char **p) {
+    if (**p == 'v') { const char *q = interned_at(p); return decode(&q); }
     char tag = *(*p)++;
     uint64_t sum = 0;
     switch (tag) {
@@ -9877,6 +9880,7 @@ static Value *decode(const char **p) {
 
 /* fp_value of the value encoded at *p, as decode reads it. */
 static uint64_t fp_encoded(uint64_t fp, const char **p) {
+    if (**p == 'v') { const char *q = interned_at(p); return fp_encoded(fp, &q); }
     char tag = *(*p)++;
     int n;
     switch (tag) {
@@ -10294,9 +10298,132 @@ static int add_record(size_t off, int len, uint64_t fp, int parent, int action, 
     return nstates++;
 }
 
+/* A variable's value that many states share is stored once, where it
+   was first met in the store: a state keeps 'v' and its id. The ids are
+   found by a table of the values' hashes, which the workers share with
+   the search, as they share the store; one claims a slot, puts the value
+   in the store, then gives the slot the id, so one that meets a slot
+   without one waits for it. With workers only the search grows the
+   table, as a level starts, and past half full a value is kept whole. */
+typedef struct { _Atomic uint64_t key; _Atomic uint32_t id; } ISlot;   /* key: the value's hash, never 0; id: its id + 1 */
+#define INTERN_DEAD UINT32_MAX   /* the id of a slot whose value found no room in the store */
+
+static ISlot *islots;
+static size_t nislots, capids;
+static uint64_t *ioff;               /* each value's offset in the store */
+static atomic_size_t own_interned, *interned = &own_interned;   /* the ids given; with workers, shared */
+static char *intern_region;          /* with workers: shared memory the tables are taken from, in turn */
+static int intern_frozen;            /* workers are at a level: the table keeps its size */
+static size_t intern_region_used, intern_region_size;
+
+static const char *interned_at(const char **p) {
+    (*p)++;
+    return store.s + ioff[(uint32_t)get32(p)];
+}
+
+/* The table grown to n slots. */
+static void intern_grow(size_t n) {
+    size_t bytes = sizeof(ISlot) * n;
+    ISlot *t;
+    if (intern_region) {
+        if (intern_region_used + bytes > intern_region_size) return;
+        t = (ISlot *)(intern_region + intern_region_used);
+        intern_region_used += bytes;
+    } else t = xcalloc(n, sizeof(ISlot));
+    for (size_t i = 0; i < nislots; i++) {
+        if (!atomic_load(&islots[i].id)) continue;
+        size_t j = atomic_load(&islots[i].key) & (n - 1);
+        while (atomic_load(&t[j].key)) j = (j + 1) & (n - 1);
+        atomic_store(&t[j].key, atomic_load(&islots[i].key));
+        atomic_store(&t[j].id, atomic_load(&islots[i].id));
+    }
+    if (!intern_region) free(islots);
+    islots = t;
+    nislots = n;
+}
+
+/* Room for the values a level finds: a quarter of the table free as it starts. */
+static void intern_room(void) {
+    if (atomic_load(interned) * 4 >= nislots) intern_grow(nislots ? nislots * 2 : 1 << 12);
+}
+
+static size_t store_put(const char *b, size_t n);
+
+/* The id + 1 of the value encoded as b, n bytes long, put in the table if
+   it is new (*found 0, else 1); 0 if it is new and finds no room. */
+static uint32_t intern_value(const char *b, size_t n, int *found) {
+    if (!in_worker && !intern_frozen && (atomic_load(interned) + 1) * 2 >= nislots) intern_grow(nislots ? nislots * 2 : 1 << 12);
+    if (!nislots) return 0;
+    if (atomic_load(interned) >= capids && !intern_region) ioff = xrealloc(ioff, sizeof(uint64_t) * (capids *= 2));
+    uint64_t h = hash_bytes(b, n, 0x9e3779b97f4a7c15ull) | 1;
+    for (size_t j = h & (nislots - 1);; j = (j + 1) & (nislots - 1)) {
+        uint64_t k = atomic_load(&islots[j].key);
+        if (!k) {
+            if (atomic_load(interned) * 2 >= nislots) return 0;
+            if (atomic_compare_exchange_strong(&islots[j].key, &k, h)) {
+                size_t id = atomic_fetch_add(interned, 1), off = id < capids ? store_put(b, n) : SIZE_MAX;
+                if (off != SIZE_MAX) ioff[id] = off;
+                atomic_store(&islots[j].id, off == SIZE_MAX ? INTERN_DEAD : (uint32_t)id + 1);
+                *found = 0;
+                return off == SIZE_MAX ? 0 : (uint32_t)id + 1;
+            }
+        }
+        if (k != h) continue;
+        uint32_t id;
+        while (!(id = atomic_load(&islots[j].id))) sched_yield();
+        if (id != INTERN_DEAD && !memcmp(store.s + ioff[id - 1], b, n)) {   /* an encoding is no other's prefix */
+            *found = 1;
+            return id;
+        }
+    }
+}
+
+/* A state's values, each variable's interned while that saves more than
+   it costs: a new value costs its id, slot and offset, about 40 bytes,
+   and one met again saves its length less its id's. A value at the
+   address the last was at, before the scratch arena is reset, is the
+   same, as fingerprint has it, and takes the same id. */
+#define INTERN_WINDOW 16384
+static void encode_state(Buf *b, Value **st) {
+    static int *tries, *saved, *whole;
+    static Value **last;
+    static unsigned *last_resets;
+    static uint32_t *last_id;
+    static Buf one;
+    if (simulating) {   /* a simulation empties the store for each behavior */
+        for (int i = 0; i < nvars; i++) encode(b, st[i]);
+        return;
+    }
+    if (!ioff) ioff = xmalloc(sizeof(uint64_t) * (capids = 1024));
+    if (!tries) {
+        tries = xcalloc((size_t)nvars + 1, sizeof(int)), saved = xcalloc((size_t)nvars + 1, sizeof(int)), whole = xcalloc((size_t)nvars + 1, sizeof(int));
+        last = xcalloc((size_t)nvars + 1, sizeof(Value *)), last_resets = xcalloc((size_t)nvars + 1, sizeof(unsigned));
+        last_id = xcalloc((size_t)nvars + 1, sizeof(uint32_t));
+    }
+    for (int i = 0; i < nvars; i++) {
+        if (whole[i]) { encode(b, st[i]); continue; }
+        if (st[i] == last[i] && last_resets[i] == scratch_resets) { put_tagged(b, 'v', last_id[i] - 1); continue; }
+        one.n = 0;
+        encode(&one, st[i]);
+        int found = 0;
+        uint32_t id = one.n < 4 ? 0 : intern_value(one.s, one.n, &found);
+        if (!id) { buf_add(b, one.s, one.n); continue; }
+        put_tagged(b, 'v', id - 1);
+        saved[i] += found ? (int)one.n - 3 : -43;
+        if (++tries[i] == INTERN_WINDOW) {
+            whole[i] = saved[i] < 0;
+            tries[i] = saved[i] = 0;
+        }
+        last[i] = st[i], last_resets[i] = scratch_resets, last_id[i] = id;
+    }
+}
+
 static int add_state(Value **st, uint64_t fp, int parent, int action, int depth) {
+    static Buf one;   /* the state's values go in the store before it */
+    one.n = 0;
+    encode_state(&one, st);
     size_t off = store.n;
-    for (int i = 0; i < nvars; i++) encode(&store, st[i]);
+    buf_add(&store, one.s, one.n);
     return add_record(off, (int)(store.n - off), fp, parent, action, depth);
 }
 
@@ -11606,6 +11733,9 @@ typedef struct {
     size_t nclaims;           /* the claim table's size, a power of two */
     atomic_size_t claimed;
     atomic_size_t encoded;    /* the workers' half of the store, taken a chunk at a time */
+    atomic_size_t interned;   /* the values given an id */
+    ISlot *islots;            /* the table of the interned values as the level starts */
+    size_t nislots;
 } Control;
 
 static Control *control;
@@ -11625,6 +11755,25 @@ static size_t results_room(void) { return results_size - BATCH * 2 * sizeof(int)
 static int w_id;               /* in a worker: its number */
 static size_t w_n;             /* bytes used of its region */
 static size_t w_at, w_end;     /* its chunk of the store */
+
+/* Where bytes n long go in the store: after the search's, or in a
+   worker's chunk; SIZE_MAX if there is no room. */
+static size_t store_put(const char *b, size_t n) {
+    if (!in_worker) {
+        size_t off = store.n;
+        buf_add(&store, b, n);
+        return off;
+    }
+    if (w_at + n > w_end) {
+        size_t k = n > STORE_CHUNK ? n : STORE_CHUNK;
+        w_at = atomic_fetch_add(&control->encoded, k);
+        w_end = w_at + k;
+    }
+    if (w_end > 2 * store.cap) return SIZE_MAX;
+    memcpy(store.s + w_at, b, n);
+    w_at += n;
+    return w_at - n;
+}
 static size_t w_budget;        /* claims it may still make this level */
 static int w_clean, w_found;
 static long w_unit;            /* the state it expands, or Init's slice */
@@ -11658,6 +11807,11 @@ static void share_search(void) {
     fp_region = shared(fp_region_size);
     control = shared(sizeof(Control));
     control->encoded = store.cap;
+    interned = &control->interned;
+    capids = ((size_t)1 << 28) >> shift;
+    ioff = shared(sizeof(uint64_t) * capids);
+    intern_region_size = ((size_t)1 << 34) >> shift;
+    intern_region = shared(intern_region_size);
     batches = shared(sizeof(Batch) * (size_t)(capstates / BATCH + 1));
     max_claims = ((size_t)1 << 27) >> shift;
     claims = shared(sizeof(Claim) * max_claims);
@@ -11701,7 +11855,7 @@ static void settle(Claim *c) {
     if (!sigsetjmp(here, 0) && check_list(invariants, ninvariants, succ) < 0 &&
         (!gen_init || check_list(implied_inits, nimplied_inits, succ) < 0)) {
         w_bytes.n = 0;
-        for (int i = 0; i < nvars; i++) encode(&w_bytes, succ[i]);
+        encode_state(&w_bytes, succ);
         if (w_at + w_bytes.n > w_end) {
             size_t n = w_bytes.n > STORE_CHUNK ? w_bytes.n : STORE_CHUNK;
             w_at = atomic_fetch_add(&control->encoded, n);
@@ -11881,6 +12035,8 @@ static _Noreturn void worker_main(int id) {
     while (read(to_worker[id][0], &c, 1) == 1) {
         fp_table = control->fp_table;
         fp_size = control->fp_size;
+        islots = control->islots;
+        nislots = control->nislots;
         gen_init = 0;   /* forked as Init was computed */
         w_n = w_budget = 0;
         while (expand_batch()) {}
@@ -11984,6 +12140,9 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
     control->nbatches = nbatches;
     control->fp_table = fp_table;
     control->fp_size = fp_size;
+    intern_room();
+    control->islots = islots;
+    control->nislots = nislots;
     memset(claims, 0, sizeof(Claim) * n);
     control->nclaims = n;
     atomic_store(&control->claimed, 0);
@@ -11995,11 +12154,13 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
         if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_budget = 0;
+    intern_frozen = 1;
     int r = job == INIT ? merge_init(lo, hi) : job == ATOMS || job == GROUPS || job == OFFERS || job == STEPS || job == PEMS ? merge_atoms() : merge_level(lo, hi);
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
     for (int i = 0; i < nforked; i++)
         if (read(from_worker[i][0], &c, 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
+    intern_frozen = 0;
     control->job = EXPAND;
     return r;
 }
