@@ -9905,10 +9905,21 @@ static uint64_t fp_encoded(uint64_t fp, const char **p) {
     }
 }
 
-typedef struct { uint64_t fp; size_t off; int len; int parent; int action; int depth; } StateRec;
+typedef struct { uint64_t fp; size_t off; int parent; int action; } StateRec;
 typedef struct { int *edges; int nedges, capedges; } Edges;   /* a state's steps, (target, action) pairs */
 
 static StateRec *states;
+static int *level_at, nlevels, caplevels;   /* the first state of each level: states are added level by level */
+
+/* The level of state s, 1 for an initial state. */
+static int state_depth(int s) {
+    int lo = 0, hi = nlevels;   /* the last level that starts at or before s */
+    while (hi - lo > 1) {
+        int mid = (lo + hi) / 2;
+        if (level_at[mid] <= s) lo = mid; else hi = mid;
+    }
+    return lo + 1;
+}
 static Edges *state_edges;   /* each state's, kept for liveness checking */
 static int capedges;
 static int nstates, capstates;
@@ -10275,19 +10286,17 @@ static int nworkers = 1;   /* processes expanding states; with more than one, th
 static int states_mapped;  /* the records are mapped once, as many as the search can hold */
 
 /* A new state, encoded at off in the store. */
-static int add_record(size_t off, int len, uint64_t fp, int parent, int action, int depth) {
+static int add_record(size_t off, uint64_t fp, int parent, int action, int depth) {
     if (nstates == capstates) {
         if (nworkers > 1 || states_mapped) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
         capstates = capstates ? capstates * 2 : 1024;
         states = xrealloc(states, sizeof(StateRec) * (size_t)capstates);
     }
-    StateRec *r = &states[nstates];
-    r->fp = fp;
-    r->off = off;
-    r->len = len;
-    r->parent = parent;
-    r->action = action;
-    r->depth = depth;
+    states[nstates] = (StateRec){fp, off, parent, action};
+    while (nlevels < depth) {
+        if (nlevels == caplevels) level_at = xrealloc(level_at, sizeof(int) * (size_t)(caplevels = caplevels ? 2 * caplevels : 64));
+        level_at[nlevels++] = nstates;
+    }
     if (ntemporal_props && nstates == capedges) {
         int n = capedges ? capedges * 2 : 1024;
         state_edges = xrealloc(state_edges, sizeof(Edges) * (size_t)n);
@@ -10424,7 +10433,7 @@ static int add_state(Value **st, uint64_t fp, int parent, int action, int depth)
     encode_state(&one, st);
     size_t off = store.n;
     buf_add(&store, one.s, one.n);
-    return add_record(off, (int)(store.n - off), fp, parent, action, depth);
+    return add_record(off, fp, parent, action, depth);
 }
 
 /* ---------------------------------------------------------------- reporting */
@@ -11126,7 +11135,7 @@ static void dump_edge(int from, int to, int action) {
 static void dump_close(void) {
     for (int i = 0; i < dump_nranked; i++) {
         int s = dump_ranked[i];
-        if (!i || states[s].depth != states[dump_ranked[i - 1]].depth) fprintf(dump_file, "%s{rank = same; ", i ? "}\n" : "");
+        if (!i || state_depth(s) != state_depth(dump_ranked[i - 1])) fprintf(dump_file, "%s{rank = same; ", i ? "}\n" : "");
         fprintf(dump_file, "%lld;", (long long)states[s].fp);
     }
     fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
@@ -11355,7 +11364,7 @@ static int next_emit(void) {
     if (found >= 0 && dump_file) dump_edge(expanding, found, cur_action);
     violation_fresh = found < 0;
     if (found < 0) {
-        int depth = states[expanding].depth + 1;
+        int depth = state_depth(expanding) + 1;
         int idx = add_state(st, fp, expanding, cur_action, depth);
         if (dump_file) dump_edge(expanding, idx, cur_action), dump_node(idx, st);
         if (depth > max_depth) max_depth = depth;
@@ -11638,8 +11647,8 @@ static int last_seen(int s) {
 static void print_counts_after(int s) {
     int seen = last_seen(s);
     printf("%" PRId64 " states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
-    printf("The depth of the complete state graph search is %d.\n", states[seen].depth);
-    found_counts(gen_after[s], seen + 1, seen - s, states[seen].depth);
+    printf("The depth of the complete state graph search is %d.\n", state_depth(seen));
+    found_counts(gen_after[s], seen + 1, seen - s, state_depth(seen));
 }
 
 /* Expands state idx: its successors join the search. Returns the exit
@@ -11648,7 +11657,7 @@ static int expand_state(int idx) {
     expansion_printed = 0;
     expanding = idx;
     expanded = idx + 1;
-    cur_level = states[idx].depth;
+    cur_level = state_depth(idx);
     cur_state = expanding_state = decode_state(idx);
     draw_restart(cur_state);
     succ_count = 0;
@@ -11726,6 +11735,7 @@ enum { CLAIMED, SETTLED, FAILED, WRITING };    /* a claim's state: its invariant
 typedef struct {
     atomic_int next;          /* the next batch to take */
     int lo, hi, nbatches;     /* the level, Init's slices or the states for liveness */
+    int level;                /* the level's depth */
     int job, per;             /* what of them a batch of per is */
     atomic_int starved;       /* a worker found the claim table full */
     FpSlot *fp_table;         /* the fingerprint set as the level starts */
@@ -11948,7 +11958,7 @@ static void worker_expand(int idx) {
     if (sigsetjmp(here, 0)) {
         w_clean = 0;
     } else {
-        cur_level = states[idx].depth;
+        cur_level = control->level;
         cur_state = decode_state(idx);
         draw_restart(cur_state);
         succ_count = 0;
@@ -12103,8 +12113,8 @@ static void merge_found(int parent, const Found *f, int nfound) {
             /* New this level: merged already, or added by the search itself. */
             Claim *c = &claims[CLAIM - found];
             if ((found = c->merged - 1) < 0 && (found = fp_find(c->key)) < 0) {
-                int depth = parent < 0 ? 1 : states[parent].depth + 1;
-                found = add_record(c->loc, c->len, c->key, parent, f[k].action, depth);
+                int depth = parent < 0 ? 1 : state_depth(parent) + 1;
+                found = add_record(c->loc, c->key, parent, f[k].action, depth);
                 if (depth > max_depth) max_depth = depth;
             }
             c->merged = found + 1;
@@ -12135,6 +12145,7 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
     if (!workers_running) start_workers(want);
     control->lo = lo;
     control->hi = hi;
+    control->level = job == EXPAND ? state_depth(lo) : 0;
     control->job = job;
     control->per = per;
     control->nbatches = nbatches;
@@ -12826,7 +12837,7 @@ static void live_eval(void);
    step. */
 static int sim_violates(States *trace) {
     for (int i = 0; i < nstates && state_edges; i++) free(state_edges[i].edges), state_edges[i] = (Edges){0};
-    nstates = 0;
+    nstates = nlevels = 0;
     store.n = 0;
     if (fp_size) memset(fp_table, 0, sizeof(FpSlot) * (size_t)fp_size);
     int prev = -1;
