@@ -11406,8 +11406,8 @@ static Value *search_config(void) {
    Makefile's oracle. */
 static Value *tlc_revision(void) {
     const char *names[] = {"timestamp", "date", "count", "tag", "calver"};
-    Value *vals[] = {mk_int(1794003837), mk_str(intern("2026-11-06T22:23:57.662Z")), mk_int(9088),
-                     mk_str(intern("d8fb231")), mk_str(intern("2026.11.06.222357"))};
+    Value *vals[] = {mk_int(1794702106), mk_str(intern("2026-11-15T00:21:46.50Z")), mk_int(9089),
+                     mk_str(intern("bc1b506")), mk_str(intern("2026.11.15.002146"))};
     return mk_record(5, names, vals);
 }
 

@@ -25,7 +25,7 @@ the model configuration language, the model-checking procedure, and the
 observable results. It follows *Specifying Systems* (Lamport, 2002) and the
 TLA⁺ Version 2 language changes. Where those leave a choice open (the order
 in which values print, which errors are reported, how many states are
-counted), TLC 1.8.0 (tla2tools v1.8.0, built from commit d8fb231) decides.
+counted), TLC 1.8.0 (tla2tools v1.8.0, built from commit bc1b506) decides.
 
 The proof language (§12) is parsed only as far as needed to skip it.
 

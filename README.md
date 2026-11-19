@@ -102,7 +102,7 @@ Java, on that same API.
 ## Performance
 
 Wall-clock seconds, best of 10 runs, on an Apple M2 (4 performance and 4
-efficiency cores). TLC is tla2tools 1.8.0 (d8fb231). Every run prints the same
+efficiency cores). TLC is tla2tools 1.8.0 (bc1b506). Every run prints the same
 report as TLC with one worker.
 
 | spec | distinct states | TLC | Manyan | speedup | TLC (8) | Manyan (8) | speedup |

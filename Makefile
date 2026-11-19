@@ -23,11 +23,11 @@ PREFIX ?= /usr/local
 OBJDIR = .obj
 
 # TLA+ tools 1.8.0, the oracle, pinned by checksum. 1.8.0 is a pre-release,
-# whose jar can be rebuilt under the same tag: this one is commit d8fb231de4e4
-# (its manifest's X-Git-Revision) and prints Version 2026.11.06.222357.
+# whose jar can be rebuilt under the same tag: this one is commit bc1b506bdcad
+# (its manifest's X-Git-Revision), built 2026-11-15.
 TLA_JAR = $(OBJDIR)/tla/tla2tools.jar
 TLA_URL = https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
-TLA_SHA256 = e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f
+TLA_SHA256 = 7e53aa636dac8a3cb0533f343115c0548e03fc0ce5edc7739becf58d3d0fb84f
 # CommunityModules on TLC's class path, as tlaplus/Examples' CI puts it,
 # give the modules of its names, such as IOUtils, their Java operators.
 COMMUNITY_REV = 202611060952
