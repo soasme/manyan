@@ -17021,7 +17021,8 @@ static Expr *odd_literal(Module *m) {
    violates an invariant or cannot go on. The solver is a CDCL SAT solver:
    two watched literals with a blocker each, VSIDS, first-UIP learning,
    learned clauses kept by their glue (the levels they span, as Glucose
-   keeps them), Luby restarts, and assumptions, so each question about the
+   keeps them), restarts when the recent glue is above the mean (as
+   Glucose restarts), and assumptions, so each question about the
    unrolled formula keeps what the last one learned. A literal is
    2v + negated; variable 0 is true. */
 typedef struct { int n, learnt, glue; float act; int lits[]; } Clause;
@@ -17046,6 +17047,9 @@ static struct {
     int *buf, *buf2, capbuf;
     long *stamp, nconflicts;   /* per level: the conflict that last counted it in a glue */
     int glue;                  /* the last learned clause's */
+    double glues;              /* of all learned clauses */
+    int recent[50], nrecent;   /* the last learned clauses' glue, since the last restart */
+    long recent_sum;
     int ok;
 } sat;
 
@@ -17293,22 +17297,26 @@ static void sat_reduce(void) {
     free(dead);
 }
 
-static int sat_luby(int x) {
-    int size = 1, seq = 0;
-    while (size < x + 1) { seq++; size = 2 * size + 1; }
-    while (size - 1 != x) { size = (size - 1) >> 1; seq--; x %= size; }
-    return 1 << seq;
+/* Counts a learned clause's glue among the recent ones; whether those
+   are, by 25%, worse than all, so the search has gone astray. */
+static int sat_astray(void) {
+    int i = (int)(sat.nconflicts % 50);
+    sat.glues += sat.glue;
+    sat.recent_sum += sat.glue - (sat.nrecent == 50 ? sat.recent[i] : 0);
+    sat.recent[i] = sat.glue;
+    if (sat.nrecent < 50) sat.nrecent++;
+    return sat.nrecent == 50 && sat.recent_sum / 50.0 * 0.8 > sat.glues / (double)sat.nconflicts;
 }
 
-/* 1 satisfiable, 0 not under the assumptions, -1 out of conflicts. */
-static int sat_search(long budget, const int *assume, int nassume) {
-    for (long conflicts = 0;;) {
+/* 1 satisfiable, 0 not under the assumptions, -1 to restart. */
+static int sat_search(const int *assume, int nassume) {
+    for (int restart = 0;;) {
         Clause *c = sat_propagate();
         if (c) {
-            conflicts++;
             sat.nconflicts++;
             if (!sat.nlim) return sat.ok = 0;
             int n, back = sat_analyze(c, &n);
+            restart = sat_astray();
             sat_cancel(back);
             if (n == 1) sat_assign(sat.buf[0], NULL);
             else {
@@ -17322,7 +17330,7 @@ static int sat_search(long budget, const int *assume, int nassume) {
             sat.cla_inc /= 0.999;
             continue;
         }
-        if (conflicts >= budget) { sat_cancel(0); return -1; }
+        if (restart) { sat.nrecent = sat.recent_sum = 0; sat_cancel(0); return -1; }
         if (sat.learnts.n - sat.ntrail >= sat.max_learnts) sat_reduce();
         int next = -1;
         while (sat.nlim < nassume && next < 0) {
@@ -17351,8 +17359,8 @@ static int sat_search(long budget, const int *assume, int nassume) {
 static int sat_solve(const int *assume, int nassume) {
     if (!sat.ok) return 0;
     sat.max_learnts = sat.clauses.n / 3.0 + 10000;
-    int r = 0, status;
-    while ((status = sat_search(100L * sat_luby(r++), assume, nassume)) < 0) sat.max_learnts *= 1.1;
+    int status;
+    while ((status = sat_search(assume, nassume)) < 0) sat.max_learnts *= 1.1;
     sat_cancel(0);
     return status;
 }
@@ -18045,6 +18053,10 @@ static int sv_in(SVal *x, SVal *s) {
     if (s->kind == SV_UNDEF) return 2 * sat_var();
     Value *xv = sv_known(x), *sv = sv_known(s);
     if (xv && sv && sv->kind != V_LAZY) return set_member(xv, sv) ? L_TRUE : L_FALSE;
+    if (sv && sv->kind == V_INTERVAL && x->kind != SV_UNDEF && sv_class(x) == C_INT) {   /* by its bounds, not each element */
+        int *b = sv_open(x)->u.bits;
+        return g_and(bv_le(bv_const(sv->u.range.lo), b), bv_le(b, bv_const(sv->u.range.hi)));
+    }
     s = sv_open(s);
     if (s->kind == SV_SET) {   /* an undefined x is equal to each element or not, and in no empty set */
         int r = L_FALSE;
