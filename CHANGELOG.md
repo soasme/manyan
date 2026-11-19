@@ -1,4 +1,4 @@
-unreleased:
+2026-11-20 0.16.0:
 
 - the oracle is TLC 1.8.0 at bc1b506, every test blessed by it
 - `TLCGet` and `TLCSet` take every key TLC 1.8.0's do: named registers
