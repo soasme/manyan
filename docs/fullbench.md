@@ -45,7 +45,7 @@ What the full bench does not compare, and what would close each gap.
 |---|---:|---|
 | TLC over an hour | 10 | A machine that runs TLC for longer, as the manifest records with more workers and memory |
 | TLC fills the disk | 3 | A machine with more than 20 GB free for TLC's states |
-| Manyan over 4 GB | 6 | Hold large state spaces and behavior graphs in less memory ([roadmap](roadmap.md#next-0160)) |
+| Manyan over 4 GB | 2 | None to compare with: TLC runs out of memory on one, and stops the other when its check falls |
 | more than one worker | 7 | Run those recorded over a minute with `-workers 4` too |
 | symbolic | 46 | None: these are Apalache's models, not TLC's |
 
@@ -55,15 +55,15 @@ What the full bench does not compare, and what would close each gap.
   TLCSailfish2, MC_HDiskSynod and EWD998ChanID_export.
 - TLC fills the disk: bcastFolklore, BPConProof and EWD998ChanID_shiviz,
   their states spilled past the 4 GB floor after 1371, 2522 and 1489 s.
-- Manyan over 4 GB: CoffeeCan3000Beans and DijkstraMutex
-  Safety-4-processors, which the last report gave as the same as TLC's,
-  hold over 4 GB, much of it compressed or swapped out: CoffeeCan3000Beans
-  peaks at a 5.3 GB footprint, 1.05 GB of it resident, which the guard,
-  counting only what is resident, let run. TLC keeps its fingerprints and
-  behavior graph on disk. So too ElevatorSafetyLarge, aba_asyn_byz,
-  EWD998 and TestMCReachability; the last violates a temporal property
-  that TLC finds at its periodic check, each minute of the search, so the
-  counts it prints are of when that check fell.
+- Manyan over 4 GB: EWD998, whose behavior graph TLC runs out of memory
+  checking ("Java ran out of memory during liveness checking"), and
+  TestMCReachability, which violates a temporal property that TLC finds
+  at its periodic check, each minute of the search, so the counts it
+  prints are of when that check fell: 17.9M states of a search Manyan
+  takes past 33M. The four others the last report held over 4 GB print
+  what TLC prints, ElevatorSafetyLarge's 59M states at a peak footprint
+  of 3854 MB and aba_asyn_byz's three temporal properties at 3794 MB,
+  near the guard's 4000.
 - More than one worker: the 167 models recorded to run in a minute or
   less were run once with `-workers 4` (by an engine wrapping
   `manyan -workers 4`): 160 print what TLC prints, as with one worker,
@@ -79,7 +79,7 @@ What the full bench does not compare, and what would close each gap.
 
 tlaplus/Examples at ca168055339d, every exhaustive-search model (each run killed past 3600 s), and the simulation and generation models with `-seed 1` and `num=` their traceCount, or 100. Measured on arm64 Darwin 25.5.0, one run, wall-clock seconds, one worker.
 
-197 models: 173 same, 10 TLC, 6 manyan, 5 differs, 3 TLC under 4 GB of disk left. Where manyan prints what TLC prints, it is 27.6x as fast (geometric mean).
+197 models: 177 same, 10 TLC, 2 manyan, 5 differs, 3 TLC under 4 GB of disk left. Where manyan prints what TLC prints, it is 27.0x as fast (geometric mean).
 
 | model | distinct states | TLC | Manyan | speedup | result |
 |---|---:|---:|---:|---:|---|
@@ -94,7 +94,7 @@ tlaplus/Examples at ca168055339d, every exhaustive-search model (each run killed
 | CigaretteSmokers/CigaretteSmokers | 6 | 0.33 | 0.00 | 99.4x | same |
 | CoffeeCan/CoffeeCan1000Beans | 501500 | 30.21 | 0.88 | 34.2x | same |
 | CoffeeCan/CoffeeCan100Beans | 5150 | 0.80 | 0.01 | 68.7x | same |
-| CoffeeCan/CoffeeCan3000Beans | 4504500 | 309.03 |  |  | manyan over 4000 MB |
+| CoffeeCan/CoffeeCan3000Beans | 4504500 | 309.03 | 8.87 | 34.9x | same |
 | DieHard/DieHard | 14 | 0.50 | 0.00 | 136.1x | same |
 | DieHard/MCDieHarder | 14 | 0.33 | 0.00 | 106.0x | same |
 | DieHard/MCDieHardest | 11566 | 0.61 | 0.03 | 20.2x | same |
@@ -135,7 +135,7 @@ tlaplus/Examples at ca168055339d, every exhaustive-search model (each run killed
 | Moving_Cat_Puzzle/CatOddBoxes | 30 | 0.32 | 0.00 | 117.8x | same |
 | MultiCarElevator/ElevatorLivenessLarge | 50653 | 1707.06 | 0.73 | 2346.8x | same |
 | MultiCarElevator/ElevatorLivenessMedium | 4122 | 9.28 | 0.06 | 160.0x | same |
-| MultiCarElevator/ElevatorSafetyLarge | 59007145 | 1714.54 |  |  | manyan over 4000 MB |
+| MultiCarElevator/ElevatorSafetyLarge | 59007145 | 1714.54 | 478.84 | 3.6x | same |
 | MultiCarElevator/ElevatorSafetyMedium | 17997111 | 502.32 | 143.53 | 3.5x | same |
 | MultiCarElevator/ElevatorSafetySmall | 4122 | 0.75 | 0.02 | 34.0x | same |
 | MultiPaxos-SMR/MultiPaxos_MC |  | 3600.05 |  |  | TLC over 3600.0 s |
@@ -206,7 +206,7 @@ tlaplus/Examples at ca168055339d, every exhaustive-search model (each run killed
 | YoYo/MCYoYoNoPruning | 60 | 0.49 | 0.01 | 73.7x | same |
 | YoYo/MCYoYoPruning | 102 | 0.54 | 0.01 | 66.5x | same |
 | YoYo/YoYoAllGraphs | 26731 | 3.97 | 0.56 | 7.1x | same |
-| aba-asyn-byz/aba_asyn_byz | 5843977 | 1085.50 |  |  | manyan over 4000 MB |
+| aba-asyn-byz/aba_asyn_byz | 5843977 | 1085.50 | 31.90 | 34.0x | same |
 | acp/ACP_NB_TLC | 4284 | 1.09 | 0.03 | 39.7x | same |
 | acp/ACP_NB_WRONG_TLC | 11852 | 0.61 | 0.03 | 21.9x | same |
 | acp/ACP_SB_TLC | 54944 | 0.97 | 0.09 | 11.1x | same |
@@ -240,7 +240,7 @@ tlaplus/Examples at ca168055339d, every exhaustive-search model (each run killed
 | dag-consensus/TLCSailfish2 |  | 3600.12 |  |  | TLC over 3600.0 s |
 | detector_chan96/EnvironmentController |  | 3600.08 |  |  | TLC over 3600.0 s |
 | dijkstra-mutex/DijkstraMutex.toolbox/LSpec-model/MC | 90882 | 16.92 | 0.56 | 30.2x | same |
-| dijkstra-mutex/DijkstraMutex.toolbox/Safety-4-processors/MC | 33288512 | 271.96 |  |  | manyan over 4000 MB |
+| dijkstra-mutex/DijkstraMutex.toolbox/Safety-4-processors/MC | 33288512 | 271.96 | 102.37 | 2.7x | same |
 | diskpaxos/MC_HDiskSynod |  | 3600.09 |  |  | TLC over 3600.0 s |
 | echo/MCEcho | 75 | 0.55 | 0.01 | 61.0x | same |
 | ewd426/SimTokenRing |  | 3.12 | 0.93 | 3.4x | same |

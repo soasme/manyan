@@ -64,6 +64,15 @@ In the order they were made.
 | A state's steps kept in their own array, only with a temporal property; a fingerprint slot holds the fingerprint's high half and the state, the record the whole | memory: MCKVSSafetySmall 798 → 694 MB with 1 worker, 1197 → 1009 MB with 4; time unchanged |
 | With one worker, the state records are one mapping, reserved, and each fingerprint table its own, unmapped as it grows (macOS's malloc keeps a large block freed) | memory: MCKVSSafetySmall 695 → 511 MB with 1 worker; time unchanged |
 | With workers, a new state's encoding goes in the store's other half, not a worker's region the search copies from; a successor found is its action and its state or claim, 8 bytes, the claim keeping a new one's fingerprint | memory: MCKVSSafetySmall's search with 4 workers 1009 → 753 MB (the found successors 229 → 79 MB); time unchanged |
+| Each temporal property's product in an arena of its own, dropped with it; the initial predicates' evaluations dropped after each initial state | memory: CoffeeCan3000Beans 5.54 → 4.67 GB, 13.6 → 10.6 s |
+| A variable's value of 4 bytes or more interned, as SPIN's collapse compression: a state keeps its id; a variable whose interning costs more than it saves over 16384 values is kept whole | memory: DijkstraMutex Safety-4-processors (33.3M states) 4.39 → 2.08 GB; queue 26 → 16 MB |
+| A state's record keeps neither its depth, found from the first state of each level, nor its encoding's length: 32 → 24 bytes | memory: DijkstraMutex Safety-4-processors 2.08 → 1.82 GB; counters 68 → 62 MB |
+| A filter over a record set or product makes each element in turn; liveness decodes states into an arena emptied for each check | memory: CoffeeCan at 1500 beans, safety 495 → 205 MB, liveness 1071 → 807 MB |
+| Liveness decodes each interned value once for all the states that share it; a product node 56 → 40 bytes | memory: aba_asyn_byz's decoded states 2676 → 242 MB; liveness 51 → 39 MB, 2% fewer instructions |
+| A state's steps in one mapped pool; the product's nodes mapped once; a product successor its step's index, the action found from it; an atom cached only where it is evaluated, a state predicate on states and an action on steps | memory: aba_asyn_byz 5.07 → 3.98 GB, 33.2 → 30.7 s |
+| Arena memory 8-byte aligned, not 16: a value takes its 72 bytes, not 80; the few `__int128` arrays align themselves. An alignment check on every allocation cost 1-3% | memory: CoffeeCan at 1500, safety 205 → 188 MB |
+| A variable with too many values to intern whole has its elements or values of 8 bytes or more interned; a fingerprint slot is the state's index alone, 4 bytes, the record holding the fingerprint. Parts under 8 bytes cost `closure` 2% for little | ElevatorSafetyLarge's store 65.6 → 26.1 bytes a state; counters 62 → 54 MB |
+| With one worker the store mapped once, as with several; a state's record packs its store offset, 40 bits, with its action, 24: 20 bytes | ElevatorSafetyLarge (59M states) over 4 GB → 3854 MB, 479 s (TLC 1715 s) |
 
 ## Tried and dropped
 

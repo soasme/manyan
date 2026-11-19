@@ -66,11 +66,10 @@ every model of tlaplus/Examples: 173 of 197 print what TLC prints, 27.6x
 as fast.
 
 1. **Large state spaces in less memory.** Six of the full bench's models
-   hold more than its 4 GB in Manyan, where TLC keeps its fingerprints and
-   behavior graph on disk: CoffeeCan3000Beans' 18 million transitions hold
-   4.1 GB, where TLC checks it in a 2 GB heap, and DijkstraMutex's 33
-   million states past 4 GB ([fullbench](fullbench.md#gaps)). Hold each
-   state and transition in fewer bytes, and give those six a row.
+   held more than its 4 GB in Manyan, where TLC keeps its fingerprints and
+   behavior graph on disk. Four now print what TLC prints,
+   ElevatorSafetyLarge's 59 million states under the 4 GB guard; the
+   other two TLC itself does not finish ([fullbench](fullbench.md#gaps)).
 2. **Faster.** Profile the bench's models and the full bench's slowest
    that print what TLC prints, and cut where the time goes;
    `docs/benchmark.md` shows each gain and no regression.
