@@ -9971,8 +9971,8 @@ static int capedges;
 static int nstates, capstates;
 static Buf store;
 /* The fingerprint set: open addressing on the fingerprint, each slot
-   its high half beside its state's index (0 is an empty slot). */
-typedef struct { uint32_t tag; int state; } FpSlot;
+   its state's index + 1 (0 is an empty slot), whose record holds it. */
+typedef struct { int state; } FpSlot;
 
 static FpSlot *fp_table;
 static int fp_size;
@@ -9980,14 +9980,13 @@ static int fp_size;
 static int fp_find(uint64_t fp) {
     if (!fp_size) return -1;
     for (int j = (int)(fp & (uint64_t)(fp_size - 1)); fp_table[j].state; j = (j + 1) & (fp_size - 1))
-        if (fp_table[j].tag == (uint32_t)(fp >> 32) && states[fp_table[j].state - 1].fp == fp) return fp_table[j].state - 1;
+        if (states[fp_table[j].state - 1].fp == fp) return fp_table[j].state - 1;
     return -1;
 }
 
 static void fp_put(FpSlot *table, int size, uint64_t fp, int idx) {
     int j = (int)(fp & (uint64_t)(size - 1));
     while (table[j].state) j = (j + 1) & (size - 1);
-    table[j].tag = (uint32_t)(fp >> 32);
     table[j].state = idx + 1;
 }
 
@@ -10434,18 +10433,53 @@ static uint32_t intern_value(const char *b, size_t n, int *found) {
     }
 }
 
+/* v interned if it takes `least` bytes or more, else whole; what that
+   saved, less what it cost: a new value costs its id, slot and offset,
+   about 40 bytes, and one met again saves its length less its id's. */
+static int intern_into(Buf *b, Value *v, size_t least, uint32_t *idp) {
+    size_t at = b->n;
+    encode(b, v);
+    size_t n = b->n - at;
+    int found = 0;
+    uint32_t id = n < least ? 0 : intern_value(b->s + at, n, &found);
+    if (idp) *idp = id;
+    if (!id) return 0;
+    b->n = at;
+    put_tagged(b, 'v', id - 1);
+    return found ? (int)n - 3 : -43;
+}
+
+/* v as encode has it, each element or value interned, unless it is so
+   short that finding it costs more than it saves; what that saved. */
+static int intern_parts(Buf *b, Value *v) {
+    if (v->kind == V_LAMBDA) v = realize(v);
+    int saved = 0;
+    if (v->kind == V_SET || v->kind == V_LAZY) {
+        Value *set = enumerate(v);
+        put_tagged(b, 'S', set->n);
+        for (int i = 0; i < set->n; i++) saved += intern_into(b, set->u.set.elems[i], 8, NULL);
+    } else if ((v->kind == V_TUPLE || v->kind == V_FCN) && v->n) {
+        put_tagged(b, v->kind == V_TUPLE ? 'T' : v->made == MADE_RECORD ? 'R' : v->range ? 'N' : 'F', v->n);
+        for (int i = 0; i < v->n; i++) {
+            if (v->kind == V_FCN) encode(b, v->u.fcn.keys[i]);
+            saved += intern_into(b, v->u.fcn.vals[i], 8, NULL);
+        }
+    } else {
+        encode(b, v);
+    }
+    return saved;
+}
+
 /* A state's values, each variable's interned while that saves more than
-   it costs: a new value costs its id, slot and offset, about 40 bytes,
-   and one met again saves its length less its id's. A value at the
-   address the last was at, before the scratch arena is reset, is the
-   same, as fingerprint has it, and takes the same id. */
+   it costs, else its elements or values while that does, else whole. A
+   value at the address the last was at, before the scratch arena is
+   reset, is the same, as fingerprint has it, and takes the same id. */
 #define INTERN_WINDOW 16384
 static void encode_state(Buf *b, Value **st) {
-    static int *tries, *saved, *whole;
+    static int *tries, *saved, *whole;   /* whole: 1, its parts interned; 2, none */
     static Value **last;
     static unsigned *last_resets;
     static uint32_t *last_id;
-    static Buf one;
     if (simulating) {   /* a simulation empties the store for each behavior */
         for (int i = 0; i < nvars; i++) encode(b, st[i]);
         return;
@@ -10457,20 +10491,16 @@ static void encode_state(Buf *b, Value **st) {
         last_id = xcalloc((size_t)nvars + 1, sizeof(uint32_t));
     }
     for (int i = 0; i < nvars; i++) {
-        if (whole[i]) { encode(b, st[i]); continue; }
-        if (st[i] == last[i] && last_resets[i] == scratch_resets) { put_tagged(b, 'v', last_id[i] - 1); continue; }
-        one.n = 0;
-        encode(&one, st[i]);
-        int found = 0;
-        uint32_t id = one.n < 4 ? 0 : intern_value(one.s, one.n, &found);
-        if (!id) { buf_add(b, one.s, one.n); continue; }
-        put_tagged(b, 'v', id - 1);
-        saved[i] += found ? (int)one.n - 3 : -43;
+        if (whole[i] == 2) { encode(b, st[i]); continue; }
+        uint32_t id = 0;
+        if (whole[i]) saved[i] += intern_parts(b, st[i]);
+        else if (st[i] == last[i] && last_resets[i] == scratch_resets) { put_tagged(b, 'v', last_id[i] - 1); continue; }
+        else saved[i] += intern_into(b, st[i], 4, &id);
         if (++tries[i] == INTERN_WINDOW) {
-            whole[i] = saved[i] < 0;
+            whole[i] += saved[i] <= 0;
             tries[i] = saved[i] = 0;
         }
-        last[i] = st[i], last_resets[i] = scratch_resets, last_id[i] = id;
+        if (id) last[i] = st[i], last_resets[i] = scratch_resets, last_id[i] = id;
     }
 }
 
