@@ -9976,9 +9976,11 @@ static Edges *state_edges;   /* each state's, kept for liveness checking */
 static int capedges;
 static int nstates, capstates;
 static Buf store;
-/* The fingerprint set: open addressing on the fingerprint, each slot
-   its state's index + 1 (0 is an empty slot), whose record holds it. */
-typedef struct { int state; } FpSlot;
+/* The fingerprint set: open addressing on the fingerprint, each slot its
+   state's index + 1 (0 is an empty slot), whose record holds it, under
+   the fingerprint's top 2 bits: states number under 2^29. */
+typedef struct { uint32_t state; } FpSlot;
+#define FP_INDEX(w) ((int)((w) & 0x3fffffff) - 1)
 
 static FpSlot *fp_table;
 static int fp_size;
@@ -9986,14 +9988,14 @@ static int fp_size;
 static int fp_find(uint64_t fp) {
     if (!fp_size) return -1;
     for (int j = (int)(fp & (uint64_t)(fp_size - 1)); fp_table[j].state; j = (j + 1) & (fp_size - 1))
-        if (state_fp(fp_table[j].state - 1) == fp) return fp_table[j].state - 1;
+        if (fp_table[j].state >> 30 == fp >> 62 && state_fp(FP_INDEX(fp_table[j].state)) == fp) return FP_INDEX(fp_table[j].state);
     return -1;
 }
 
 static void fp_put(FpSlot *table, int size, uint64_t fp, int idx) {
     int j = (int)(fp & (uint64_t)(size - 1));
     while (table[j].state) j = (j + 1) & (size - 1);
-    table[j].state = idx + 1;
+    table[j].state = (uint32_t)(idx + 1) | (uint32_t)(fp >> 62) << 30;
 }
 
 #ifndef MAP_NORESERVE
@@ -10038,7 +10040,7 @@ static void fp_insert(int idx) {
             fp_mapped = table != NULL;
             if (!table) table = xcalloc((size_t)size, sizeof(FpSlot));
         }
-        for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, state_fp(fp_table[i].state - 1), fp_table[i].state - 1);
+        for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, state_fp(FP_INDEX(fp_table[i].state)), FP_INDEX(fp_table[i].state));
         if (was_mapped) munmap(fp_table, sizeof(FpSlot) * (size_t)fp_size);
         else if (!fp_region) free(fp_table);
         fp_table = table;
@@ -10411,13 +10413,14 @@ static void intern_room(void) {
 
 static size_t store_put(const char *b, size_t n);
 
-/* The id + 1 of the value encoded as b, n bytes long, put in the table if
-   it is new (*found 0, else 1); 0 if it is new and finds no room. */
-static uint32_t intern_value(const char *b, size_t n, int *found) {
+/* The id + 1 of the value encoded as b, n bytes long, of hash h, put in
+   the table if it is new (*found 0, else 1); 0 if it is new and finds no
+   room. */
+static uint32_t intern_value(const char *b, size_t n, uint64_t h, int *found) {
     if (!in_worker && !intern_frozen && (atomic_load(interned) + 1) * 2 >= nislots) intern_grow(nislots ? nislots * 2 : 1 << 12);
     if (!nislots) return 0;
     if (atomic_load(interned) >= capids && !intern_region) ioff = xrealloc(ioff, sizeof(uint64_t) * (capids *= 2));
-    uint64_t h = hash_bytes(b, n, 0x9e3779b97f4a7c15ull) | 1;
+    h |= 1;
     for (size_t j = h & (nislots - 1);; j = (j + 1) & (nislots - 1)) {
         uint64_t k = atomic_load(&islots[j].key);
         if (!k) {
@@ -10442,13 +10445,15 @@ static uint32_t intern_value(const char *b, size_t n, int *found) {
 
 /* v interned if it takes `least` bytes or more, else whole; what that
    saved, less what it cost: a new value costs its id, slot and offset,
-   about 40 bytes, and one met again saves its length less its id's. */
+   about 40 bytes, and one met again saves its length less its id's. Its
+   hash is its fingerprint's, kept on it, but an interval's, which is
+   computed from its elements. */
 static int intern_into(Buf *b, Value *v, size_t least, uint32_t *idp) {
     size_t at = b->n;
     encode(b, v);
     size_t n = b->n - at;
     int found = 0;
-    uint32_t id = n < least ? 0 : intern_value(b->s + at, n, &found);
+    uint32_t id = n < least ? 0 : intern_value(b->s + at, n, v->kind == V_INTERVAL ? hash_bytes(b->s + at, n, 0) : value_hash(v), &found);
     if (idp) *idp = id;
     if (!id) return 0;
     b->n = at;
@@ -10503,7 +10508,7 @@ static void encode_state(Buf *b, Value **st) {
         if (whole[i]) saved[i] += intern_parts(b, st[i]);
         else if (st[i] == last[i] && last_resets[i] == scratch_resets) { put_tagged(b, 'v', last_id[i] - 1); continue; }
         else saved[i] += intern_into(b, st[i], 4, &id);
-        if (++tries[i] == INTERN_WINDOW) {
+        if (++tries[i] == (in_worker ? INTERN_WINDOW / nworkers : INTERN_WINDOW)) {   /* a worker sees its share */
             whole[i] += saved[i] <= 0;
             tries[i] = saved[i] = 0;
         }
@@ -11079,6 +11084,7 @@ static void print_error_message(void) {
 /* ---------------------------------------------------------------- search */
 
 static int expanding = -1;    /* the state whose successors are generated */
+static int expanding_depth;   /* its depth */
 static Value **expanding_state;
 static Value **succ;          /* the assignment the generator fills */
 static int succ_count;
@@ -11470,7 +11476,7 @@ static int next_emit(void) {
     if (found >= 0 && dump_file) dump_edge(expanding, found, cur_action);
     violation_fresh = found < 0;
     if (found < 0) {
-        int depth = state_depth(expanding) + 1;
+        int depth = expanding_depth + 1;
         int idx = add_state(st, fp, expanding, cur_action, depth);
         if (dump_file) dump_edge(expanding, idx, cur_action), dump_node(idx, st);
         if (depth > max_depth) max_depth = depth;
@@ -11763,7 +11769,7 @@ static int expand_state(int idx) {
     expansion_printed = 0;
     expanding = idx;
     expanded = idx + 1;
-    cur_level = state_depth(idx);
+    cur_level = expanding_depth = state_depth(idx);
     cur_state = expanding_state = decode_state(idx);
     draw_restart(cur_state);
     succ_count = 0;
