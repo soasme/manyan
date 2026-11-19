@@ -9959,7 +9959,7 @@ typedef struct { int *edges; int nedges, capedges; } Edges;   /* a state's steps
 static StateRec *states;
 
 static inline uint64_t state_fp(int s) { return (uint64_t)states[s].fp_hi << 32 | states[s].fp_lo; }
-static inline size_t state_off(int s) { return (size_t)(states[s].off_hi_action & 0xff) << 32 | states[s].off_lo; }
+static inline size_t state_off(int s) { return (size_t)((uint64_t)(states[s].off_hi_action & 0xff) << 32 | states[s].off_lo); }
 static inline int state_action(int s) { return (int32_t)states[s].off_hi_action >> 8; }
 static int *level_at, nlevels, caplevels;   /* the first state of each level: states are added level by level */
 
