@@ -1,5 +1,10 @@
 unreleased:
 
+- full bench: every exhaustive-search model of tlaplus/Examples, each run
+  capped at an hour (`make full-bench MAX_RUNTIME=all TIMEOUT=3600`): 173
+  of 197 print what TLC prints, 27.6x as fast. A guarded run counts the
+  pages macOS swapped or compressed toward its memory cap, and is killed
+  with under 4 GB of disk left
 - WebAssembly: a browser's stack holds a recursion deeper, 1,647 levels of
   one through arithmetic where 939 were: Binaryen inlines nothing into the
   evaluator, and arithmetic is computed in the call's frame

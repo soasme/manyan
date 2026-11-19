@@ -73,10 +73,14 @@ output on all of tests/spec but the 2 tests that run a process; and a
    gives the result as values beside the output, from the C API's; so
    does a Python call next to the executable. A web page then shows a
    counterexample state by state without parsing what TLC prints.
-3. **The full bench's gaps.** 17 models of the Examples are not compared
-   yet: 10 with no runtime recorded, 4 TLC takes past 15 minutes, 7
-   recorded past 10 ([fullbench](fullbench.md#gaps)). Run each once with
-   a longer cap, its TLC results cached, and give it a row.
+3. **The full bench's gaps.** 17 models of the Examples were not
+   compared: 10 with no runtime recorded, 4 TLC takes past 15 minutes, 7
+   recorded past 10. Each now has a row, from a run of every model
+   capped at an hour: 173 of 197 print what TLC prints, 27.6x as fast;
+   PConProof, SpanTreeTest5Nodes, ElevatorLivenessLarge, EWD998Chan and
+   MCKVSSafetyMedium among them. 13 need more of TLC than an hour or this
+   machine's disk, and 6 more than 4 GB of Manyan
+   ([fullbench](fullbench.md#gaps)).
 4. **Deeper in a browser.** A browser gives a Worker about 1 MB of stack,
    which held about 940 levels of a recursion where TLC's holds 5000.
    Binaryen no longer inlines into the evaluator, whose frames stay small,
@@ -84,6 +88,15 @@ output on all of tests/spec but the 2 tests that run a process; and a
    == n + Sum(n - 1)`, 1,073 of a recursion through a set map. Each
    construct a recursion passes through is a frame; folding more of them
    is what is left.
+
+## After 0.15.0
+
+- **Large state spaces in less memory.** Six of the full bench's models
+  hold more than its 4 GB in Manyan, where TLC keeps its fingerprints and
+  behavior graph on disk: CoffeeCan3000Beans' 18 million transitions hold
+  4.1 GB, where TLC checks it in a 2 GB heap, and DijkstraMutex's 33
+  million states past 4 GB ([fullbench](fullbench.md#gaps)). Hold each
+  state and transition in fewer bytes, or spill them to disk as TLC does.
 
 ## What stays
 
