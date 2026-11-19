@@ -73,6 +73,9 @@ In the order they were made.
 | Arena memory 8-byte aligned, not 16: a value takes its 72 bytes, not 80; the few `__int128` arrays align themselves. An alignment check on every allocation cost 1-3% | memory: CoffeeCan at 1500, safety 205 → 188 MB |
 | A variable with too many values to intern whole has its elements or values of 8 bytes or more interned; a fingerprint slot is the state's index alone, 4 bytes, the record holding the fingerprint. Parts under 8 bytes cost `closure` 2% for little | ElevatorSafetyLarge's store 65.6 → 26.1 bytes a state; counters 62 → 54 MB |
 | With one worker the store mapped once, as with several; a state's record packs its store offset, 40 bits, with its action, 24: 20 bytes | ElevatorSafetyLarge (59M states) over 4 GB → 3854 MB, 479 s (TLC 1715 s) |
+| An interned value looked up by the hash its fingerprint keeps on it; a fingerprint slot keeps the fingerprint's top 2 bits beside the state's index; a worker stops interning a variable that does not pay after its share of the window, not the whole of it; a new state's depth its parent's, known | against 0.15.0, plain -O2 cycles: queue +12% → +3%, counters +4% → +0.5%; 8 workers' CPU: recursion 0.47 → 0.45 s (0.15.0 0.45) |
+| Symbolic: a word made by + or - keeps its sum of words; a sum's word is the first made for it, and one that cancels or merges is built from its sum, so (a + d) - (b + d) is a - b's literals. Each + and - still asserts it does not overflow | tests/symbolic MC_FoldExcept3 22.1 → 0.7 s; make test-symbolic 27.7 → 19.0 s. Rebuilding every sum, not only those that cancel, made MC_ERC20 18 → 38 s |
+| Symbolic: a learned clause minimized recursively, through reasons of reasons, as MiniSat | Paxos at length 7 378G → 203G instructions; MC_ERC20 at 5 +2.9% |
 
 ## Tried and dropped
 

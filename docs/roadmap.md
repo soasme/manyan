@@ -72,10 +72,14 @@ as fast.
    other two TLC itself does not finish ([fullbench](fullbench.md#gaps)).
 2. **Faster.** Profile the bench's models and the full bench's slowest
    that print what TLC prints, and cut where the time goes;
-   `docs/benchmark.md` shows each gain and no regression.
+   `docs/benchmark.md` shows each gain and no regression. So far: the
+   bench's liveness 0.18 -> 0.14 s, the rest as 0.15.0 once interning's
+   cost was cut; symbolic Paxos at length 7 halved.
 3. **A faster test suite.** `make test` runs tests/spec four times, with
    one and four workers, natively and for the result. Run it in less time
-   without testing less.
+   without testing less. 96 s became 37: symbolic checking proves the
+   sums of tests/symbolic's slowest equal by their terms, not by their
+   adders' bits.
 4. **TLC re-pinned.** 1.8.0's jar is rebuilt under its tag; the oracle is
    now commit bc1b506 (TLCSet and TLCGet with several workers), every test
    blessed by it.
