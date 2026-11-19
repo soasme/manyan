@@ -9951,10 +9951,16 @@ static uint64_t fp_encoded(uint64_t fp, const char **p) {
     }
 }
 
-typedef struct { uint64_t fp; size_t off; int parent; int action; } StateRec;
+/* A state's fingerprint, its parent, and its offset in the store, 40
+   bits, beside the action that found it, 24: 20 bytes. */
+typedef struct { uint32_t fp_lo, fp_hi; int parent; uint32_t off_lo, off_hi_action; } StateRec;
 typedef struct { int *edges; int nedges, capedges; } Edges;   /* a state's steps, (target, action) pairs */
 
 static StateRec *states;
+
+static inline uint64_t state_fp(int s) { return (uint64_t)states[s].fp_hi << 32 | states[s].fp_lo; }
+static inline size_t state_off(int s) { return (size_t)(states[s].off_hi_action & 0xff) << 32 | states[s].off_lo; }
+static inline int state_action(int s) { return (int32_t)states[s].off_hi_action >> 8; }
 static int *level_at, nlevels, caplevels;   /* the first state of each level: states are added level by level */
 
 /* The level of state s, 1 for an initial state. */
@@ -9980,7 +9986,7 @@ static int fp_size;
 static int fp_find(uint64_t fp) {
     if (!fp_size) return -1;
     for (int j = (int)(fp & (uint64_t)(fp_size - 1)); fp_table[j].state; j = (j + 1) & (fp_size - 1))
-        if (states[fp_table[j].state - 1].fp == fp) return fp_table[j].state - 1;
+        if (state_fp(fp_table[j].state - 1) == fp) return fp_table[j].state - 1;
     return -1;
 }
 
@@ -10032,18 +10038,18 @@ static void fp_insert(int idx) {
             fp_mapped = table != NULL;
             if (!table) table = xcalloc((size_t)size, sizeof(FpSlot));
         }
-        for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, states[fp_table[i].state - 1].fp, fp_table[i].state - 1);
+        for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, state_fp(fp_table[i].state - 1), fp_table[i].state - 1);
         if (was_mapped) munmap(fp_table, sizeof(FpSlot) * (size_t)fp_size);
         else if (!fp_region) free(fp_table);
         fp_table = table;
         fp_size = size;
     }
-    fp_put(fp_table, fp_size, states[idx].fp, idx);
+    fp_put(fp_table, fp_size, state_fp(idx), idx);
 }
 
 static Value **decode_state(int idx) {
     Value **st = NEWN(Value *, nvars);
-    const char *p = store.s + states[idx].off;
+    const char *p = store.s + state_off(idx);
     for (int i = 0; i < nvars; i++) st[i] = decode(&p);
     return st;
 }
@@ -10329,6 +10335,7 @@ static uint64_t fingerprint(Value **st) {
 
 static int nworkers = 1;   /* processes expanding states; with more than one, the store is shared */
 static int states_mapped;  /* the records are mapped once, as many as the search can hold */
+static int store_mapped;   /* and so is the store */
 
 /* A new state, encoded at off in the store. */
 static int add_record(size_t off, uint64_t fp, int parent, int action, int depth) {
@@ -10337,7 +10344,7 @@ static int add_record(size_t off, uint64_t fp, int parent, int action, int depth
         capstates = capstates ? capstates * 2 : 1024;
         states = xrealloc(states, sizeof(StateRec) * (size_t)capstates);
     }
-    states[nstates] = (StateRec){fp, off, parent, action};
+    states[nstates] = (StateRec){(uint32_t)fp, (uint32_t)(fp >> 32), parent, (uint32_t)off, (uint32_t)((uint64_t)off >> 32 & 0xff) | (uint32_t)action << 8};
     while (nlevels < depth) {
         if (nlevels == caplevels) level_at = xrealloc(level_at, sizeof(int) * (size_t)(caplevels = caplevels ? 2 * caplevels : 64));
         level_at[nlevels++] = nstates;
@@ -10508,9 +10515,7 @@ static int add_state(Value **st, uint64_t fp, int parent, int action, int depth)
     static Buf one;   /* the state's values go in the store before it */
     one.n = 0;
     encode_state(&one, st);
-    size_t off = store.n;
-    buf_add(&store, one.s, one.n);
-    return add_record(off, fp, parent, action, depth);
+    return add_record(store_put(one.s, one.n), fp, parent, action, depth);
 }
 
 /* ---------------------------------------------------------------- reporting */
@@ -10867,12 +10872,12 @@ static void print_trace_states(int s1, Value **s2, int action, int print) {
     if (print) printf("Error: The behavior up to this point is:\n");
     for (int i = 0; i + 1 < n && print; i++) {
         ntrace_path = i + 1;
-        print_numbered(i + 1, states[path[i]].action, st[i], i ? st[i - 1] : NULL, st[i + 1]);
+        print_numbered(i + 1, state_action(path[i]), st[i], i ? st[i - 1] : NULL, st[i + 1]);
     }
     ntrace_path = n - 1;
     if (n > 1 || !print) { replay(n > 1 ? st[n - 2] : NULL, st[n - 1], n - 1); st[n - 1] = replay_match; }
     ntrace_path = n;
-    if (print) print_numbered(n, states[s1].action, st[n - 1], s2 && n > 1 ? st[n - 2] : NULL, s2 ? s2 : st[n - 1]);
+    if (print) print_numbered(n, state_action(s1), st[n - 1], s2 && n > 1 ? st[n - 2] : NULL, s2 ? s2 : st[n - 1]);
     if (s2) {
         replay(st[n - 1], s2, n);
         st[n] = s2;
@@ -10880,7 +10885,7 @@ static void print_trace_states(int s1, Value **s2, int action, int print) {
         if (print) print_numbered(n + 1, action, s2, NULL, s2);
     }
     int *acts = NEWN(int, n + 1);
-    for (int i = 0; i < n; i++) acts[i] = i ? states[path[i]].action : -1;
+    for (int i = 0; i < n; i++) acts[i] = i ? state_action(path[i]) : -1;
     acts[n] = action;
     if (print) found_behavior(st, acts, n + (s2 != NULL), 0, 0);
     else post_behavior(st, acts, n + (s2 != NULL), 0, 0, 1);
@@ -11221,23 +11226,23 @@ static void dump_node(int idx, Value **st) {
             buf_add(&b, c, 1);
         }
     }
-    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)states[idx].fp, b.s);
-    else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)states[idx].fp, b.s, b.s);
+    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), b.s);
+    else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)state_fp(idx), b.s, b.s);
     free(b.s);
     if (states[idx].parent < 0) dump_rank(idx);
 }
 
 static void dump_edge(int from, int to, int action) {
     if (states[from].parent >= 0) dump_rank(from);
-    fprintf(dump_file, "%lld -> %lld [label=\"%s\",color=\"black\",fontcolor=\"black\"];\n", (long long)states[from].fp,
-            (long long)states[to].fp, dump_actions ? S(actions[action].name) : "");
+    fprintf(dump_file, "%lld -> %lld [label=\"%s\",color=\"black\",fontcolor=\"black\"];\n", (long long)state_fp(from),
+            (long long)state_fp(to), dump_actions ? S(actions[action].name) : "");
 }
 
 static void dump_close(void) {
     for (int i = 0; i < dump_nranked; i++) {
         int s = dump_ranked[i];
         if (!i || state_depth(s) != state_depth(dump_ranked[i - 1])) fprintf(dump_file, "%s{rank = same; ", i ? "}\n" : "");
-        fprintf(dump_file, "%lld;", (long long)states[s].fp);
+        fprintf(dump_file, "%lld;", (long long)state_fp(s));
     }
     fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
     fclose(dump_file);
@@ -11872,6 +11877,7 @@ static size_t w_at, w_end;     /* its chunk of the store */
 static size_t store_put(const char *b, size_t n) {
     if (!in_worker) {
         size_t off = store.n;
+        if (store_mapped && off + n + 1 > store.cap) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
         buf_add(&store, b, n);
         return off;
     }
@@ -12479,7 +12485,11 @@ static void print_unfingerprinted(Expr **fps, int n) {
 static int search(void) {
     if (dump_file || npossibles) nworkers = 1;
     if (nworkers > 1) share_search();
-    else if (!states && (states = mapped(sizeof(StateRec) * ((size_t)1 << 29)))) capstates = 1 << 29, states_mapped = 1;
+    else if (!states && (states = mapped(sizeof(StateRec) * ((size_t)1 << 29)))) {
+        capstates = 1 << 29, states_mapped = 1;
+        char *s = mapped((size_t)1 << 36);
+        if (s) memcpy(s, store.s, store.n + (store.s != NULL)), free(store.s), store.s = s, store.cap = (size_t)1 << 36, store_mapped = 1;
+    }
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
     handler = &here;
@@ -15008,7 +15018,7 @@ static int tnode_step(int n, int s, int e, int to) {
     }
     Successors *r = real_successors(s);
     for (int k = -1; k < r->n; k++) {
-        if (k < 0 ? to != s : r->fp[k] != states[to].fp) continue;
+        if (k < 0 ? to != s : r->fp[k] != state_fp(to)) continue;
         int ok = 1;
         for (int i = 0; i < tnodes[n].nlits && ok; i++) {
             TF *t = tnodes[n].lits[i];
@@ -15117,7 +15127,7 @@ static void tlc_fps_fill(void) {
     Arena *saved = arena;
     arena = &scratch_arena;
     for (int s = ntlc_fps; s < nstates; s++) {
-        const char *at = store.s + states[s].off;
+        const char *at = store.s + state_off(s);
         uint64_t fp = fp_polys[fp_poly];
         if (nsymmetry || view_expr) fp = tlc_state_fp(decode_state(s)), arena_reset(&scratch_arena);
         else for (int i = 0; i < nvars; i++) fp = fp_encoded(fp, &at);
@@ -15282,7 +15292,7 @@ static int fair_step(Fair *f, int s, int to) {
     if (!nsymmetry && !view_expr) return holds_in(f->step, f->c, state_values(s), state_values(to));
     Successors *r = real_successors(s);
     for (int k = 0; k < r->n; k++)
-        if (r->fp[k] == states[to].fp && r->fair[(size_t)k * (size_t)nfairs + (size_t)(f - fairs)]) return 1;
+        if (r->fp[k] == state_fp(to) && r->fair[(size_t)k * (size_t)nfairs + (size_t)(f - fairs)]) return 1;
     return 0;
 }
 
