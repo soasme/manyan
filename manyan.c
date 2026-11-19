@@ -11127,13 +11127,37 @@ static int check_actions(Check *list, int n, Value **from, Value **to) {
 #define STUTTER (-2)
 
 /* An edge of the state graph, kept for liveness checking: target and action. */
+/* The states' steps, each state's in turn as it is expanded, in memory
+   mapped once and taken as it is touched: the last state's grow in place,
+   another's move to the end. Where nothing is mapped, each state's are
+   allocated. */
+static int *edge_pool;
+static size_t edge_pool_used, edge_pool_size;
+
+static void edges_room(Edges *r) {
+    if (!edge_pool_size) {
+        edge_pool_size = WIDE ? (size_t)1 << 32 : 1;   /* ints: 2^31 steps */
+        if (!(edge_pool = mapped(sizeof(int) * edge_pool_size))) edge_pool_size = 1;
+    }
+    if (!edge_pool) {
+        r->capedges = r->capedges ? r->capedges * 2 : 4;
+        r->edges = xrealloc(r->edges, sizeof(int) * 2 * (size_t)r->capedges);
+        return;
+    }
+    int last = r->edges && r->edges + 2 * r->capedges == edge_pool + edge_pool_used;
+    size_t need = last ? 2 : 2 * ((size_t)r->nedges + 1);
+    if (edge_pool_used + need > edge_pool_size) { fputs("manyan: too many steps\n", stderr); exit(MANYAN_ERROR); }
+    int *at = edge_pool + edge_pool_used;
+    if (!last && r->nedges) memcpy(at, r->edges, sizeof(int) * 2 * (size_t)r->nedges);
+    if (!last) r->edges = at;
+    edge_pool_used += need;
+    r->capedges = r->nedges + 1;
+}
+
 static void add_edge(int from, int to, int action) {
     Edges *r = &state_edges[from];
     for (int i = 0; i < r->nedges; i++) if (r->edges[2 * i] == to) return;
-    if (r->nedges == r->capedges) {
-        r->capedges = r->capedges ? r->capedges * 2 : 4;
-        r->edges = xrealloc(r->edges, sizeof(int) * 2 * (size_t)r->capedges);
-    }
+    if (r->nedges == r->capedges) edges_room(r);
     r->edges[2 * r->nedges] = to;
     r->edges[2 * r->nedges + 1] = action;
     r->nedges++;
@@ -12880,7 +12904,11 @@ static void live_eval(void);
    without its finite stuttering, each state may stutter or take its
    step. */
 static int sim_violates(States *trace) {
-    for (int i = 0; i < nstates && state_edges; i++) free(state_edges[i].edges), state_edges[i] = (Edges){0};
+    for (int i = 0; i < nstates && state_edges; i++) {
+        if (!edge_pool) free(state_edges[i].edges);
+        state_edges[i] = (Edges){0};
+    }
+    edge_pool_used = 0;
     nstates = nlevels = 0;
     store.n = 0;
     if (fp_size) memset(fp_table, 0, sizeof(FpSlot) * (size_t)fp_size);
@@ -14717,6 +14745,7 @@ static void tnode_expand(int i) {
    from s, its edges and s stuttering. Shared: workers fill it. */
 static signed char *atom_cache;
 static size_t atom_cache_size, *step_atoms;
+static int *atom_slot, nstate_slots, nstep_slots;   /* an atom's place among a state's, or a step's for an action */
 static Value ***decoded;
 static Arena decoded_arena;
 
@@ -14778,10 +14807,10 @@ static int atom_holds(TF *t, int s, int to) { return atom_holds_on(t, s, state_v
 static int following;   /* the search follows a product (live_follow), the graph growing: no cache */
 static signed char no_atom;
 static signed char *state_atom(TF *t, int s) {
-    return following ? (no_atom = 0, &no_atom) : &atom_cache[(size_t)s * (size_t)natoms + (size_t)t->index];
+    return following ? (no_atom = 0, &no_atom) : &atom_cache[(size_t)s * (size_t)nstate_slots + (size_t)atom_slot[t->index]];
 }
 static signed char *step_atom(TF *t, int s, int e) {
-    return following ? (no_atom = 0, &no_atom) : &atom_cache[step_atoms[s] + (size_t)e * (size_t)natoms + (size_t)t->index];
+    return following ? (no_atom = 0, &no_atom) : &atom_cache[step_atoms[s] + (size_t)e * (size_t)nstep_slots + (size_t)atom_slot[t->index]];
 }
 
 /* t in state s, or on a step from it, with TLCGet's counts as TLC's when
@@ -14958,13 +14987,25 @@ static int tnode_step(int n, int s, int e, int to) {
 }
 
 /* The product graph: nodes are (state, tableau node). */
-typedef struct { int state, tnode; int *succ; int nsucc; int index, low, onstack, mark; char late; } PNode;   /* succ: nsucc successors, then the action and the step of each */
+/* succ: nsucc successors, then the step to each, its index among the
+   state's edges (its number for stuttering), or in a simulation's
+   product its action. */
+typedef struct { int state, tnode; int *succ; int nsucc; int index, low, onstack, mark; char late; } PNode;
 
-static inline int *pnode_act(PNode *p) { return p->succ + p->nsucc; }
-static inline int *pnode_edge(PNode *p) { return p->succ + 2 * p->nsucc; }
+static int product_acts;   /* the product is a simulation's */
+
+static inline int pnode_edge(PNode *p, int k) { return p->succ[p->nsucc + k]; }
+
+/* The action of p's step to its k-th successor. */
+static inline int pnode_act(PNode *p, int k) {
+    int e = pnode_edge(p, k);
+    if (product_acts) return e;
+    Edges *r = &state_edges[p->state];
+    return e < r->nedges ? r->edges[2 * e + 1] : STUTTER;
+}
 
 static PNode *pnodes;
-static int npnodes, cappnodes;
+static int npnodes, cappnodes, pnodes_mapped;
 /* Each state's product nodes, as (tableau node, product node) pairs: a
    state has few, and the successors of a step share its target's. */
 typedef struct { int tnode, node; } PRef;
@@ -14975,7 +15016,7 @@ static PRefs *pnodes_of;
 static Arena product_arena;
 
 static void product_reset(void) {
-    npnodes = 0;
+    npnodes = product_acts = 0;
     free(pnodes_of);
     pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
     arena_reset(&product_arena);
@@ -14999,9 +15040,10 @@ static int pnode_find(int s, int t, int create) {
     arena = &product_arena;
     PUSH(l->v, l->n, ((PRef){t, npnodes}));
     arena = saved;
-    if (npnodes == cappnodes) {
-        cappnodes = cappnodes ? cappnodes * 2 : 1024;
-        pnodes = xrealloc(pnodes, sizeof(PNode) * (size_t)cappnodes);
+    if (npnodes == cappnodes) {   /* mapped once, as many as a product can hold, or grown */
+        if (pnodes_mapped) { fputs("manyan: too many nodes in the behavior graph\n", stderr); exit(MANYAN_ERROR); }
+        if (!pnodes && (pnodes = mapped(sizeof(PNode) << 28))) cappnodes = 1 << 28, pnodes_mapped = 1;
+        else pnodes = xrealloc(pnodes, sizeof(PNode) * (size_t)(cappnodes = cappnodes ? cappnodes * 2 : 1024));
     }
     PNode *p = &pnodes[npnodes];
     memset(p, 0, sizeof *p);
@@ -15125,9 +15167,9 @@ static void pnode_steps(int p, const int *edges, int n, int stutter) {
         }
     }
     PNode *pn = &pnodes[p];
-    pn->succ = product_raw(sizeof(int) * (size_t)(3 * m));
+    pn->succ = product_raw(sizeof(int) * (size_t)(2 * m));
     pn->nsucc = m;
-    for (int i = 0; i < m; i++) pn->succ[i] = found[3 * i], pnode_act(pn)[i] = found[3 * i + 1], pnode_edge(pn)[i] = found[3 * i + 2];
+    for (int i = 0; i < m; i++) pn->succ[i] = found[3 * i], pn->succ[m + i] = found[3 * i + 2];
 }
 
 /* Each edge of the state graph, and the stuttering step unless an edge is
@@ -15173,6 +15215,7 @@ static void sim_link(int p, int to, int act, int **fresh, int *nfresh) {
 }
 
 static void sim_product(int *roots, int nroots) {
+    product_acts = 1;
     int *from = roots, nfrom = nroots;
     for (int i = 0; i < nfrom; i++) sim_link(from[i], sim_order[0], STUTTER, NULL, NULL);
     for (int i = 1; i < sim_n && nfrom; i++) {
@@ -15186,7 +15229,7 @@ static void sim_product(int *roots, int nroots) {
         PNode *pn = &pnodes[p];
         pn->nsucc = e->n / 2;
         pn->succ = product_raw(sizeof(int) * (size_t)(e->n + 1));
-        for (int i = 0; i < pn->nsucc; i++) pn->succ[i] = e->v[2 * i], pnode_act(pn)[i] = e->v[2 * i + 1];
+        for (int i = 0; i < pn->nsucc; i++) pn->succ[i] = e->v[2 * i], pn->succ[pn->nsucc + i] = e->v[2 * i + 1];
         *e = (Ints){0};
     }
 }
@@ -15382,7 +15425,7 @@ static TF *live_negated;   /* the negated property being checked */
 /* Whether the edge k of the node p meets the fairness condition f: a
    step of its action, or for weak fairness one where it is disabled. */
 static int fair_edge(int f, int p, int k) {
-    int to = pnode_act(&pnodes[p])[k] == STUTTER ? STUTTER : pnodes[pnodes[p].succ[k]].state;
+    int to = pnode_act(&pnodes[p], k) == STUTTER ? STUTTER : pnodes[pnodes[p].succ[k]].state;
     return fair_step(&fairs[f], pnodes[p].state, to) || (!fairs[f].strong && !fair_enabled(&fairs[f], pnodes[p].state));
 }
 
@@ -15411,7 +15454,7 @@ static int accept_component(int *nodes, int n) {
         for (int i = 0; i < n && !step; i++)
             for (int k = 0; k < pnodes[nodes[i]].nsucc && !step; k++)
                 if (in_set(nodes, n, pnodes[nodes[i]].succ[k]))
-                    step = fair_step(fr, pnodes[nodes[i]].state, pnode_act(&pnodes[nodes[i]])[k] == STUTTER ? STUTTER : pnodes[pnodes[nodes[i]].succ[k]].state);
+                    step = fair_step(fr, pnodes[nodes[i]].state, pnode_act(&pnodes[nodes[i]], k) == STUTTER ? STUTTER : pnodes[pnodes[nodes[i]].succ[k]].state);
         if (step) continue;
         for (int i = 0; i < n; i++) {
             if (fair_enabled(fr, pnodes[nodes[i]].state)) enabled_any = 1;
@@ -15464,7 +15507,7 @@ static int product_path(int *from, int nfrom, int to, int *allowed, int nallowed
             if (w >= n || prev[w] != -2) continue;
             if (allowed && !in_set(allowed, nallowed, w)) continue;
             prev[w] = v;
-            pact[w] = pnode_act(&pnodes[v])[k];
+            pact[w] = pnode_act(&pnodes[v], k);
             queue[qt++] = w;
         }
     }
@@ -15592,7 +15635,7 @@ static int live_walk(int entry, List *cyc, List *acts) {
             for (int k = 0; k < pnodes[cur].nsucc && to < 0; k++) {
                 int w = pnodes[cur].succ[k];
                 if (!where[w]) continue;
-                next = w, next_act = pnode_act(&pnodes[cur])[k];
+                next = w, next_act = pnode_act(&pnodes[cur], k);
                 for (int e = 0; e < neventualities; e++)
                     if (!met[e] && eventuality_step(e, cur, k)) met[e] = 1, cnt--;
                 for (int f = 0; f < nfairs; f++)
@@ -15605,7 +15648,7 @@ static int live_walk(int entry, List *cyc, List *acts) {
             while (unseen < 0 && stack.n > 0) {   /* back up */
                 cur = (int)stack.v[--stack.n]->u.i, act = (int)sacts.v[--sacts.n]->u.i;
                 for (int k = 0; k < pnodes[cur].nsucc && unseen < 0; k++)
-                    if (where[pnodes[cur].succ[k]] == 1) unseen = pnodes[cur].succ[k], unseen_act = pnode_act(&pnodes[cur])[k];
+                    if (where[pnodes[cur].succ[k]] == 1) unseen = pnodes[cur].succ[k], unseen_act = pnode_act(&pnodes[cur], k);
             }
             if (unseen < 0) break;
             to = unseen, to_act = unseen_act;
@@ -15643,8 +15686,8 @@ static void live_back(int from, int entry, List *cyc, List *acts) {
             for (int k = 0; k < pnodes[p].nsucc && last < 0; k++) {
                 int w = pnodes[p].succ[k], ws = pnodes[w].state;
                 if (w == p) continue;
-                if (w == entry) last = s, back = pnode_act(&pnodes[p])[k];
-                else if (first[ws] >= 0 && prev[ws] == -2) prev[ws] = s, pact[ws] = pnode_act(&pnodes[p])[k], queue[qt++] = ws;
+                if (w == entry) last = s, back = pnode_act(&pnodes[p], k);
+                else if (first[ws] >= 0 && prev[ws] == -2) prev[ws] = s, pact[ws] = pnode_act(&pnodes[p], k), queue[qt++] = ws;
             }
         }
     }
@@ -15985,7 +16028,7 @@ static void sim_cycle(int node, Ints *cyc) {
 
 /* The action of the edge from p to q. */
 static int edge_act(int p, int q) {
-    for (int i = 0; i < pnodes[p].nsucc; i++) if (pnodes[p].succ[i] == q) return pnode_act(&pnodes[p])[i];
+    for (int i = 0; i < pnodes[p].nsucc; i++) if (pnodes[p].succ[i] == q) return pnode_act(&pnodes[p], i);
     return STUTTER;
 }
 
@@ -16291,10 +16334,13 @@ static void atom_cache_reset(void) {
     free(real_succ);
     real_succ = xcalloc((size_t)nstates + 1, sizeof(Successors));
     nreal_succ = nstates;
-    size_t n = (size_t)nstates * (size_t)natoms;
+    atom_slot = xrealloc(atom_slot, sizeof(int) * (size_t)(natoms + 1));
+    nstate_slots = nstep_slots = 0;
+    for (int i = 0; i < natoms; i++) if (atoms[i]->index == i) atom_slot[i] = atoms[i]->action ? nstep_slots++ : nstate_slots++;
+    size_t n = (size_t)nstates * (size_t)nstate_slots;
     free(step_atoms);
     step_atoms = xmalloc(sizeof(size_t) * (size_t)(nstates + 1));
-    for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(state_edges[s].nedges + 1) * (size_t)natoms; }
+    for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(state_edges[s].nedges + 1) * (size_t)nstep_slots; }
     if (atom_cache) munmap(atom_cache, atom_cache_size);
     atom_cache = shared(atom_cache_size = n + 1);
 }
@@ -16485,7 +16531,7 @@ static int pem_promised(int *nodes, int n) {
 /* Whether the edge k of node p holds pem's <>[] conditions, and, with a,
    the action a. */
 static int pem_step(int p, int k, TF *a) {
-    int s = pnodes[p].state, to = pnodes[pnodes[p].succ[k]].state, e = pnode_edge(&pnodes[p])[k];
+    int s = pnodes[p].state, to = pnodes[pnodes[p].succ[k]].state, e = pnode_edge(&pnodes[p], k);
     for (int i = 0; i < pem->ea.n; i++) if (!pem_holds(pem->ea.v[i], s, e, to)) return 0;
     return !a || pem_holds(a, s, e, to);
 }
@@ -16658,7 +16704,7 @@ static void pem_offer(int *nodes, int n) {
             if (pem_comp[w] != pem_comp[p]) continue;
             uint64_t x = 0;
             for (int b = 0; b < conds_e.n; b++)
-                if (pem_holds(conds_e.v[b], s, pnode_edge(&pnodes[p])[k], pnodes[w].state)) x |= 1ull << b;
+                if (pem_holds(conds_e.v[b], s, pnode_edge(&pnodes[p], k), pnodes[w].state)) x |= 1ull << b;
             for (int i = 0; i < o.n && !seen; i++) seen = o.edges[i] == x;
             if (!seen) PUSH(o.edges, o.n, x);
         }
@@ -16689,7 +16735,7 @@ static void worker_offers(int lo, int hi) {
                 for (int k = 0; k < pnodes[p].nsucc; k++) {
                     int w = pnodes[p].succ[k];
                     if (pem_comp[w] != pem_comp[p]) continue;
-                    for (int b = 0; b < conds_e.n; b++) pem_holds(conds_e.v[b], s, pnode_edge(&pnodes[p])[k], pnodes[w].state);
+                    for (int b = 0; b < conds_e.n; b++) pem_holds(conds_e.v[b], s, pnode_edge(&pnodes[p], k), pnodes[w].state);
                 }
             }
         eval_restore(saved);
