@@ -48,7 +48,7 @@ typedef struct Inst Inst;
 /* Values and expressions live in arenas. The permanent arena holds the
    modules and everything computed before the search; the scratch arena
    holds what the search computes for one state and is reset after it. */
-typedef struct Chunk { struct Chunk *next; size_t used, size; _Alignas(16) char data[]; } Chunk;   /* data as aligned as an __int128 */
+typedef struct Chunk { struct Chunk *next; size_t used, size; _Alignas(16) char data[]; } Chunk;
 typedef struct { Chunk *head, *spare; } Arena;   /* spare: a chunk a region dropped, for the next */
 
 static Arena perm_arena, scratch_arena;
@@ -72,9 +72,9 @@ static void *xcalloc(size_t n, size_t size) {
     return p;
 }
 
-/* Memory the caller fills; alloc's is zeroed. */
+/* Memory the caller fills, 8-byte aligned; alloc's is zeroed. */
 static void *alloc_raw(size_t n) {
-    n = (n + 15) & ~(size_t)15;
+    n = (n + 7) & ~(size_t)7;
     Chunk *c = arena->head;
     if (!c || c->used + n > c->size) {
         size_t size = n > 1 << 20 ? n : 1 << 20;
@@ -90,6 +90,9 @@ static void *alloc_raw(size_t n) {
 }
 
 static void *alloc(size_t n) { return memset(alloc_raw(n), 0, n); }
+
+/* alloc's, as aligned as an __int128. */
+static void *alloc_wide(size_t n) { return (void *)(((uintptr_t)alloc(n + 8) + 15) & ~(uintptr_t)15); }
 
 #define NEW(T) ((T *)alloc(sizeof(T)))
 #define NEWN(T, n) ((T *)alloc(sizeof(T) * (size_t)(n)))
@@ -8876,11 +8879,11 @@ static int gen_bound_fn(Ctx c, void *data) {
    drawn first, the first varying fastest. */
 static int gen_exists_random(Expr *e, Ctx c, Cont *k) {
     int total = bounds_total(e->bounds, e->nb), empty = 0;
-    Order *o = NEWN(Order, total);
+    Order *o = alloc_wide(sizeof(Order) * (size_t)total);
     Bound **owner = NEWN(Bound *, total);
     int *slot = NEWN(int, total);
     Value **cur = NEWN(Value *, total);
-    Big *at = NEWN(Big, total);
+    Big *at = alloc_wide(sizeof(Big) * (size_t)total);
     for (int i = 0, j = 0; i < e->nb; i++) {
         Value *s = bound_value(&e->bounds[i], c);
         for (int m = 0; m < (e->bounds[i].tuple ? 1 : e->bounds[i].n); m++, j++) {
