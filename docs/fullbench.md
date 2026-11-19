@@ -45,7 +45,7 @@ What the full bench does not compare, and what would close each gap.
 |---|---:|---|
 | TLC over an hour | 10 | A machine that runs TLC for longer, as the manifest records with more workers and memory |
 | TLC fills the disk | 3 | A machine with more than 20 GB free for TLC's states |
-| Manyan over 4 GB | 6 | Hold large state spaces and behavior graphs in less memory ([roadmap](roadmap.md#after-0150)) |
+| Manyan over 4 GB | 6 | Hold large state spaces and behavior graphs in less memory ([roadmap](roadmap.md#next-0160)) |
 | more than one worker | 7 | Run those recorded over a minute with `-workers 4` too |
 | symbolic | 46 | None: these are Apalache's models, not TLC's |
 
