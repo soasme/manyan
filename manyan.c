@@ -1297,6 +1297,52 @@ static Value *fcn_copy(Value *f) {
 
 static int function_keep(Value *f, void *out) { Value *o = out; o->u.set.elems[o->n++] = fcn_copy(f); return 0; }
 
+/* The parts of the record set or product s, enumerated, and in *total
+   how many elements it has. */
+static Value **product_sets(Value *s, int64_t *total) {
+    int n = s->n;
+    Value **sets = NEWN(Value *, n);
+    *total = 1;
+    for (int i = 0; i < n; i++) {
+        Value *part = s->u.l.names[n + i];
+        if (set_is_infinite(part) && s->lazy == L_TIMES)
+            fail("Attempted to enumerate a set of the form s1 \\X s2 ... \\X sn,\nbut can't enumerate s%d:\n%s", i, pretty(part));
+        if (set_is_infinite(part))
+            fail("Attempted to enumerate a set of the form [l1 : v1, ..., ln : vn],\n"
+                 "but can't enumerate the value of the `%s' field:\n%s", S(s->u.l.names[i]->u.i), pretty(part));
+        sets[i] = enumerate(part);
+        *total *= sets[i]->n;
+        if (*total > 100000000) fail("Attempted to enumerate a set with too many elements.");
+    }
+    return sets;
+}
+
+/* Calls fn on each element of the record set or product s, its parts
+   enumerated, in the standard order, the last part varying fastest (the
+   parts, and a record's fields, are sorted), until fn returns nonzero.
+   As each_function, the element is one value, reused. */
+static int each_product(Value *s, Value **sets, int (*fn)(Value *, void *), void *data) {
+    int n = s->n, r = 0;
+    for (int i = 0; i < n; i++) if (!sets[i]->n) return 0;
+    Value *t = s->lazy == L_TIMES ? mk_tuple(n) : mk_fcn(n);
+    if (s->lazy == L_RCDSET) {
+        t->made = MADE_RECORD;
+        for (int i = 0; i < n; i++) t->u.fcn.keys[i] = s->u.l.names[i];
+    }
+    int *idx = xcalloc((size_t)n + 1, sizeof(int));
+    for (;;) {
+        t->u.fcn.hash = 0;
+        t->u.fcn.source = NULL;
+        for (int i = 0; i < n; i++) t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]];
+        if ((r = fn(t, data))) break;
+        int i = n - 1;
+        for (; i >= 0; i--) { if (++idx[i] < sets[i]->n) break; idx[i] = 0; }
+        if (i < 0) break;
+    }
+    free(idx);
+    return r;
+}
+
 static Value *enumerate_functions(Value **dom, int nd, Value *rng, int range) {
     int64_t total = 1;
     Value *r = enumerate(rng);
@@ -1437,6 +1483,12 @@ static int each_filtered(Value *s, int (*fn)(Value *, void *), void *data) {
         Value *dom = fcnset_domain(in);
         r = each_function(dom->u.set.elems, dom->n, in->u.l.b, in->u.l.a->kind == V_INTERVAL, filter_one, &f);
         fp_leave(in->u.l.expr);
+    } else if (in->kind == V_LAZY && (in->lazy == L_RCDSET || in->lazy == L_TIMES) && !(elements_slot(in) && *elements_slot(in))) {
+        fp_enter(in->u.l.expr);   /* TLC tests the elements of its enumeration, outside it */
+        int64_t total;
+        Value **sets = product_sets(in, &total);
+        fp_leave(in->u.l.expr);
+        r = each_product(in, sets, filter_one, &f);
     } else {
         streamed = 0;
     }
@@ -1481,38 +1533,11 @@ static Value *enumerate_lazy(Value *s) {
     }
     case L_RCDSET: case L_TIMES: {
         fp_enter(s->u.l.expr);
-        int n = s->n;
-        Value **sets = NEWN(Value *, n);
-        int64_t total = 1;
-        for (int i = 0; i < n; i++) {
-            Value *part = s->u.l.names[n + i];
-            if (set_is_infinite(part) && s->lazy == L_TIMES)
-                fail("Attempted to enumerate a set of the form s1 \\X s2 ... \\X sn,\nbut can't enumerate s%d:\n%s", i, pretty(part));
-            if (set_is_infinite(part))
-                fail("Attempted to enumerate a set of the form [l1 : v1, ..., ln : vn],\n"
-                     "but can't enumerate the value of the `%s' field:\n%s", S(s->u.l.names[i]->u.i), pretty(part));
-            sets[i] = enumerate(part);
-            total *= sets[i]->n;
-            if (total > 100000000) fail("Attempted to enumerate a set with too many elements.");
-        }
-        /* Made in the standard order, the last part varying fastest: the
-           parts, and a record's fields, are sorted. */
+        int64_t total;
+        Value **sets = product_sets(s, &total);
         Value *out = mk_set((int)total);
-        int *idx = xcalloc((size_t)n + 1, sizeof(int));
-        for (int64_t k = 0; k < total; k++) {
-            Value *t;
-            if (s->lazy == L_TIMES) {
-                t = mk_tuple(n);
-                for (int i = 0; i < n; i++) t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]];
-            } else {
-                t = mk_fcn(n);
-                t->made = MADE_RECORD;
-                for (int i = 0; i < n; i++) { t->u.fcn.keys[i] = s->u.l.names[i]; t->u.fcn.vals[i] = sets[i]->u.set.elems[idx[i]]; }
-            }
-            out->u.set.elems[k] = t;
-            for (int i = n - 1; i >= 0; i--) { if (++idx[i] < sets[i]->n) break; idx[i] = 0; }
-        }
-        free(idx);
+        out->n = 0;
+        each_product(s, sets, function_keep, out);
         fp_leave(s->u.l.expr);
         return out;
     }
@@ -14674,10 +14699,25 @@ static void tnode_expand(int i) {
 static signed char *atom_cache;
 static size_t atom_cache_size, *step_atoms;
 static Value ***decoded;
+static Arena decoded_arena;
 
 static Value **state_values(int s) {
-    if (!decoded[s]) decoded[s] = decode_state(s);
+    if (!decoded[s]) {
+        Arena *saved = arena;
+        arena = &decoded_arena;
+        decoded[s] = decode_state(s);
+        arena = saved;
+    }
     return decoded[s];
+}
+
+/* None decoded: each check after the search decodes the states it needs again. */
+static void decoded_reset(void) {
+    free(decoded);
+    decoded = xcalloc((size_t)nstates, sizeof(Value **));
+    arena_reset(&decoded_arena);
+    scratch_resets++;   /* a value's address may now be another's */
+    ntlc_cache = 0;     /* kept by the state's address */
 }
 
 /* t in state s, or on the step from s to the state next. */
@@ -16285,8 +16325,7 @@ static void live_follow(int idx) {
     if (follow == -1) {
         collect_fairnesses();
         follow = -2;
-        free(decoded);
-        decoded = xcalloc((size_t)nstates, sizeof(Value **));
+        decoded_reset();
         for (int p = 0; p < ntemporal_props && follow == -2; p++)
             if (tf_tableau(live_setup(p))) follow = p;
         ngrown = nstates;
@@ -16313,8 +16352,7 @@ static void live_follow(int idx) {
    counterexample is printed and the exit status returned. TLC stops
    first at the earliest finite counterexample (live_cut_violated). */
 static int live_cut_violated(void) {
-    free(decoded);
-    decoded = xcalloc((size_t)nstates, sizeof(Value **));
+    decoded_reset();
     int first = -1, at = -1;   /* the last set up is the first property, whose product the check takes on */
     for (int p = ntemporal_props - 1; p >= 0; p--) {
         int node, s = live_cut_at(live_setup(p), &node);
@@ -16846,8 +16884,7 @@ static void worker_groups(int lo, int hi) {
    product with the state graph, a group at a time. */
 static int pem_violated(void) {
     if (sim_n || nsymmetry || view_expr || !ntemporal_props) return -1;
-    free(decoded);
-    decoded = xcalloc((size_t)nstates, sizeof(Value **));
+    decoded_reset();
     neventualities = natoms = 0;
     TF *f = NULL, *neg = NULL;
     for (int i = 0; i < nfairness; i++) {
