@@ -11062,8 +11062,8 @@ static int init_emit(void) {
     if (fp_find(fp) >= 0) return 0;
     int idx = add_state(st, fp, -1, -1, 1);
     if (dump_file) dump_node(idx, st);
-    if (ntemporal_props) live_init(st);
     Region *r = region_open();   /* what checking the state made: one of many */
+    if (ntemporal_props) live_init(st);
     violation = check_initial(st);
     region_close(r);
     return violation != 0;
@@ -14733,6 +14733,24 @@ static int npnodes, cappnodes;
 typedef struct { int tnode, node; } PRef;
 typedef struct { PRef *v; int n; } PRefs;
 static PRefs *pnodes_of;
+/* What the product holds, its nodes' successors and pnodes_of's lists,
+   dropped with it: each property builds its own. */
+static Arena product_arena;
+
+static void product_reset(void) {
+    npnodes = 0;
+    free(pnodes_of);
+    pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
+    arena_reset(&product_arena);
+}
+
+static void *product_raw(size_t n) {
+    Arena *saved = arena;
+    arena = &product_arena;
+    void *p = alloc_raw(n);
+    arena = saved;
+    return p;
+}
 
 static int live_step = -1;   /* the state TLC expands as live_build builds the product */
 
@@ -14740,7 +14758,10 @@ static int pnode_find(int s, int t, int create) {
     PRefs *l = &pnodes_of[s];
     for (int i = 0; i < l->n; i++) if (l->v[i].tnode == t) return l->v[i].node;
     if (!create) return -1;
+    Arena *saved = arena;
+    arena = &product_arena;
     PUSH(l->v, l->n, ((PRef){t, npnodes}));
+    arena = saved;
     if (npnodes == cappnodes) {
         cappnodes = cappnodes ? cappnodes * 2 : 1024;
         pnodes = xrealloc(pnodes, sizeof(PNode) * (size_t)cappnodes);
@@ -14867,7 +14888,7 @@ static void pnode_steps(int p, const int *edges, int n, int stutter) {
         }
     }
     PNode *pn = &pnodes[p];
-    pn->succ = alloc_raw(sizeof(int) * (size_t)(3 * m));
+    pn->succ = product_raw(sizeof(int) * (size_t)(3 * m));
     pn->act = pn->succ + m;
     pn->edge = pn->act + m;
     for (int i = 0; i < m; i++) pn->succ[i] = found[3 * i], pn->act[i] = found[3 * i + 1], pn->edge[i] = found[3 * i + 2];
@@ -14929,7 +14950,7 @@ static void sim_product(int *roots, int nroots) {
         Ints none = {0}, *e = p < nsim_edges ? &sim_edges[p] : &none;
         PNode *pn = &pnodes[p];
         pn->nsucc = e->n / 2;
-        pn->succ = alloc_raw(sizeof(int) * (size_t)(e->n + 1));
+        pn->succ = product_raw(sizeof(int) * (size_t)(e->n + 1));
         pn->act = pn->succ + pn->nsucc;
         for (int i = 0; i < pn->nsucc; i++) pn->succ[i] = e->v[2 * i], pn->act[i] = e->v[2 * i + 1];
         *e = (Ints){0};
@@ -16048,9 +16069,7 @@ static TF *live_setup(int p) {
     neventualities = 0;
     natoms = 0;
     ntnodes = 0;
-    npnodes = 0;
-    free(pnodes_of);
-    pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
+    product_reset();
     TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
     atom_cache_reset();
@@ -16573,9 +16592,8 @@ static int pem_group(Pem *pems, int n, int i, int prune) {
     for (int j = 0; j < pems[i].tf.n; j++) tf = tf_new(TF_AND, tf, pems[i].tf.v[j]);
     promises = (TFList){0};
     tf_promises(tf);
-    ntnodes = npnodes = 0;
-    free(pnodes_of);
-    pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
+    ntnodes = 0;
+    product_reset();
     int *roots, nroots = live_roots(tf, &roots);
     live_build(tf, 0, NULL);
     free(pem_in);
