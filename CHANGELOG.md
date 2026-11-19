@@ -1,4 +1,4 @@
-unreleased:
+2026-11-19 0.15.0:
 
 - full bench: every exhaustive-search model of tlaplus/Examples, each run
   capped at an hour (`make full-bench MAX_RUNTIME=all TIMEOUT=3600`): 173
