@@ -82,7 +82,9 @@ as fast.
    adders' bits.
 4. **TLC re-pinned.** 1.8.0's jar is rebuilt under its tag; the oracle is
    now commit bc1b506 (TLCSet and TLCGet with several workers), every test
-   blessed by it.
+   blessed by it. `TLCGet` and `TLCSet` take every key 1.8.0's do: named
+   registers, `"all"`, `"all:named"`, `"spec"`, and a search's `"stats"`;
+   TLC's own `test-model/TLCSet.tla` is a test.
 
 ## What stays
 
