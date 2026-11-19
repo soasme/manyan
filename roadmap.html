@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmap · Manyan</title>
+<link rel="icon" href="logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="index.html">Manyan</a><a href="playground.html">Playground</a><a href="manual.html">Manual</a><a href="roadmap.html" aria-current=page>Roadmap</a><a href="benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="roadmap">Roadmap</h1>
+<p>Manyan aims to be the TLC people run every day. It should give the same answers
+and the same output, start instantly, need nothing installed, and be easy to
+embed. It is not a new model checker with its own semantics, a proof checker
+(TLAPS) or a symbolic one (Apalache).</p>
+<p>The goals come in order. A later goal never costs an earlier one.</p>
+<h2 id="1-same-as-tlc">1. Same as TLC</h2>
+<p>Every other goal relies on people trusting a result from Manyan as much as one
+from TLC.</p>
+<ul>
+<li>Run the specs of <a href="https://github.com/tlaplus/Examples">tlaplus/Examples</a>
+  against TLC (<code>make full-bench</code>), and publish how many give identical
+  output (<a href="fullbench.html">full benchmark</a>). Each spec that differs becomes a test in
+  <code>tests/spec</code> and then a fix. The goal is all of them.</li>
+<li>The gaps the <a href="manual.html#limitations">manual</a> lists by decision are
+  left, each for the reason it gives; one is reopened when a
+  specification needs it. Its known gaps are to be closed. The order of <code>Print</code> output in a simulation
+  that stops early is TLC's threads' timing.</li>
+<li>Follow new TLC releases. For each one, re-pin
+  the oracle and re-bless the tests that changed.</li>
+<li>Give TLC's counterexample to a temporal property. Of 900 random graphs
+  <code>tests/fuzz.py live</code> makes on three seeds, each checked with the same
+  random <code>-fp</code>, all print what TLC prints: Manyan orders a state's
+  successors as TLC's table of them does, by TLC's fingerprints, and
+  checks the properties as TLC does, by its possible error models. The
+  rest: TLC's tableau is built of particles, its successors linked in the
+  order of their index, so its product may have other nodes and edges
+  than Manyan's.</li>
+<li>Model more of Manyan's algorithms in <code>tests/tla</code>, such as symmetry, and
+  fuzz what the models cannot reach. The parallel search, the slicing of
+  Init, the search for a fair cycle and the tableau have models.</li>
+</ul>
+<h2 id="2-fast-where-tlc-is-slow">2. Fast where TLC is slow</h2>
+<ul>
+<li>Most specs are small or medium and get checked again after every edit.
+  They should finish in milliseconds, fast enough to check on save, in a
+  pre-commit hook or in CI.</li>
+<li>Large models should fit in less memory per state. A state set kept on disk
+  would allow state spaces larger than RAM.</li>
+<li>Checking should scale with cores, liveness checking included.</li>
+<li>Before any speedup is kept, <code>docs/benchmark.md</code> must show it and show no
+  regression elsewhere.</li>
+</ul>
+<h2 id="3-embeddable">3. Embeddable</h2>
+<ul>
+<li>Make <code>manyan.h</code> a stable C API: load a spec, check it, and walk the result
+  without parsing printed text.</li>
+<li>Ship it where people install their tools: the executable on PyPI, a
+  WebAssembly build on npm. Done in 0.14.0.</li>
+<li>Build bindings on that API: Python first, then an editor or language
+  server integration.</li>
+<li>A browser playground, where anyone can paste a spec and check it with
+  nothing installed. Done in 0.14.0.</li>
+</ul>
+<h2 id="next-0160">Next: 0.16.0</h2>
+<p>0.15.0 gave the result to walk: <code>ManyanOptions.result</code> in the C API,
+<code>-result FILE</code> in JSON, <code>manyan.run</code> in Python and <code>run().result</code> in npm,
+and the playground's counterexample state by state. A browser holds a
+recursion 1,647 levels deep where it held 939, and the full bench covers
+every model of tlaplus/Examples: 173 of 197 print what TLC prints, 27.6x
+as fast.</p>
+<ol>
+<li><strong>Large state spaces in less memory.</strong> Six of the full bench's models
+   held more than its 4 GB in Manyan, where TLC keeps its fingerprints and
+   behavior graph on disk. Four now print what TLC prints,
+   ElevatorSafetyLarge's 59 million states under the 4 GB guard; the
+   other two TLC itself does not finish (<a href="fullbench.html#gaps">fullbench</a>).</li>
+<li><strong>Faster.</strong> Profile the bench's models and the full bench's slowest
+   that print what TLC prints, and cut where the time goes;
+   <code>docs/benchmark.md</code> shows each gain and no regression. So far: the
+   bench's liveness 0.18 -&gt; 0.14 s, the rest as 0.15.0 once interning's
+   cost was cut; symbolic Paxos at length 7 halved.</li>
+<li><strong>A faster test suite.</strong> <code>make test</code> runs tests/spec four times, with
+   one and four workers, natively and for the result. Run it in less time
+   without testing less. 96 s became 37: symbolic checking proves the
+   sums of tests/symbolic's slowest equal by their terms, not by their
+   adders' bits.</li>
+<li><strong>TLC re-pinned.</strong> 1.8.0's jar is rebuilt under its tag; the oracle is
+   now commit bc1b506 (TLCSet and TLCGet with several workers), every test
+   blessed by it. <code>TLCGet</code> and <code>TLCSet</code> take every key 1.8.0's do: named
+   registers, <code>"all"</code>, <code>"all:named"</code>, <code>"spec"</code>, and a search's <code>"stats"</code>;
+   TLC's own <code>test-model/TLCSet.tla</code> is a test.</li>
+</ol>
+<h2 id="what-stays">What stays</h2>
+<ul>
+<li>The core language in one C file and one header, and the operators TLC
+  computes in Java in another pair, on the core's API; no dependencies.</li>
+<li>Every expected output comes from TLC.</li>
+<li>With any number of workers, the output is identical to a one-worker run.</li>
+<li>An improvement over TLC that changes the output, such as a clearer error
+  message, is opt-in. The default output stays TLC's.</li>
+</ul>
+</article>
+</body>
+</html>

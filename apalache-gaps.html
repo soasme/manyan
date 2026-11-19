@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apalache gaps · Manyan</title>
+<link rel="icon" href="logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="index.html">Manyan</a><a href="playground.html">Playground</a><a href="manual.html">Manual</a><a href="roadmap.html">Roadmap</a><a href="benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="apalache-gaps">Apalache gaps</h1>
+<p>What <code>-symbolic</code> does not yet do that Apalache 0.63.0 does, measured on
+Apalache's own integration tests (<code>test/tla/cli-integration-tests.md</code>),
+which <code>tests/apalache_port.py</code> ports to <code>tests/symbolic/apalache</code>.
+Manyan aims to give Apalache's verdict: no error, the violated invariant
+or property, or deadlock, and the length of the counterexample. It prints
+in TLC's format, with TLC's exit statuses.</p>
+<h2 id="apalache-mc-check"><code>apalache-mc check</code></h2>
+<p>245 checks in all.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align: right;">checks</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ported, giving Apalache's verdict</td>
+<td style="text-align: right;">191</td>
+<td>invariants (state, action, trace), temporal properties, deadlock, <code>--cinit</code>, <code>Gen</code>, <code>--max-error</code> with <code>--view</code></td>
+</tr>
+<tr>
+<td>ported, refused as Apalache refuses them</td>
+<td style="text-align: right;">35</td>
+<td>below</td>
+</tr>
+<tr>
+<td>skipped</td>
+<td style="text-align: right;">5</td>
+<td>below</td>
+</tr>
+<tr>
+<td>not ported</td>
+<td style="text-align: right;">14</td>
+<td>12 repeat a check ported but for options that do not change the outcome, such as <code>--out-dir</code> and <code>--tuning-options</code>; 2 check Quint's JSON, not TLA+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="skipped">Skipped</h3>
+<p>The reason is in <code>SKIP</code> of <code>tests/apalache_port.py</code>.</p>
+<ul>
+<li>InfDomFun: Apalache reports <code>f[0] = 42</code> violated where <code>f[0]</code> is 42.
+  Its verdict is wrong, so not one to give.</li>
+<li>FunInInfiniteSubset: choosing an element of <code>[P -&gt; SUBSET Int]</code>, a
+  function to arbitrary sets of integers. Bounding the sets' size would
+  miss behaviors.</li>
+<li>SafeMath, SafeMath_2: integers of more than 64 bits. Not planned: the
+  evaluator every counterexample is replayed through has 64-bit integers
+  (TLC 32-bit), and bignums there would slow every model checked.</li>
+<li>TestFunctions: Apalache itself runs out of 4 GB.</li>
+</ul>
+<h3 id="specifications-apalache-refuses">Specifications Apalache refuses</h3>
+<p><code>-symbolic</code> refuses, as Apalache does: a type error; a missing <code>Init</code>,
+<code>Next</code> or invariant; a recursive operator or function; a set or <code>&lt;&lt;&gt;&gt;</code>
+whose type is left open; a <code>Repeat</code> whose count is no literal; a constant
+the configuration gives a value not of its type; <code>-max-error</code> without a
+<code>VIEW</code>; a set of sets of functions, <code>{[S -&gt; T] : x \in U}</code>, which it
+would expand; a cycle its <code>OVERRIDE_</code> definitions make; a <code>LET</code> definition of an
+extended module named as a variable or constant of the root; a disjunct,
+or an arm of <code>IF</code> or <code>CASE</code>, that assigns other variables than its
+siblings, or a <code>Next</code> that leaves a variable unassigned, as Apalache
+finds assignments, by the syntax alone, though TLC never takes it. These 35 checks expect Apalache's refusal, which
+<code>tests/symbolic_runner.py</code> compares as <code>Refused</code>, without the message. Where the
+assignments go through an instance's variables or a <code>LAMBDA</code>, Manyan
+does not check that rule, so it may check a
+specification Apalache rejects.</p>
+<h3 id="differences-in-what-is-checked">Differences in what is checked</h3>
+<ul>
+<li>A temporal property's counterexample is a lasso. Apalache closes a loop
+  only where its tableau's own variables repeat too, so it may find only
+  a longer lasso than Manyan; the length is not compared.</li>
+<li>Apalache has no fairness: <code>WF</code> and <code>SF</code> are left for the user to write
+  out, and <code>ENABLED</code> too. With fairness in a specification whose
+  properties are checked, Manyan gives TLC's verdict: a fair lasso, which may also stutter forever,
+  once no invariant is violated and no state deadlocks; a deadlock is a
+  state without a successor, where Apalache's is one no behavior goes
+  on from. <code>ENABLED</code>, in an invariant, a property or an action, is TLC's too.</li>
+<li>Apalache 0.63.0 reads <code>CONSTRAINT</code> and <code>ACTION_CONSTRAINT</code> and then
+  ignores them: with <code>CONSTRAINT x &lt; 2</code> it reports <code>x &lt; 3</code> violated, a
+  state TLC never reaches. Manyan gives TLC's verdict: a state outside
+  the constraints, or reached by a step outside the action constraints,
+  has its invariants checked but no successors, and is no deadlock.</li>
+</ul>
+<h2 id="other-commands">Other commands</h2>
+<table>
+<thead>
+<tr>
+<th>command</th>
+<th style="text-align: right;">tests</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>typecheck</code></td>
+<td style="text-align: right;">75</td>
+<td><code>-typecheck</code>: all give Apalache's outcome (<code>tests/typecheck/apalache</code>)</td>
+</tr>
+<tr>
+<td><code>parse</code></td>
+<td style="text-align: right;">17</td>
+<td>Apalache's own parser and its outputs (JSON, TLA+)</td>
+</tr>
+<tr>
+<td><code>simulate</code></td>
+<td style="text-align: right;">2</td>
+<td>random symbolic runs</td>
+</tr>
+<tr>
+<td><code>test</code>, <code>server</code>, <code>version</code>, <code>help</code></td>
+<td style="text-align: right;">6</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>Only <code>typecheck</code> is implemented, by decision:</p>
+<ul>
+<li><code>parse</code> writes Apalache's intermediate forms, JSON and TLA+, which are
+  its own; Manyan reports a parse error as SANY does.</li>
+<li><code>simulate</code> checks random runs to a length; <code>-symbolic</code> checks every
+  run to it, so its verdict holds for any run <code>simulate</code> draws.</li>
+<li><code>test</code> checks that one action, from a state predicate, gives states
+  that satisfy another: <code>-symbolic -length 1</code> with them as <code>INIT</code>,
+  <code>NEXT</code> and <code>INVARIANT</code> does the same.</li>
+<li><code>server</code>, <code>version</code> and <code>help</code> are Apalache's own interface.</li>
+</ul>
+<p>On the 62 annotated modules of tlaplus/Examples, <code>-typecheck</code> gives
+Apalache's outcome on all, with TLAPS's library beside the two that
+extend it (APEWD840, EWD998). Where declarations lack annotations, it
+names the one Apalache names: a variable before a constant, the last in
+the order of SANY's table of the module's names.
+<code>-symbolic</code> uses the types for <code>Gen</code> and for refusing what Apalache
+refuses. A <code>Gen</code> in an operator whose parameters leave its type open has
+the type each call instantiates.</p>
+<h2 id="output">Output</h2>
+<p>Manyan prints TLC's format and exit statuses: a deadlock exits with 11
+and a temporal property's violation with 13, where Apalache exits with
+12 for every violation. With <code>-run-dir</code>, Manyan writes the counterexamples in ITF as
+Apalache does. By decision it does not write Apalache's <code>violation*.tla</code>
+and <code>violation*.json</code>, the same trace again in Apalache's own TLA+ and
+JSON forms, nor Apalache's own variables in a lasso, those of its
+tableau, which ends with ITF's <code>loop</code> instead. <code>vars</code> is in declaration
+order, where Apalache's is its own.</p>
+</article>
+</body>
+</html>

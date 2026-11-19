@@ -1,0 +1,1374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Manyan TLA⁺ Standard · Manyan</title>
+<link rel="icon" href="../logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="../index.html">Manyan</a><a href="../playground.html">Playground</a><a href="../manual.html">Manual</a><a href="../roadmap.html">Roadmap</a><a href="../benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="the-manyan-tla-standard">The Manyan TLA⁺ Standard</h1>
+<p>Version 0.1. The language Manyan accepts and the results it must produce.</p>
+<h2 id="contents">Contents</h2>
+<ul>
+<li><a href="#1-scope">1 Scope</a></li>
+<li><a href="#2-conformance">2 Conformance</a></li>
+<li><a href="#3-lexical-structure">3 Lexical structure</a></li>
+<li><a href="#4-modules">4 Modules</a></li>
+<li><a href="#5-declarations-and-definitions">5 Declarations and definitions</a></li>
+<li><a href="#6-expressions">6 Expressions</a></li>
+<li><a href="#7-values">7 Values</a></li>
+<li><a href="#8-standard-modules">8 Standard modules</a></li>
+<li><a href="#9-model-configuration">9 Model configuration</a></li>
+<li><a href="#10-model-checking">10 Model checking</a></li>
+<li><a href="#11-output">11 Output</a></li>
+<li><a href="#12-exclusions">12 Exclusions</a></li>
+</ul>
+<h2 id="1-scope">1 Scope</h2>
+<p>This Standard defines TLA⁺ Version 2 as a model checker must evaluate it:
+the syntax of modules, the meaning of the expressions TLC can evaluate,
+the model configuration language, the model-checking procedure, and the
+observable results. It follows <em>Specifying Systems</em> (Lamport, 2002) and the
+TLA⁺ Version 2 language changes. Where those leave a choice open (the order
+in which values print, which errors are reported, how many states are
+counted), TLC 1.8.0 (tla2tools v1.8.0, built from commit bc1b506) decides.</p>
+<p>The proof language (§12) is parsed only as far as needed to skip it.</p>
+<h2 id="2-conformance">2 Conformance</h2>
+<h3 id="21-oracle">2.1 Oracle</h3>
+<p>TLC 1.8.0 is the oracle. A test of this Standard is a module, a model
+configuration, and the output TLC produces for them. An implementation
+conforms when, for every test, it produces the same normalized output (§11.1)
+and the same exit status (§11.3).</p>
+<h3 id="22-requirements">2.2 Requirements</h3>
+<p>An implementation shall</p>
+<ol>
+<li>accept every module and configuration this Standard defines;</li>
+<li>produce, for a correct model, the result TLC produces: the same verdict,
+   the same counts of states, and the same error traces;</li>
+<li>report an error where TLC reports one, with the same first line of the
+   message for the errors listed in §11.3, and the same exit status;</li>
+<li>check models with one worker deterministically: the same inputs give the
+   same output.</li>
+</ol>
+<h3 id="23-normative-language">2.3 Normative language</h3>
+<p><em>Shall</em> states a requirement. <em>Unspecified</em> means TLC's choice is not part of
+this Standard and tests must not depend on it.</p>
+<h2 id="3-lexical-structure">3 Lexical structure</h2>
+<h3 id="31-characters">3.1 Characters</h3>
+<p>A module is ASCII text. Lines end with LF or CR LF. A tab moves to the
+column after the next multiple of 8, as SANY counts it. Columns and lines
+are numbered from 1.</p>
+<h3 id="32-module-boundaries">3.2 Module boundaries</h3>
+<p>Text before the first line that holds <code>----</code> (four or more dashes) followed
+by <code>MODULE</code> is ignored. A module begins <code>---- MODULE Name ----</code> (any run of
+four or more dashes on each side) and ends with a line of four or more <code>=</code>
+characters. Text after the end of the outermost module is ignored. A module
+may contain nested modules with the same delimiters.</p>
+<h3 id="33-comments-and-white-space">3.3 Comments and white space</h3>
+<p><code>\*</code> starts a comment running to the end of the line. <code>(*</code> starts a
+comment that ends at the matching <code>*)</code>; such comments nest. A line of four
+or more <code>-</code> inside a module is a separator and is ignored.</p>
+<h3 id="34-identifiers-and-keywords">3.4 Identifiers and keywords</h3>
+<p>An identifier is a sequence of letters, digits, and <code>_</code> that contains at
+least one letter and is not all digits followed by a letter-free tail; for
+example <code>x</code>, <code>x1</code>, <code>_x</code>, <code>1a</code> are identifiers and <code>12</code> is a number. The
+following are reserved and are not identifiers:</p>
+<pre><code>ASSUME ASSUMPTION AXIOM BOOLEAN CASE CHOOSE CONSTANT CONSTANTS ELSE
+ENABLED EXCEPT EXTENDS FALSE IF IN INSTANCE LET LOCAL MODULE OTHER
+STRING SUBSET THEN THEOREM TRUE UNCHANGED UNION VARIABLE VARIABLES
+WITH WF_ SF_ LAMBDA RECURSIVE LEMMA PROPOSITION COROLLARY
+</code></pre>
+<p><code>WF_</code> and <code>SF_</code> are prefixes: <code>WF_vars</code> is <code>WF_</code> followed by the
+subscript <code>vars</code>.</p>
+<h3 id="35-numbers">3.5 Numbers</h3>
+<p>A numeral is a sequence of decimal digits. <code>\b</code>, <code>\o</code>, and <code>\h</code> (or <code>\B</code>,
+<code>\O</code>, <code>\H</code>) introduce binary, octal, and hexadecimal numerals. A decimal
+<code>d.d</code> is accepted by the grammar. As TLC cannot compute with either, a
+spec with a decimal, or with a numeral above 2^31 - 1, anywhere in a
+definition, assumption or theorem is an error before checking (§11.3),
+whether it is used or not. The first is reported: the modules in the
+order they are finished (dependencies first), and in each its
+definitions, its inner modules, its assumptions, then its theorems.</p>
+<h3 id="36-strings">3.6 Strings</h3>
+<p>A string is enclosed in <code>"</code>. The escapes are <code>\"</code>, <code>\\</code>, <code>\n</code>, <code>\t</code>, <code>\r</code>,
+and <code>\f</code>. A string does not span lines.</p>
+<h3 id="37-operator-symbols">3.7 Operator symbols</h3>
+<p>The lexer takes the longest symbol that is a token. The symbols are the
+punctuation <code>( ) [ ] { } &lt;&lt; &gt;&gt; , : :: . .. ... ! @ ' == |-&gt; -&gt; &lt;- _</code>
+together with the operators of §6.1. Backslash words (<code>\in</code>, <code>\cup</code>, ...)
+are single tokens; an unknown backslash word is an error.</p>
+<h2 id="4-modules">4 Modules</h2>
+<h3 id="41-units">4.1 Units</h3>
+<p>A module is a header, an optional <code>EXTENDS M1, ..., Mn</code>, and a sequence of
+units: declarations (§5.1), definitions (§5.2), <code>INSTANCE</code>s (§4.3),
+<code>ASSUME</code>s (§4.5), theorems (§12), nested modules, and separators.</p>
+<h3 id="42-extends">4.2 EXTENDS</h3>
+<p><code>EXTENDS M</code> makes every non-<code>LOCAL</code> symbol of <code>M</code>, and of the modules <code>M</code>
+extends, a symbol of the extending module. A name defined twice with
+different definitions is an error; the same definition reached twice is
+one symbol.</p>
+<h3 id="43-instance">4.3 INSTANCE</h3>
+<p><code>INSTANCE M WITH p1 &lt;- e1, ..., pn &lt;- en</code> imports the definitions of <code>M</code>
+with each constant and variable <code>pi</code> of <code>M</code> replaced by <code>ei</code>. A parameter
+not listed is replaced by the symbol of the same name in the instantiating
+module, which must exist. <code>N(x) == INSTANCE M WITH ...</code> defines a module
+instance: <code>N(a)!Op(b)</code> is <code>Op</code> of the instance with <code>x</code> bound to <code>a</code>. A
+<code>LOCAL</code> instance or definition is not exported.</p>
+<h3 id="44-module-resolution">4.4 Module resolution</h3>
+<p>A module named in <code>EXTENDS</code> or <code>INSTANCE</code> is, in order: a nested module in
+scope, a file <code>Name.tla</code> in the directory of the root module, a
+standard module (§8), or, as SANY reads a monolithic spec, the text of the
+root module's file from a line <code>---- MODULE Name ----</code> to the next line
+that starts with <code>====</code>, its lines numbered from that <code>MODULE</code> line.</p>
+<h3 id="45-assume">4.5 ASSUME</h3>
+<p><code>ASSUME e</code> (or <code>ASSUMPTION</code>, <code>AXIOM</code>, optionally named <code>ASSUME N == e</code>)
+states that the constant expression <code>e</code> is <code>TRUE</code>. Each assumption is
+evaluated after the constants are bound (§10.1); a false one is an error
+(§11.3).</p>
+<h2 id="5-declarations-and-definitions">5 Declarations and definitions</h2>
+<h3 id="51-declarations">5.1 Declarations</h3>
+<p><code>CONSTANT c1, ..., cn</code> declares constant parameters, each a name or an
+operator shape such as <code>F(_, _)</code> or <code>_ ** _</code>. <code>VARIABLE v1, ..., vn</code>
+declares the state variables. The plural spellings are synonyms.</p>
+<h3 id="52-operator-definitions">5.2 Operator definitions</h3>
+<p><code>Op == e</code>, <code>Op(p1, ..., pn) == e</code>, and the infix, prefix, and postfix forms
+<code>a ++ b == e</code>, <code>-. a == e</code>, <code>a ^+ == e</code> define operators. A parameter may
+itself be an operator, written <code>F(_)</code> or <code>_ + _</code>, and an argument for it is
+an operator name (a constant operator's, or an instance's <code>I!Op</code>), an
+operator parameter, or a <code>LAMBDA x, y : e</code>. Arguments are passed by name: the
+argument expression is evaluated, in the context of the call, where the
+parameter is used, also when the operator called is a parameter; a
+built-in operator takes its arguments' values.</p>
+<h3 id="53-function-definitions">5.3 Function definitions</h3>
+<p><code>f[x \in S] == e</code> defines <code>f</code> as <code>CHOOSE f : f = [x \in S |-&gt; e]</code>: <code>f</code> may
+appear in <code>e</code>, so the function is recursive. Several bound variables
+<code>f[x \in S, y \in T]</code> define a function on <code>S \X T</code>.</p>
+<h3 id="54-recursive-operators">5.4 Recursive operators</h3>
+<p><code>RECURSIVE Op(_, _)</code> declares an operator that a later definition in the
+same unit list defines; the definition may then refer to itself. Evaluation
+that does not terminate is an error (§11.3).</p>
+<h3 id="55-let">5.5 LET</h3>
+<p><code>LET d1 ... dn IN e</code> makes the definitions <code>di</code> (operator, function, or
+<code>RECURSIVE</code> declarations) visible in later <code>di</code> and in <code>e</code>.</p>
+<h3 id="56-scoping">5.6 Scoping</h3>
+<p>A name is visible only after its declaration or definition; a definition
+sees itself only when it defines a function or was declared <code>RECURSIVE</code>. So
+<code>LET e == CHOOSE e \in S : TRUE IN e</code> is legal. A bound name may not reuse a
+name already visible in its scope, except that names introduced by different
+definitions do not conflict. A name refers to the innermost binding.</p>
+<p>A nested module sees the names its enclosing modules declare or define
+before it, and may not define them again. It may declare again a constant
+or variable they declare, with the same arity; SANY warns of it,
+<code>Multiple declarations or definitions for symbol C.</code> and where the first
+is, each location in the module of its file. After processing each
+module of a file, dependencies first, SANY prints every warning so far
+under <code>*** Warnings: N</code>.</p>
+<p>When two extended modules define one name differently, the first
+definition is the one used, and SANY warns of the other, <code>Warning: the
+definition of 'R' conflicts with</code> and where the first is; a definition an
+instance brings in gives way too, with <code>Multiple declarations or
+definitions for symbol R.</code>, located at the definition, or at the statement
+of a <code>LOCAL INSTANCE</code>. A definition's location runs from its name to the
+end of its body; one of a standard module's is where it is in TLC's file.</p>
+<p>Once every module is processed, SANY warns, module by module, dependencies
+first, of each field of a record or set of records (<code>[f |-&gt; e]</code>, <code>[f : S]</code>)
+named as a definition or declaration its module sees: <code>The field name "f"
+in the record constructor is identical to the existing definition or
+declaration</code>, with where each is. It does not when a record or set of
+records of the same fields, in the module or one it extends, has a field
+whose expression is built, through the definitions it uses, from a
+constant, a variable, a parameter, a bound identifier, <code>BOOLEAN</code>, <code>Nat</code> or
+<code>Int</code>.</p>
+<h3 id="57-labels-and-subexpressions">5.7 Labels and subexpressions</h3>
+<p><code>lab :: e</code> or <code>lab(x, y) :: e</code>, at the start of an expression, labels <code>e</code>
+(which extends as far as possible); <code>x</code> and <code>y</code> are bound identifiers in
+scope. A label changes nothing in the value of <code>e</code>.</p>
+<p><code>Op(a)!s1!s2...</code> names a subexpression of the definition of <code>Op</code> (an
+operator, a theorem, or an assumption, possibly reached through instances
+<code>I!Op</code>). Each selector <code>si</code> moves from the current expression to a part:</p>
+<ul>
+<li>a name: after <code>Op</code>, after a label, or after a LET definition, a label in
+  it (not inside another label or LET definition); otherwise a definition
+  of the LET the current expression is, after <code>:</code> if it would be a label;</li>
+<li><code>:</code> makes the next name a LET definition;</li>
+<li><code>n</code>, <code>&lt;&lt;</code>, <code>&gt;&gt;</code>: operand <code>n</code> of an operator application, the first, or
+  the second of two; a LET expression has its body as only operand, a
+  label is transparent, <code>r.f</code> has operands <code>r</code> and <code>"f"</code>, a record its
+  values, <code>[f EXCEPT ...]</code> only <code>f</code>, a CASE arm <code>p -&gt; e</code> is selected by
+  two selectors (<code>!1!&gt;&gt;</code> is <code>e</code> of the first arm); for a quantifier,
+  <code>CHOOSE</code>, set constructor or function constructor, operand <code>n</code> is the
+  set of the <code>n</code>-th group of bound identifiers;</li>
+<li><code>(e1, ..., en)</code> or <code>@</code>: the body of a quantifier, <code>CHOOSE</code>, set or
+  function constructor, its bound identifiers (all of them, tuples
+  flattened) as parameters.</li>
+</ul>
+<p>The result is an operator whose parameters are, in order, those met on the
+way: <code>Op</code>'s, each label's, each LET definition's, and the bound
+identifiers of each <code>(...)</code> or <code>@</code>. Arguments given to every selector
+(<code>Op(a)!lab(b)!(c)</code>) apply it; none at all (<code>Op!lab!@</code>) make it an
+operator argument. The LET definitions around the subexpression are in
+scope in it. <code>COp(1, 2)!(3)!++(4, 5)</code> is thus <code>{a, b, q, p, x}</code> of
+<code>COp(q, p) == CHOOSE x : LET a ++ b == {a, b, q, p, x} IN ...</code> with
+<code>q, p, x, a, b</code> = <code>1, 2, 3, 4, 5</code>.</p>
+<p>A theorem <code>THEOREM N == e</code> or assumption <code>ASSUME N == e</code> defines <code>N</code> as an
+operator <code>N == e</code> without parameters.</p>
+<h3 id="58-levels">5.8 Levels</h3>
+<p>Each expression has a level: 0 constant, 1 state (it reads variables), 2
+action (it primes), 3 temporal. An operand of <code>'</code> or <code>UNCHANGED</code> must be of
+level at most 1, of <code>ENABLED</code> and <code>\cdot</code> at most 2; in <code>[A]_v</code>,
+<code>&lt;&lt;A&gt;&gt;_v</code>, <code>WF_v(A)</code> and <code>SF_v(A)</code>, <code>A</code> at most 2 and <code>v</code> at most 1. The
+operands of the other built-in operators are at most actions: of <code>=</code>, <code>#</code>,
+<code>\in</code>, the set operators, set and tuple constructors, function
+application, <code>.f</code>, <code>EXCEPT</code> and its keys, <code>CHOOSE</code>, <code>{x \in S : P}</code> and
+<code>{e : x \in S}</code>, and the ranges of every bound; the operands of the logical
+operators, <code>IF</code>, <code>CASE</code>, records <code>[f |-&gt; e]</code>, and the bodies of <code>\A</code>, <code>\E</code>
+and <code>[x \in S |-&gt; e]</code> may be temporal. <code>/\</code>, <code>\/</code>, <code>=&gt;</code> and <code>&lt;=&gt;</code> may not
+join a temporal formula and an action. A parameter of a definition allows,
+for its argument, the least level its uses allow, and a declaration of a
+module the same for what an <code>INSTANCE</code> substitutes for it; an argument or a
+substitute of higher level is an error (§11.3). A call's level is that of
+its definition and of the arguments for the parameters it uses outside
+<code>ENABLED</code>, so <code>B(Next)</code> with <code>B(d) == ENABLED d</code> is a state predicate.</p>
+<h2 id="6-expressions">6 Expressions</h2>
+<h3 id="61-precedence">6.1 Precedence</h3>
+<p>Each operator has a precedence range <code>[lo, hi]</code>. In <code>a op1 b op2 c</code>, the
+expression parses as <code>(a op1 b) op2 c</code> when <code>op1</code>'s range lies above
+<code>op2</code>'s, as <code>a op1 (b op2 c)</code> when below, and is an error when the ranges
+overlap, unless <code>op1</code> and <code>op2</code> are the same left-associative operator.</p>
+<table>
+<thead>
+<tr>
+<th>Operators</th>
+<th>Range</th>
+<th>Assoc.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>=&gt;</code></td>
+<td>1–1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>~&gt;</code> <code>&lt;=&gt;</code> <code>\equiv</code> <code>-+-&gt;</code></td>
+<td>2–2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>/\</code> <code>\land</code> <code>\/</code> <code>\lor</code></td>
+<td>3–3</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>~</code> <code>\lnot</code> <code>\neg</code> (prefix)</td>
+<td>4–4</td>
+<td></td>
+</tr>
+<tr>
+<td><code>[]</code> <code>&lt;&gt;</code> <code>ENABLED</code> <code>UNCHANGED</code> (prefix)</td>
+<td>4–15</td>
+<td></td>
+</tr>
+<tr>
+<td><code>=</code> <code>#</code> <code>/=</code> <code>&lt;</code> <code>&gt;</code> <code>\leq</code> <code>&lt;=</code> <code>=&lt;</code> <code>\geq</code> <code>&gt;=</code> <code>\in</code> <code>\notin</code> <code>\subseteq</code> <code>\subset</code> <code>\supseteq</code> <code>\supset</code> <code>\prec</code> <code>\succ</code> <code>\preceq</code> <code>\succeq</code> <code>\sim</code> <code>\simeq</code> <code>\ll</code> <code>\gg</code> <code>\asymp</code> <code>\approx</code> <code>\cong</code> <code>\sqsubset</code> <code>\sqsubseteq</code> <code>\sqsupset</code> <code>\sqsupseteq</code> <code>\doteq</code> <code>\propto</code> <code>:=</code> <code>::=</code> <code>|-</code> <code>-|</code> <code>|=</code> <code>=|</code></td>
+<td>5–5</td>
+<td></td>
+</tr>
+<tr>
+<td><code>\cdot</code></td>
+<td>5–14</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>@@</code></td>
+<td>6–6</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>:&gt;</code> <code>&lt;:</code></td>
+<td>7–7</td>
+<td></td>
+</tr>
+<tr>
+<td><code>\</code></td>
+<td>8–8</td>
+<td></td>
+</tr>
+<tr>
+<td><code>\cap</code> <code>\intersect</code> <code>\cup</code> <code>\union</code></td>
+<td>8–8</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>SUBSET</code> <code>UNION</code> (prefix)</td>
+<td>8–8</td>
+<td></td>
+</tr>
+<tr>
+<td><code>..</code> <code>...</code></td>
+<td>9–9</td>
+<td></td>
+</tr>
+<tr>
+<td><code>DOMAIN</code> (prefix)</td>
+<td>9–9</td>
+<td></td>
+</tr>
+<tr>
+<td><code>!!</code></td>
+<td>9–13</td>
+<td></td>
+</tr>
+<tr>
+<td><code>##</code> <code>$</code> <code>$$</code> <code>??</code> <code>\uplus</code> <code>\sqcap</code> <code>\sqcup</code></td>
+<td>9–13</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>\wr</code></td>
+<td>9–14</td>
+<td></td>
+</tr>
+<tr>
+<td><code>\X</code> <code>\times</code></td>
+<td>10–13</td>
+<td>n-ary</td>
+</tr>
+<tr>
+<td><code>+</code> <code>++</code> <code>\oplus</code> <code>(+)</code></td>
+<td>10–10</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>%</code></td>
+<td>10–11</td>
+<td></td>
+</tr>
+<tr>
+<td><code>%%</code> <code>\|</code> <code>\|\|</code></td>
+<td>10–11</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>-</code> <code>--</code> <code>\ominus</code> <code>(-)</code></td>
+<td>11–11</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>-</code> (prefix)</td>
+<td>12–12</td>
+<td></td>
+</tr>
+<tr>
+<td><code>*</code> <code>**</code> <code>&amp;</code> <code>&amp;&amp;</code> <code>\o</code> <code>\circ</code> <code>\odot</code> <code>(.)</code> <code>\otimes</code> <code>(\X)</code> <code>\star</code> <code>\bigcirc</code> <code>\bullet</code></td>
+<td>13–13</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>/</code> <code>//</code> <code>\div</code> <code>\oslash</code> <code>(/)</code></td>
+<td>13–13</td>
+<td></td>
+</tr>
+<tr>
+<td><code>^</code> <code>^^</code></td>
+<td>14–14</td>
+<td></td>
+</tr>
+<tr>
+<td><code>'</code> <code>^+</code> <code>^*</code> <code>^#</code> (postfix)</td>
+<td>15–15</td>
+<td></td>
+</tr>
+<tr>
+<td><code>[ ]</code> (application)</td>
+<td>16–16</td>
+<td>left</td>
+</tr>
+<tr>
+<td><code>.</code> (record field)</td>
+<td>17–17</td>
+<td>left</td>
+</tr>
+</tbody>
+</table>
+<p><code>a \X b \X c</code> is the ternary product, not <code>(a \X b) \X c</code>.</p>
+<h3 id="62-junction-lists">6.2 Junction lists</h3>
+<p>A list of formulas each preceded by <code>/\</code> (or each by <code>\/</code>), whose bullets are
+aligned in one column, is their conjunction (disjunction). An item extends
+until the first token that begins at or left of the bullet's column; a token
+there that is the same bullet starts the next item, and any other token ends
+the list. A parenthesis, bracket, or brace that opened inside an item must
+close inside it.</p>
+<h3 id="63-logic">6.3 Logic</h3>
+<p><code>TRUE</code>, <code>FALSE</code>, <code>BOOLEAN</code> (the set <code>{FALSE, TRUE}</code>). <code>~</code>, <code>/\</code>, <code>\/</code>, <code>=&gt;</code>,
+<code>&lt;=&gt;</code> (and <code>\equiv</code>) on Booleans. <code>/\</code> and <code>\/</code> evaluate left to right and
+stop at the first operand that decides the result; so do <code>=&gt;</code> and junction
+lists. An operand that is not a Boolean is an error.</p>
+<p><code>\A x \in S : p</code> and <code>\E x \in S : p</code> over a finite <code>S</code>; several bounds
+<code>\A x, y \in S, z \in T : p</code>; tuple binders <code>\E &lt;&lt;x, y&gt;&gt; \in S \X T : p</code>. The bound sets are computed
+first; the bindings follow in the order of §7.4 with the first variable
+varying fastest, which decides an action's successors and initial states
+in order (§10).
+Unbounded <code>\A x : p</code> and <code>\E x : p</code> are errors to evaluate.
+<code>CHOOSE x \in S : p</code> is the first element of <code>S</code>, in the order of §7.4, that
+satisfies <code>p</code>; none is an error. <code>CHOOSE x : p</code> is evaluable only as
+§10.3 permits.</p>
+<p><code>=</code> and <code>#</code> (<code>/=</code>) compare values (§7.3).</p>
+<h3 id="64-conditionals">6.4 Conditionals</h3>
+<p><code>IF c THEN a ELSE b</code>. <code>CASE p1 -&gt; e1 [] ... [] pn -&gt; en [] OTHER -&gt; e</code>
+evaluates the guards in order and yields the arm of the first true one;
+no true guard and no <code>OTHER</code> is an error.</p>
+<h3 id="65-sets">6.5 Sets</h3>
+<p>Enumeration <code>{a, b}</code> and <code>{}</code>; <code>\in</code>, <code>\notin</code>; <code>\cup</code>, <code>\cap</code>, <code>\</code>;
+<code>\subseteq</code>; <code>SUBSET S</code> (all subsets); <code>UNION S</code> (union of the elements);
+<code>{x \in S : p}</code> (filter); <code>{e : x \in S, y \in T}</code> (image). Membership may
+be decided for the infinite sets <code>Nat</code>, <code>Int</code>, <code>STRING</code>, <code>Seq(S)</code>,
+<code>SUBSET S</code>, <code>[S -&gt; T]</code>, <code>[a : S]</code>, and filters of them; enumerating an
+infinite set is an error.</p>
+<p>As in TLC, <code>{x \in S : p}</code> is computed at once when <code>S</code> is reducible: an
+interval, or a set of elements that is not one TLC keeps as its
+definition. TLC keeps as their definitions <code>SUBSET S</code>, <code>S \X T</code>,
+<code>[S -&gt; T]</code>, <code>[a : S]</code>, <code>Seq(S)</code>, <code>Nat</code>, <code>Int</code>, <code>STRING</code>; <code>UNION S</code> unless
+<code>S</code> and its elements are sets of elements; <code>S \cup T</code> unless both are
+reducible; <code>S \cap T</code> unless one is; <code>S \ T</code> unless <code>S</code> is; and a filter
+of a set that is not reducible. Such a filter is lazy: membership
+evaluates <code>p</code> for that element only, and <code>S</code> may be any value until the
+filter is enumerated. A quantifier or <code>CHOOSE</code> over a value that is not a
+set, or over <code>Nat</code>, <code>Int</code>, <code>STRING</code> or <code>Seq(S)</code>, is an error at once; over
+another infinite set, the error is that of enumerating it.</p>
+<p><code>S \subseteq T</code> tests each element of <code>S</code> in <code>T</code>, but, as TLC,
+<code>SUBSET A \subseteq SUBSET B</code> is <code>A \subseteq B</code> and an interval is in
+an interval when its bounds are. Enumerating <code>SUBSET S</code> of an <code>S</code> of 31
+elements or more fails counting it, as TLC: <code>Overflow when computing the
+number of elements in:</code> and the set.</p>
+<p>A <code>UNION S</code> that TLC keeps is taken by quantifiers, set images and
+<code>x \in S</code> in an action one element of <code>S</code> after another, in the standard
+order of <code>S</code>, with any duplicates; <code>CHOOSE</code>, filters and functions take it
+sorted. Once it has been counted, fingerprinted, or compared as the left
+side of <code>=</code> or of the standard order, TLC holds its elements, and
+quantifiers take them sorted too.</p>
+<h3 id="66-functions">6.6 Functions</h3>
+<p><code>[x \in S |-&gt; e]</code> and <code>[x \in S, y \in T |-&gt; e]</code>; application <code>f[a]</code> and
+<code>f[a, b]</code> (which is <code>f[&lt;&lt;a, b&gt;&gt;]</code>); <code>DOMAIN f</code>; the function set
+<code>[S -&gt; T]</code>; <code>[f EXCEPT ![a] = e, ![b][c] = e2, !.r = e3]</code>, where <code>@</code> in a
+replacement is the old value at that path. Applying <code>f</code> outside its domain
+is an error.</p>
+<p>As in TLC, <code>[x \in S |-&gt; e]</code> is computed in full where it is evaluated,
+except where it stays lazy: in the function position of an application
+<code>f[a]</code> (directly, or as the value of the operator, LET definition or arm
+<code>f</code> names), within the body of a lazy function, in a recursive function
+definition (§5.3), and over a domain whose sets are not all reducible
+(§6.5), such as an infinite one or one that is no set. A function definition that
+is not recursive and names no variable is computed in full once, before
+checking, if it can be. Applying a lazy function evaluates <code>e</code>
+at that argument only, so an error elsewhere in its domain is not raised,
+and <code>f[i \in S] == [j \in T |-&gt; ... f[i][k] ...]</code> may use other values of
+<code>f[i]</code> within <code>f[i]</code>. A lazy function is computed in full when it is
+compared, fingerprinted, printed, or taken <code>DOMAIN</code> or <code>EXCEPT</code> of. One
+that cannot be, being over an infinite domain or failing, prints as
+<code>[x \in S |-&gt; &lt;expression LOC&gt;]</code>: each bound's first name, or <code>&lt;&lt;a, b&gt;&gt;</code> for
+a tuple pattern, with its domain, then <code>e</code> as TLC names an expression:
+its location (§11.3), or, for a numeral, the numeral as written. A value
+that holds such a function prints on one line. A function of several
+bounds is computed with the first bound varying fastest, and an error
+message prints it in that order; <code>Print</code> and <code>PrintT</code> print it sorted.</p>
+<p>An EXCEPT path whose key is outside the domain leaves the
+value unchanged and prints TLC's warning, <code>Warning: The EXCEPT was applied
+to non-existing fields of the value at</code> and the location of <code>f</code>; the first
+warning of a run adds <code>(Use the -nowarning option to disable this
+warning.)</code>, and a warning already printed is not printed again.
+<code>-nowarning</code> turns off TLC's warnings: these two, not SANY's.</p>
+<h3 id="67-records">6.7 Records</h3>
+<p><code>[a |-&gt; 1, b |-&gt; 2]</code> is the function on <code>{"a", "b"}</code>; <code>r.a</code> is <code>r["a"]</code>.
+<code>[a : S, b : T]</code> is the set of such records.</p>
+<h3 id="68-tuples">6.8 Tuples</h3>
+<p><code>&lt;&lt;a, b, c&gt;&gt;</code> is the function on <code>1..3</code>. <code>&lt;&lt;&gt;&gt;</code> is the empty tuple.
+<code>S \X T</code> is the set of pairs.</p>
+<h3 id="69-action-operators">6.9 Action operators</h3>
+<p>In an action, <code>e'</code> is <code>e</code> evaluated in the next state; <code>e' = v</code> and
+<code>e' \in S</code> assign a variable when <code>e'</code>, through definitions without
+parameters, <code>LET</code>, instances and their substitutions, is <code>x'</code> or
+<code>(d)'</code> with <code>d</code> reaching <code>x</code> likewise, as TLC's getPrimedVar finds it; <code>UNCHANGED e</code> is
+<code>e' = e</code>; <code>[A]_e</code> is <code>A \/ UNCHANGED e</code>; <code>&lt;&lt;A&gt;&gt;_e</code> is <code>A /\ ~UNCHANGED e</code>;
+<code>ENABLED A</code> is true in a state from which <code>A</code> has a successor; <code>A \cdot B</code>
+is composition, an error unless the Java property
+<code>tlc2.tool.impl.Tool.cdot</code> is <code>true</code>. Then, as TLC: from <code>s</code>, the states
+<code>t</code> that <code>A</code> goes to start with <code>s</code>'s values of the variables already
+assigned and must satisfy the conjuncts after <code>A \cdot B</code>, and count as
+generated; from each <code>t</code>, <code>B</code> gives the successors, with those conjuncts
+too, each a successor of <code>s</code>. As a formula, <code>A \cdot B</code> holds of a step
+to <code>u</code> when <code>A</code> goes from <code>s</code> to some <code>t</code>, starting from no values, from
+which the step to <code>u</code> satisfies <code>B</code>; in <code>ENABLED</code>, when <code>B</code> is enabled
+from some <code>t</code>.</p>
+<p>Inside <code>ENABLED</code>, as in TLC, a primed variable of an instantiated module
+written in <code>A</code> itself is not replaced by its substitution: <code>x' = e</code> gives
+the variable named <code>x</code> a value, and <code>x'</code> reads it back, so with <code>INSTANCE
+M WITH x &lt;- z, y &lt;- z</code>, <code>ENABLED (x' = 0 /\ y' = 1)</code> in <code>M</code> is true;
+<code>UNCHANGED x</code> and the change
+<code>&lt;&lt;A&gt;&gt;_v</code> requires of <code>v</code> compare that variable likewise. An action passed to an
+operator argument from outside the instance keeps its substitutions.</p>
+<h3 id="610-temporal-operators">6.10 Temporal operators</h3>
+<p><code>[]F</code>, <code>&lt;&gt;F</code>, <code>F ~&gt; G</code> (<code>[](F =&gt; &lt;&gt;G)</code>), <code>WF_e(A)</code>, <code>SF_e(A)</code>, and
+<code>F -+-&gt; G</code>. Temporal formulas appear only in <code>SPECIFICATION</code> and <code>PROPERTY</code>
+formulas (§10.5), and in definitions they use.</p>
+<p>A temporal formula contains no raw action, a semantic error otherwise:
+<code>[]A</code> and <code>&lt;&gt;A</code> of an action <code>A</code> must be <code>[][A]_e</code> and <code>&lt;&gt;&lt;&lt;A&gt;&gt;_e</code>; the
+operands of <code>~&gt;</code> and <code>-+-&gt;</code> are not actions; and a quantifier over a
+temporal formula has no action-level bound.</p>
+<h2 id="7-values">7 Values</h2>
+<h3 id="71-kinds">7.1 Kinds</h3>
+<p>A value is a Boolean, an integer, a string, a model value (§9.2), a finite
+or infinite set, or a function. Tuples, sequences, and records are
+functions: <code>&lt;&lt;1, 2&gt;&gt; = [i \in 1..2 |-&gt; i]</code> and
+<code>[a |-&gt; 1] = [x \in {"a"} |-&gt; 1]</code>.</p>
+<h3 id="72-integers">7.2 Integers</h3>
+<p>Integers are the signed 32-bit range of TLC. A result outside it is an
+error (§11.3). <code>\div</code> and <code>%</code> are floor division and its non-negative
+remainder; a zero divisor is an error.</p>
+<h3 id="73-equality">7.3 Equality</h3>
+<p>Values of different kinds are unequal only when one is a model value or
+when both are sets or both are functions; otherwise comparing them (for
+example <code>1 = "a"</code>) is an error. Two sets are equal when they have the same
+elements; two functions when they have the same domain and values. No
+value is an element of an empty interval, such as <code>1..0</code>, even one that is
+not an integer.</p>
+<h3 id="74-order">7.4 Order</h3>
+<p>Every set prints and enumerates its elements in the standard order:
+Booleans <code>FALSE</code> before <code>TRUE</code>; integers by value; strings in order of
+first appearance (§7.5); model values by declaration order; tuples and
+functions by domain size, then element by element; sets by size, then
+element by element; <code>Nat</code> before <code>Int</code>, which equal only themselves.
+Elements of different kinds are ordered by kind.</p>
+<h3 id="75-string-order">7.5 String order</h3>
+<p>Strings are ordered by when Manyan first meets them, in this order: the
+built-in names of the language; the identifiers and numerals of the root
+module and then of each module it uses, in the order those modules are
+read; the string literals of every module, dependencies first; the
+configuration; and finally strings made during checking. Record fields are
+strings, so records print their fields in this order too.</p>
+<h3 id="76-printing">7.6 Printing</h3>
+<p>A value prints as an expression that denotes it: <code>TRUE</code>, <code>-3</code>, <code>"a\"b"</code>, a
+model value's name, <code>{1, 2}</code>, <code>&lt;&lt;1, 2&gt;&gt;</code>, <code>[a |-&gt; 1, b |-&gt; 2]</code>, and a
+function on another domain as <code>(1 :&gt; "a" @@ 2 :&gt; "b")</code>. A function whose
+domain is <code>1..n</code> prints as a tuple and one whose domain is a non-empty set
+of strings prints as a record. A printed value longer than the line width
+(80) is broken as TLC's pretty printer breaks it: each element of a long
+set, tuple, or record on its own line, aligned under the first.</p>
+<h2 id="8-standard-modules">8 Standard modules</h2>
+<p>The standard modules are those of tla2tools, with the operators below
+evaluated natively.</p>
+<ul>
+<li><strong>Naturals</strong>: <code>Nat</code>, <code>+</code>, <code>-</code>, <code>*</code>, <code>^</code>, <code>&lt;</code>, <code>&gt;</code>, <code>\leq</code>, <code>\geq</code>, <code>%</code>,
+  <code>\div</code>, <code>..</code>.</li>
+<li><strong>Integers</strong>: Naturals and <code>Int</code>, prefix <code>-</code>.</li>
+<li><strong>Sequences</strong>: <code>Seq</code>, <code>Len</code>, <code>\o</code>, <code>Append</code>, <code>Head</code>, <code>Tail</code>, <code>SubSeq</code>,
+  <code>SelectSeq</code>.</li>
+<li><strong>FiniteSets</strong>: <code>IsFiniteSet</code>, <code>Cardinality</code>.</li>
+<li><strong>Bags</strong>: <code>IsABag</code>, <code>BagToSet</code>, <code>SetToBag</code>, <code>BagIn</code>, <code>EmptyBag</code>, <code>(+)</code>,
+  <code>(-)</code>, <code>BagUnion</code>, <code>\sqsubseteq</code>, <code>BagOfAll</code>, <code>BagCardinality</code>,
+  <code>CopiesIn</code>, as TLC's Java class: <code>IsABag</code> is <code>FALSE</code> for any value
+  that is no bag, <code>CopiesIn</code> yields the count however small,
+  <code>BagUnion({B})</code> is <code>B</code>, and a count is cast to an integer, which fails
+  on another value. <code>SubBag</code> is its definition.</li>
+<li><strong>Reals</strong>: TLC's module of placeholders: <code>Real</code> is the string
+  <code>"Reals"</code>, <code>a / b</code> is <code>CHOOSE m \in Real : m * b = a</code> (an error), and
+  <code>Infinity</code> an unbounded <code>CHOOSE</code>; their definitions are on TLC's lines.</li>
+<li><strong>TLC</strong>: <code>Print</code>, <code>PrintT</code>, <code>Assert</code>, <code>JavaTime</code>, <code>TLCGet</code>, <code>TLCSet</code>,
+  <code>:&gt;</code>, <code>@@</code>, <code>Permutations</code>, <code>SortSeq</code>, <code>RandomElement</code>, <code>Any</code>,
+  <code>ToString</code>, <code>TLCEval</code>.</li>
+<li><strong>TLCExt</strong>: <code>AssertError</code>, <code>TLCCache</code>, <code>TLCModelValue</code>,
+  <code>TLCGetOrDefault</code>; <code>AssertEq</code>, <code>TLCNoOp</code> and <code>TLCGetAndSet</code> are their
+  definitions. <code>Trace</code>, <code>CounterExample</code>, <code>ToTrace</code>, <code>TLCFP</code>,
+  <code>PickSuccessor</code>, <code>TLCDefer</code> and <code>TLCEvalDefinition</code> need TLC's own
+  traces, fingerprints or successors: Manyan stops, saying it does not
+  support the one evaluated.</li>
+</ul>
+<p><code>RandomElement(S)</code> and the Randomization operators draw as TLC does, from
+<code>java.util.Random</code> seeded with <code>-seed</code>: the model, the assumptions and
+Init in sequence from one generator, as TLC's main thread keeps the one
+its first draw made; a state's successors from one seeded with <code>-seed</code>
+xor the state's fingerprint, which Manyan's fingerprints, not TLC's, make
+other draws than TLC's. <code>RandomSubset(k, S)</code> takes
+k indices from a linear congruential generator, <code>x' = (a * x + c) % m</code>
+skipping those past |S|: m is the least number from max(|S|, 9) on that is
+not divisible by 4 and has a square factor, a is 1 more than the product of
+m's prime factors, x starts at a random index and c is a random one of
+TLC's 1341 primes (§10.8). An index into a set of functions, records or
+tuples is read in the mixed radix of its parts; for one of more than
+2^31 - 1 elements the indices are instead <code>(i * (2^63 - 25) + l) % |S|</code>,
+l the absolute value of a random long. An interval's index i is its lower
+bound plus i, and the interval is not made. A negative k is Java's
+NegativeArraySizeException, whatever S.</p>
+<p>A string is no sequence, but <code>Len</code>, <code>Tail</code> and <code>SubSeq</code> take it as its
+characters, and <code>\o</code> joins two strings: <code>Len("ab") = 2</code>, and <code>Tail</code> and
+<code>SubSeq</code> of a string, and <code>"ab" \o "c"</code>, are strings. The other operators
+of Sequences fail on a string, as does <code>\o</code> of a string and a sequence, and
+a string equals no tuple: comparing them is an error (§7.3).</p>
+<p><code>Print(out, val)</code> writes <code>out</code> and <code>val</code> and yields <code>val</code>; <code>PrintT(out)</code>
+writes <code>out</code> and yields <code>TRUE</code>; <code>Assert(c, out)</code> is <code>TRUE</code> when <code>c</code> is and
+otherwise an error (§11.3). Printing a value, and <code>ToString</code>, enumerate
+the sets in it, so an infinite <code>S \cup T</code> or <code>S \ T</code> is an error there.
+<code>Any</code> is the set of every value; it prints as <code>ANY</code>. <code>TLCSet(i, v)</code>, for
+a natural number <code>i</code> or a string <code>i</code> that begins with <code>s:</code>, keeps <code>v</code> in
+register <code>i</code> and yields <code>TRUE</code>; <code>TLCGet(i)</code> yields it, and is an error
+when nothing was kept; <code>TLCGet("all")</code> is the function from each
+numbered register to the tuple of its value in each of TLC's workers,
+<code>TLCGet("all:named")</code> the same of the named ones, and a tuple has one
+value in Manyan, whose workers print what one does;
+<code>TLCGet("-Dk")</code> is Java's system property <code>k</code>, the string <code>"-Dk"</code> when
+unset, and <code>TLCSet("-Dk", v)</code> sets it to <code>v</code> as printed;
+<code>TLCGet("level")</code> is the depth of the state a predicate is evaluated on
+(of the step's first state in an action, its second's primed, 0 in Init
+and the assumptions);
+<code>TLCGet("config")</code> is the record <code>[mode |-&gt; "bfs", deadlock |-&gt; b, worker
+|-&gt; n, seed |-&gt; s]</code> of a search, without TLC's fields naming its jar and its
+fingerprint polynomial; of a simulation, with <code>mode |-&gt; "simulate"</code>, it
+also has <code>traces</code> (-1 without <code>num=</code>), <code>depth</code>, <code>aril |-&gt; "0"</code> and <code>sched
+|-&gt; "random"</code>, and its assumptions find the search's counters undefined.
+<code>TLCGet("distinct")</code>, <code>"queue"</code>, <code>"diameter"</code> and <code>"generated"</code> are the
+search's counts of states found, queued, the depth reached and states
+generated, each successor counted as it is checked; <code>TLCGet("stats")</code> is
+the record of them with <code>initial</code>, the initial states generated,
+<code>duration</code> and <code>worker |-&gt; 0</code>.
+<code>TLCGet("spec")</code> is the specification as TLC processed it: the records
+of name and location of its initial predicates, of its actions as split
+(§11.2, <code>TLCGet("action")</code>'s), of its fairness conjuncts, its invariants
+and each <code>[]P</code> of its properties, the properties' other parts, its
+variables and its constraints. A part with no definition is named
+<code>UnnamedAction</code>, a property's part by the property, and one seen through
+an instance that substitutes is located by the instance. TLC's coverage,
+which <code>-coverage</code> adds to each, is left out. TLC implements <code>TLCGet</code> by an evaluation method, so
+its errors carry that method's preamble (§11.3). That method's level is
+1: a definition that uses <code>TLCGet</code> is not evaluated once as a constant,
+but each time it is used, and a substitution <code>C &lt;- d</code> of one is
+evaluated as the model is read, an error there being that of a
+non-constant substitution (§9). Before TLC's checker exists, which is
+before the assumptions are checked, <code>TLCGet("level")</code> is 0 and the
+search's counters, <code>"config"</code> and the registers are undefined.</p>
+<p><code>AssertError(err, exp)</code>, <code>err</code> a string literal, is whether evaluating
+<code>exp</code> fails with the message <code>err</code>: the message as TLC prints it, without
+its location, with the preambles of the standard operators inside <code>exp</code>
+but none of those outside; Java's own exceptions are not caught.
+<code>TLCCache(e, k)</code> of a constant <code>e</code> is <code>e</code>'s value, computed once for each
+value of <code>k</code> and kept; of a state-level <code>e</code>, <code>k</code> is evaluated and then <code>e</code>
+twice, as TLC's search keeps nothing in a state and its definition computes
+<code>e</code> again (once in a simulation, which keeps it); of an action, <code>e</code>.
+<code>TLCModelValue(s)</code> is the model value named by the string <code>s</code>.
+<code>TLCGetOrDefault(i, d)</code> is register <code>i</code>, numbered or named, or <code>d</code> if
+nothing is kept there.
+<code>TLCGet</code>, <code>AssertError</code> and <code>TLCCache</code> are evaluation methods: they
+evaluate their arguments themselves, inside their method, so an error
+there carries the method's preamble.</p>
+<h2 id="9-model-configuration">9 Model configuration</h2>
+<h3 id="91-syntax">9.1 Syntax</h3>
+<p>A configuration is a sequence of statements; <code>\*</code> and <code>(* *)</code> comments as
+in §3.3. The keywords: <code>CONSTANT</code> is followed by assignments; <code>INIT</code>,
+<code>NEXT</code>, <code>SPECIFICATION</code>, <code>SYMMETRY</code>, <code>VIEW</code>, <code>ALIAS</code>, <code>_PERIODIC</code>,
+<code>_RL_REWARD</code> and <code>CHECK_DEADLOCK</code> by one name or value each, and may each
+appear once; the others by any number of names. As in TLC, any token stands where a name is expected, and the
+configuration is read before any module, so its errors come first, each
+as TLC's <code>ConfigFileException</code> at the line it is found: a word that is not
+a keyword where one is expected, a keyword repeated or followed by nothing, an assignment without
+<code>=</code> or <code>&lt;-</code>, a set without its <code>}</code>.</p>
+<p>The statements are taken, as TLC takes them, in this order whatever their
+order in the file: the constants, the invariants, the specification (or
+<code>INIT</code> and <code>NEXT</code>), the properties, the constraints, the action
+constraints; so an error in one is reported before what a later one
+would print.</p>
+<table>
+<thead>
+<tr>
+<th>Statement</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CONSTANT</code>, <code>CONSTANTS</code></td>
+<td><code>c = v</code> binds constant <code>c</code> to the value <code>v</code>; <code>c &lt;- Op</code> replaces <code>c</code> by the definition <code>Op</code>; <code>d &lt;- [M] Op</code> replaces the definition <code>d</code> of module <code>M</code> by <code>Op</code> of the root module, and <code>d = [M] v</code> gives it the value <code>v</code>; <code>c = c</code> binds <code>c</code> to the model value <code>c</code>; a definition <code>d = v</code> is the value <code>v</code>, its body never evaluated; lines <code>F(a, b) = v</code> give the operator <code>F</code> the value <code>v</code> at the arguments <code>a, b</code> (applied elsewhere, an error; lines of different arity, an error before the model is checked), as TLC's <code>OpRcdValue</code>, and a later <code>F = v</code> replaces them; a constant whose value is no operator, applied, is that value</td>
+</tr>
+<tr>
+<td><code>INIT</code>, <code>NEXT</code></td>
+<td>the initial predicate and next-state action</td>
+</tr>
+<tr>
+<td><code>SPECIFICATION</code></td>
+<td>a formula <code>Init /\ [][Next]_v /\ Fairness</code>, possibly through instances, <code>I(y)!Spec</code> too; with <code>INIT</code> or <code>NEXT</code> too, an error; a conjunct <code>[]S</code>, <code>S</code> an operator applied of constant or state level (not a number, string or <code>LET</code>), is an error naming <code>S</code></td>
+</tr>
+<tr>
+<td><code>INVARIANT</code>, <code>INVARIANTS</code></td>
+<td>state predicates checked in every reachable state</td>
+</tr>
+<tr>
+<td><code>PROPERTY</code>, <code>PROPERTIES</code></td>
+<td>temporal formulas the specification must imply</td>
+</tr>
+<tr>
+<td><code>CONSTRAINT</code>, <code>CONSTRAINTS</code></td>
+<td>state predicates bounding the explored states</td>
+</tr>
+<tr>
+<td><code>ACTION_CONSTRAINT</code>, <code>ACTION_CONSTRAINTS</code></td>
+<td>actions bounding the explored transitions</td>
+</tr>
+<tr>
+<td><code>SYMMETRY</code></td>
+<td>a set of permutations of model values</td>
+</tr>
+<tr>
+<td><code>VIEW</code></td>
+<td>the expression whose value identifies states</td>
+</tr>
+<tr>
+<td><code>ALIAS</code></td>
+<td>the expression a trace's states are printed as (§11.2)</td>
+</tr>
+<tr>
+<td><code>CHECK_DEADLOCK</code></td>
+<td><code>TRUE</code> (the default) or <code>FALSE</code></td>
+</tr>
+<tr>
+<td><code>POSTCONDITION</code>, <code>POSTCONDITIONS</code></td>
+<td>constant formulas checked once the states are explored (§10.9)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="92-values">9.2 Values</h3>
+<p>A value in a configuration is a natural number, a string, <code>TRUE</code>,
+<code>FALSE</code>, a model value (any other name), or a set <code>{v1, ..., vn}</code> of
+values. As in TLC, <code>-1</code> is two tokens: the model value <code>-</code>, then a name. A model
+value equals only itself.</p>
+<h2 id="10-model-checking">10 Model checking</h2>
+<h3 id="101-constants">10.1 Constants</h3>
+<p>Each declared constant shall be bound by the configuration. Then the
+assumptions are evaluated (§4.5).</p>
+<h3 id="102-initial-states">10.2 Initial states</h3>
+<p>The initial predicate is evaluated as a generator: a conjunction is
+evaluated left to right; a disjunction, an <code>\E</code>, an <code>IF</code>, or a <code>CASE</code> tries
+each alternative; <code>P =&gt; Q</code> evaluates <code>P</code>, then continues with <code>Q</code> if it is
+<code>TRUE</code> and without it if it is <code>FALSE</code>; <code>f[a]</code> for a lazy <code>f</code> (§6.6),
+here only a recursive function or one over a domain not reducible, is
+its body with its bound names given <code>a</code>; a conjunct <code>v = e</code> with <code>v</code> unassigned assigns <code>v</code>, and
+<code>v \in S</code> with <code>v</code> unassigned assigns each element of <code>S</code> in turn; any
+other formula must be <code>TRUE</code> for the alternative to continue. A state in
+which some variable is unassigned is an error. Each state produced, once
+the state constraints admit it, is an initial state.</p>
+<h3 id="103-successor-states">10.3 Successor states</h3>
+<p>The next-state action is evaluated in a state <code>s</code> as the initial predicate
+is, with primed variables <code>v'</code> in the place of variables, and unprimed
+variables read from <code>s</code>. An action is split at its disjunctions, <code>\E</code>
+quantifiers, and the definitions it refers to; <code>\E x \in S : A</code> is one
+part if <code>S</code> is empty or fails to evaluate as it is split, and a call
+<code>Op(a)</code> is one part, named <code>Op</code> and located at the call, if <code>Op</code> is built
+in or an argument is not constant or fails to evaluate. Each part that produces a state is a transition. <code>UNCHANGED v</code> assigns <code>v'</code> the value of <code>v</code>. A
+definition's parameter may stand for a primed variable, <code>Op(v')</code>, and a
+constant operator for the definition that replaces it (§9.1); both are
+followed. <code>f[a]</code>, for any lazy <code>f</code> (§6.6), is its body with its bound names
+given <code>a</code>, so its disjunctions are alternatives and it may assign. A
+successor in which some variable is unassigned is an error. <code>\A x \in S :
+A</code> is the conjunction of <code>A</code> for each <code>x</code>, the first, then the others from
+the last; as everywhere until every variable is assigned, each true
+disjunct in it is a way to the successor, and each way counts as a state
+generated.</p>
+<h3 id="104-search">10.4 Search</h3>
+<p>States are explored breadth first from the initial states, in the order
+they are produced. A state is new when no explored state has the same
+fingerprint: its value, or the value of the <code>VIEW</code> if one is given, up to
+the group the <code>SYMMETRY</code> permutations generate (so <code>Permutations(A) \cup
+Permutations(B)</code> relates the states either relates and their
+compositions). TLC warns of a set of a symmetry that permutes nothing,
+<code>Warning: The set S has been defined to be a symmetry set but contains less
+than two elements.</code>, with <code>sets</code> and <code>have</code> for several, joined by <code>, and</code>: it reads the arguments of the <code>SYMMETRY</code> definition's body, and names
+all of them when they are as many as the permutations, else each
+<code>Permutations(S)</code> of a constant set no model value of which a permutation
+moves; a set is named by its text without spaces, or by the constant the
+configuration replaces with it (<code>C &lt;- S</code>). Each new state that satisfies the state
+constraints, reached by a transition that satisfies the action constraints,
+is checked against the invariants and queued. A reachable state with no
+successor is a deadlock unless <code>CHECK_DEADLOCK</code> is <code>FALSE</code>.</p>
+<p>The <em>states generated</em> count is the number of initial states produced plus
+the number of transitions taken, duplicates included; <em>distinct states</em> is
+the number of new states; the <em>depth</em> is the length of the longest shortest
+path from an initial state, counted in states.</p>
+<h3 id="105-properties">10.5 Properties</h3>
+<p>A <code>PROPERTY</code> holds when every behavior of the specification satisfies it.
+A behavior is an infinite sequence of states, each transition of which is a
+step of the next-state action or a stuttering step, that satisfies the
+specification's fairness conditions: its <code>WF</code> and <code>SF</code> conjuncts and the
+other temporal conjuncts, such as <code>&lt;&gt;[][A]_v</code>, which TLC checks as
+conjuncts of the negated property. A property of the form <code>[]P</code> with <code>P</code>
+a state predicate is checked as an invariant; a state predicate <code>P</code> is
+checked on each initial state, after the invariants, as TLC checks it
+while it computes them: <code>Error: Property P is violated by the initial
+state:</code> and the state, with no counts (exit 13), or an error evaluating it
+as one of an invariant there; <code>[][A]_v</code> is checked on
+every transition; other properties are checked over the state graph after
+the search (liveness checking). A property is split into its
+conjuncts, following definitions and calls of an instance's definitions
+without parameters (<code>I!Spec</code>), through any number of instances
+(<code>Refinement == M!Spec</code> seen through <code>INSTANCE Mid</code>), and, outside
+instances, <code>LET</code>, calls of a definition that is not recursive with
+arguments (<code>I!P(a)</code> too), the arguments its parameters reach, and <code>\A x
+\in S : P</code> over a constant <code>S</code>, a part for each <code>x</code> (no element is the
+error <code>The liveness formula is a tautology.</code>). A parameter has the level
+of its argument, and an operator parameter applied that of the operator
+and of every argument. A part of several is named in messages by
+its location, as <code>Invariant line 3, col 7 to line 3, col 15 of module M is
+violated.</code>, the body of <code>\A</code> likewise, and a call's parts by the
+definition called. A state whose step violates an action property is not left on
+the queue. In a temporal formula, <code>IF p THEN A ELSE
+B</code> is <code>A</code> or <code>B</code> when <code>p</code> evaluates to a Boolean with no state (so a
+<code>RECURSIVE</code> property can end), else <code>(p /\ A) \/ (~p /\ B)</code>. As TLC checks the negation of a property,
+a constant in it is folded through <code>/\</code> and <code>\/</code>; <code>[]&lt;&gt;c</code> and <code>&lt;&gt;[]c</code>
+joined at its top by them are checked with <code>c</code>'s value, but a constant
+under any other <code>[]</code> or <code>&lt;&gt;</code> is in TLC's tableau, which never evaluates
+it: <code>FALSE</code> there holds, so <code>&lt;&gt;TRUE \/ &lt;&gt;(x = 1)</code> is violated by a
+behavior in which <code>x</code> is never 1. Liveness checking with a <code>CONSTRAINT</code> or
+<code>ACTION_CONSTRAINT</code> prints TLC's warning, after the constant definitions
+are evaluated and before the assumptions, <code>Warning: Declaring state
+or action constraints during liveness checking is dangerous: …</code>, and with a
+<code>SYMMETRY</code>, before it, <code>Warning: Declaring symmetry during liveness
+checking is dangerous. …</code>; a simulation does not. Only the first warning of
+a run is followed by <code>(Use the -nowarning option to disable this
+warning.)</code>. A counterexample whose cycle is one state, with a step back to
+it by any action, ends <code>State n: Stuttering</code>; in model checking, when a
+conjunct of the property's negation (in disjunctive normal form) is
+<code>&lt;&gt;[]A</code> or <code>[]&lt;&gt;A</code> with <code>A</code> no temporal formula, or a <code>&lt;&gt;F</code> in it has a
+<code>[]</code> in <code>F</code>, TLC then warns that the stuttering may come of no
+<code>SPECIFICATION</code> (with <code>INIT</code> and <code>NEXT</code>), or of a specification <code>Spec</code>
+without fairness, <code>... the behavior specification Spec defined at line
+..., col ... of module M. ...</code> (its whole definition). A conjunct with an
+action that is neither is TLC's <code>Error: Temporal formulas containing
+actions must be of forms &lt;&gt;[]A or []&lt;&gt;A.</code> (exit 255). TLC builds the
+tableaux as its checker starts, before the assumptions, evaluating the
+constants in them: an error there is <code>Error: TLC threw an unexpected
+exception.</code> with <code>java.lang.RuntimeException</code> and the message
+(<code>tlc2.tool.EvalException</code> for a failed <code>Assert</code> and the errors TLC's
+evaluator raises as such), with no counts (exit 255). As TLC, <code>[A]_v</code> and <code>&lt;&lt;A&gt;&gt;_v</code> in a temporal formula
+test <code>v</code> first: a step that leaves <code>v</code> unchanged decides them, <code>A</code>
+unevaluated.</p>
+<p>TLC evaluates the predicates of the temporal properties during the
+search, and an error there is reported then. On each initial state,
+before its invariants, it evaluates the literals of each initial node of
+a property's tableau, up to a false one, in the formula's order; it
+evaluates nothing of a property without a tableau there. The first error is printed with <code>While working on the initial state:</code>
+and the state, and the initial states are computed on; a second error
+ends the search with its trace of positions (exit 75); without one, the
+run stops once they are computed, without <code>Finished computing initial
+states</code>, with the counts and exit 0, even after an invariant violation.
+As it expands a state, it evaluates action predicates and fairness's
+steps on each step to a successor and on the stuttering step, then
+<code>ENABLED</code> predicates, fairness's enabledness and, for a property without
+a tableau, the other state predicates on the state, then a tableau's
+state predicates on each successor. An error there is an unexpected exception, with
+the counts as the state is expanded and the depth (exit 255).</p>
+<h3 id="106-fairness">10.6 Fairness</h3>
+<p><code>WF_v(A)</code>: a behavior in which <code>&lt;&lt;A&gt;&gt;_v</code> is eventually always enabled is
+fair only if it takes infinitely many <code>&lt;&lt;A&gt;&gt;_v</code> steps. <code>SF_v(A)</code>: if
+<code>&lt;&lt;A&gt;&gt;_v</code> is enabled infinitely often then infinitely many such steps.</p>
+<h3 id="107-counterexamples">10.7 Counterexamples</h3>
+<p>A trace is the shortest path from an initial state to the bad state. A
+liveness counterexample is a path to a cycle (a lasso) on which the
+property fails and the fairness conditions hold.</p>
+<p>A property whose negation has a disjunct with no <code>&lt;&gt;[]A</code> or <code>[]&lt;&gt;A</code>
+condition, checked without fairness, can fail on a finite path: one after
+which the negation holds whatever follows. TLC builds the product of the
+state graph and the negation's tableau as it expands each state, adding
+the edges of the state's nodes, and at once those of each new node whose
+state is expanded already. When such a node's tableau node has nothing
+left to require, TLC stops the search there and reports the shortest path
+to it, without its finite stuttering, as it reports an invariant
+violation: the behavior ends at its last state, the counts are those of
+that moment, and the exit status is 12. A path that ends at a state not
+yet expanded is found when the search ends, as a lasso that stutters. A
+deadlocked state is added after the deadlock is reported: a path ending
+there is reported next, and the exit status is the deadlock's.</p>
+<p>When several lassos qualify, TLC's choice is not specified (it can differ
+between runs), so a conforming test admits exactly one.</p>
+<h3 id="108-simulation">10.8 Simulation</h3>
+<p>With <code>-simulate</code>, the checker explores random behaviors instead of the
+state graph, as TLC does with one worker. <code>-seed S</code> (random if not given)
+and <code>-aril A</code> choose the behaviors: the generator is Java's
+<code>java.util.Random</code>, seeded with <code>S</code> and advanced <code>A</code> doubles, whose first
+long seeds the generator that draws the behaviors. <code>RandomElement</code> and
+the Randomization operators draw from two more, both seeded with <code>S</code>: one
+for the model and the initial states, one for the behaviors. <code>num=N</code>
+bounds the number of behaviors (unbounded if not given) and <code>-depth D</code>
+their length in steps (100).</p>
+<p>The initial states are computed and checked first, against the
+invariants; a property that is a state predicate is not checked at all,
+as TLC's simulation ignores it. Those outside the constraints are dropped,
+then <code>Finished computing initial states: N distinct state generated.</code>
+reports the rest (no state left is an error). Each behavior starts at one
+of them drawn at random. In each state, an action (§10.3) is drawn at
+random, then a prime from a fixed list of 1341, and the actions are tried
+in steps of that prime until one has a successor in the constraints and
+action constraints. Each successor is checked as it is generated, against
+the invariants then the action properties, and one of those kept is
+drawn as the next state. A behavior ends at its length, or at a state
+with no successor kept, a deadlock unless <code>CHECK_DEADLOCK</code> is <code>FALSE</code>.
+<code>TLCGet("diameter")</code> is the number of the behavior, from 1. A temporal
+property is then checked on the
+behavior, on a graph TLC builds as the states arrive. For a property
+whose only temporal parts are <code>[]&lt;&gt;P</code> and <code>&lt;&gt;[]P</code>, as with fairness alone,
+the graph has every state and step of the behavior, and every state may
+also stutter. Otherwise TLC checks the property with a tableau, on its
+product with the behavior: a node of the product, a state with a tableau
+node, gets its successors when it is first met at a position of the
+behavior, by the state stuttering or taking the behavior's next step there
+(only stuttering at the last state), and keeps them; a later position of
+the same state adds none. Which lasso is reported is not specified.</p>
+<p>A violation prints the behavior up to the bad state, each state labeled
+with the action it was taken by (the first by the last initial predicate:
+a definition's name, else <code>Initial predicate</code>, and where it is written),
+and the states equal to the one before them left out, compared variable
+by variable from the end. Nothing is evaluated again. A successor that
+leaves a variable unassigned prints as in model checking, with the
+behavior to it, then the failure of TLC's postcondition that writes the
+behavior out, and exits with status 75. An evaluation error prints TLC's
+unexpected-exception report, but for an error TLC raises as a
+<code>TLCRuntimeException</code>, one with a preamble of §11.3 or an undefined primed
+variable, in a behavior: that prints as <code>Error:</code> and its message, then
+the behavior, and exits with status 255 or 151; as the initial states are
+computed it is a <code>java.lang.RuntimeException</code> (exit 255). With <code>-continue</code> a violation ends its
+behavior and the simulation goes on, ending as if none was found.
+<code>TLCSet("exit", TRUE)</code> ends the simulation after the step that sets it,
+as if it were done. The
+state counts of a simulation are unspecified (§11.1).</p>
+<h3 id="109-postconditions">10.9 Postconditions</h3>
+<p>A <code>POSTCONDITION</code> is checked when the search or the simulation is done,
+after the liveness checking, and after an error is reported: a violated
+invariant, action property, property of an initial state, or temporal
+property, a deadlock, or a successor not completely specified, once its
+trace and the trace built again for it are printed (§11.2). The
+postconditions are checked in order, each evaluated with no state, so
+<code>TLCGet("level")</code> is 0 and a variable is undefined: the first that is
+false prints <code>Error: Postcondition P at line ... of module M is false.</code>,
+and the first that fails <code>Error: Evaluating postcondition P at line ... of
+module M failed.</code> and the error, or that <code>TLC expected a boolean value,
+but did not find one.</code> and its location; the rest are not checked. Each
+name is resolved first: one the spec does not define as an operator, a
+constant definition TLC evaluated at startup, or one with parameters, is
+TLC's unexpected <code>java.lang.RuntimeException</code>, and no postcondition is
+checked. After an error the exit status is the error's, and an error
+resolving a name is ignored; else a false or failed postcondition replaces
+<code>Model checking completed. No error has been found.</code>, before the counts,
+with exit 10, and an error resolving one with exit 255. A simulation
+reports an error resolving a name as <code>Error:</code> and its message, exit 151,
+even after an error, whose status it replaces; after an initial state
+that violates an invariant, it is followed by <code>While working on the
+initial state:</code> and the state, exit 255.</p>
+<h2 id="11-output">11 Output</h2>
+<h3 id="111-normalized-output">11.1 Normalized output</h3>
+<p>Normalized output is the standard output with these lines removed: the
+version and start-up banner, <code>Parsing file</code>, <code>Semantic processing</code>,
+<code>Starting...</code>, <code>Computing initial states...</code>, <code>Computed N initial
+states...</code>, <code>Progress(...)</code>, <code>Checking temporal properties for</code>,
+<code>Finished checking temporal properties</code>, <code>Implied-temporal checking</code>,
+<code>Finished in</code>, a simulation's <code>Progress: N states checked.</code>, <code>The number
+of states generated:</code> and <code>Simulation using seed</code>, the average outdegree, the fingerprint-collision report,
+and the block that begins <code>Error: The error occurred when TLC was
+evaluating the nested expressions</code>. Timestamps are removed from <code>Finished
+computing initial states</code>, and runs of blank lines are one blank line.
+When parsing or semantic analysis fails, the normalized output is the
+single line <code>Error: Parsing or semantic analysis failed.</code>; the diagnostics
+before it are unspecified. The exit status follows as a final line
+<code>exit N</code>.</p>
+<h3 id="112-results">11.2 Results</h3>
+<p>Output printed by <code>Print</code> and <code>PrintT</code> while assumptions are checked comes
+first. Then</p>
+<pre><code>Finished computing initial states: N distinct states generated.
+</code></pre>
+<p>or, when the initial predicate produced some state more than once,
+<code>Finished computing initial states: G states generated, with N of them
+distinct.</code></p>
+<p>and, for a correct model,</p>
+<pre><code>Model checking completed. No error has been found.
+N states generated, M distinct states found, 0 states left on queue.
+The depth of the complete state graph search is D.
+</code></pre>
+<p>A violation prints its error (§11.3), then, if there is a trace,
+<code>Error: The behavior up to this point is:</code> and the trace, then the counts.
+Each state of a trace is <code>State i: &lt;Action line l1, col c1 to line l2, col
+c2 of module M&gt;</code> (<code>&lt;Initial predicate&gt;</code> for the first) followed by the
+state as a junction list <code>/\ v = value</code> of its variables in TLC's order
+(below), a single variable without the bullet, and a blank line. The action
+is named by the definition the step's disjunct belongs to, with the
+values of its constant arguments, <code>&lt;Inc(1,2) ...&gt;</code>, and located by that
+disjunct. A definition seen through an instance that substitutes, as SANY
+substitutes each declared name it does not, is one action, <code>I!A</code>, located
+at the <code>INSTANCE</code> statement; a step of a specification's <code>[][N]_v</code> that
+is no definition is <code>Action</code>, there too through such an instance. In a
+simulation the initial predicate is named and located likewise.</p>
+<p>With an <code>ALIAS</code>, each state of a trace, a counterexample, a simulated
+behavior, or an initial state that violates an invariant or property is
+printed as the alias's value on the step from it to the state after it,
+the last state's to itself and a cycle's last to the state it goes back
+to, with <code>TLCGet("level")</code> the state's number: a record is printed as the
+state, its fields as variables in the order its constructor gives them,
+any other value leaves the state as it is. TLC resolves the alias as it
+prints a state, so an undefined name, a constant, or one with parameters
+is, like an error evaluating it, printed as a variable <code>_ALIASEvalError</code>,
+a string of the error's message, after the state's variables.</p>
+<p>A record's field <code>_format</code>, a string, is the Java format each other field
+is printed with, as <code>String.format(_format, name, value)</code> with the value
+as TLC prints it: <code>%s</code> and <code>%S</code>, with the flag <code>-</code>, a width, a precision
+and an argument index <code>n$</code>, <code>%b</code>, <code>%h</code>, <code>%n</code> and <code>%%</code>. Any other
+conversion, or a third argument, is Java's exception, which ends the
+trace before the state's number as an error building it does (below).</p>
+<p>TLC builds a trace by evaluating Init, and Next from each state, until it
+finds the state, so what they print is printed again as the trace is
+printed. After a deadlock, a violated invariant or action property, or a
+successor not completely specified, it builds the trace once more, for a
+postconditions (§10.9), before the counts; so too after an error in Next on a state
+with no successor generated before it, when deadlock is checked. An error
+building a state ends the trace there, reported as <code>Error: TLC threw an
+unexpected exception.</code> with <code>tlc2.tool.EvalException</code> and its message.</p>
+<p>TLC's order of the variables is the reverse of the order in which SANY's
+context of the root module, a <code>java.util.Hashtable</code>, enumerates them. The
+table holds the names of SANY's 72 built-in operators, put in reverse
+order of their definition, then the module's symbols in the order SANY
+meets them: those of each extended module that are not LOCAL, in that
+module's order; then, in the module's text, each declared or defined name,
+the name of a RECURSIVE operator where it is declared, the name of a named
+theorem or assumption, and the name of a nested module. An instance puts
+the definitions of the instantiated module, then its named theorems and
+assumptions, as that module's own table enumerates them; a named instance
+<code>I</code> puts each as <code>I!Op</code>, its module instances too, then <code>I</code>. A name's hash
+is Java's <code>String.hashCode</code>; the table starts with 11 buckets, puts a new
+entry at the head of its bucket, and when it holds three quarters of its
+capacity it grows to twice plus one, moving entries from the last bucket
+to the first, each to the head of its new bucket. It enumerates the
+buckets from the last to the first, each from its head.</p>
+<p>A liveness counterexample is introduced by <code>Error: Temporal property P was
+violated.</code> and <code>Error: The following behavior constitutes a
+counter-example:</code>; it ends with <code>Back to state i: &lt;Action ...&gt;</code> when it
+loops back to state <code>i</code>, or <code>State n: Stuttering</code> when it stutters forever.</p>
+<h3 id="113-errors">11.3 Errors</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>First line</th>
+<th>Exit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>assumption false</td>
+<td><code>Error: Assumption line l, col c to line l2, col c2 of module M is false.</code></td>
+<td>10</td>
+</tr>
+<tr>
+<td>assumption fails to evaluate</td>
+<td><code>Error: Evaluating assumption line ... of module M failed.</code></td>
+<td>10</td>
+</tr>
+<tr>
+<td>postcondition false, after the search</td>
+<td><code>Error: Postcondition P at line ... of module M is false.</code></td>
+<td>10</td>
+</tr>
+<tr>
+<td>postcondition fails to evaluate, after the search</td>
+<td><code>Error: Evaluating postcondition P at line ... of module M failed.</code></td>
+<td>10</td>
+</tr>
+<tr>
+<td>deadlock</td>
+<td><code>Error: Deadlock reached.</code></td>
+<td>11</td>
+</tr>
+<tr>
+<td>invariant fails in an initial state</td>
+<td><code>Error: Invariant Inv is violated by the initial state:</code></td>
+<td>12</td>
+</tr>
+<tr>
+<td>invariant fails</td>
+<td><code>Error: Invariant Inv is violated.</code></td>
+<td>12</td>
+</tr>
+<tr>
+<td>action property</td>
+<td><code>Error: Action property P is violated.</code></td>
+<td>13</td>
+</tr>
+<tr>
+<td>temporal property</td>
+<td><code>Error: Temporal property P was violated.</code>, P each PROPERTY the counterexample violates (<code>Temporal properties P and Q were violated.</code>)</td>
+<td>13</td>
+</tr>
+<tr>
+<td><code>Assert</code></td>
+<td><code>Error: The first argument of Assert evaluated to FALSE; the second argument was:</code></td>
+<td>14</td>
+</tr>
+<tr>
+<td>successor not specified</td>
+<td><code>Error: Successor state is not completely specified by the next-state action. The following variable is not defined: v.</code>; with several actions, <code>by action A of the next-state relation</code></td>
+<td>75</td>
+</tr>
+<tr>
+<td>invariant not Boolean</td>
+<td><code>Error: TLC expected a boolean value, but did not find one. ...</code></td>
+<td>75</td>
+</tr>
+<tr>
+<td>constraint defined as a number or string</td>
+<td>TLC's <code>ClassCastException</code>: <code>Error: class tla2sany.semantic.OpDefNode cannot be cast to class tlc2.value.impl.Value (...)</code>, then <code>While working on the initial state:</code> and the state</td>
+<td>75</td>
+</tr>
+<tr>
+<td>error evaluating an invariant in an initial state</td>
+<td>the evaluation message, then <code>While working on the initial state:</code> and the state</td>
+<td>75</td>
+</tr>
+<tr>
+<td>error computing a function constructor in full (§6.6)</td>
+<td>the evaluation message (and the trace, in an action), then <code>Error: TLC was unable to fingerprint.</code>, a blank line, <code>Fingerprint Stack Trace:</code>, TLC's call stack as it evaluates Init or Next again, outermost first, as <code>0. Line l1, column c1 to line l2, column c2 in M</code> (through an instance that substitutes, the <code>INSTANCE</code> statement after the call, the call left out for a part of the <code>SPECIFICATION</code>; <code>UNION {S}</code> with its set <code>{S}</code>), then the constructors entered within its innermost expression (without a call stack, the constructors being computed, innermost first, numbered down to <code>0) line l1, col c1 to line l2, col c2 of module M</code>), a blank line, <code>Reason:</code> and the message again</td>
+<td>75</td>
+</tr>
+<tr>
+<td>fingerprinting an initial state that holds a function over an infinite domain</td>
+<td><code>Attempted to compute the number of elements in the overridden value Nat.</code> (TLC's error counting the domain), then <code>While working on the initial state:</code> and the state</td>
+<td>75</td>
+</tr>
+<tr>
+<td>error evaluating a constraint or action constraint on a successor</td>
+<td><code>Error: TLC threw an unexpected exception.</code>, the evaluation message, and the trace to the successor</td>
+<td>75</td>
+</tr>
+<tr>
+<td>error fingerprinting a successor</td>
+<td><code>Error: TLC threw an unexpected exception.</code>, the message, the trace to the state, then, seeking the successor again by equality, the exception again for a value TLC has no fingerprint for (<code>Nat</code>), or TLC's <code>NullPointerException</code> for a set it cannot compare</td>
+<td>75</td>
+</tr>
+<tr>
+<td>error evaluating an invariant in a new state</td>
+<td><code>Error: Evaluating invariant Inv failed.</code>, the evaluation message, and the trace to the new state</td>
+<td>76</td>
+</tr>
+<tr>
+<td>other error evaluating an action</td>
+<td>the evaluation message (below), with the trace to the state</td>
+<td>255</td>
+</tr>
+<tr>
+<td>no next-state action, and no invariant or property</td>
+<td><code>Finished computing initial states: ...</code>, then <code>Error: No next state actions defined to generate successor states from.</code></td>
+<td>75</td>
+</tr>
+<tr>
+<td>a property part that is an action not under <code>[]</code></td>
+<td><code>Error: The formula P at L is an action-level formula (i.e., it contains no temporal operators). ...</code>, the part named as properties are (§10.5), advising <code>[]</code> for <code>[A]_v</code>, <code>[]&lt;&gt;</code> for <code>&lt;&lt;A&gt;&gt;_v</code>, <code>[][A]_v</code> otherwise</td>
+<td>151</td>
+</tr>
+<tr>
+<td>the fairness and the negated properties' disjunction with more than 2^31 - 1 disjuncts in TLC's disjunctive normal form, which does not reach under temporal operators, an <code>SF</code> two and a <code>WF</code> one</td>
+<td><code>Error: TLC cannot handle the temporal formula because it exceeds the maximum supported size in disjunctive normal form.</code>, before checking</td>
+<td>255</td>
+</tr>
+<tr>
+<td>every temporal property's negation FALSE by its constants alone (<code>&lt;&gt;P \/ (1 = 1)</code>), <code>FALSE</code> folded through <code>/\</code>, <code>\/</code> and <code>&lt;&gt;</code> but not <code>[]</code>, in model checking</td>
+<td><code>Error: Temporal formula is a tautology (its negation is unsatisfiable).</code>, before checking</td>
+<td>77</td>
+</tr>
+<tr>
+<td>constant not assigned</td>
+<td><code>Error: The constant parameter K is not assigned a value by the configuration file.</code></td>
+<td>151</td>
+</tr>
+<tr>
+<td>an invariant with primes or temporal operators, checked before the configuration's other names</td>
+<td><code>Error: The invariant Inv is not a state predicate (one with no primes or temporal operators).</code></td>
+<td>76</td>
+</tr>
+<tr>
+<td>a constant invariant, property, constraint or action constraint, other than a literal, that is not <code>TRUE</code> (one that is is dropped); constant as TLC bounds levels, every argument of a call counting, used or not</td>
+<td><code>Error: The invariant of Inv is equal to v</code>, <code>property</code>, <code>constraint</code> or <code>action constraint</code> for the others</td>
+<td>151</td>
+</tr>
+<tr>
+<td>a temporal formula evaluated as a predicate or action</td>
+<td><code>Error: TLC encountered a temporal formula ([]A) when evaluating a predicate or action.</code>, the operator as <code>[]A</code>, <code>&lt;&gt;A</code>, <code>a ~&gt; b</code>, <code>a -+-&gt; formula</code>, <code>WF</code>, <code>SF</code>, <code>\EE</code> or <code>\AA</code></td>
+<td>75</td>
+</tr>
+<tr>
+<td>action composition <code>A \cdot B</code></td>
+<td><code>The current version of TLC does not support action composition.</code></td>
+<td>75</td>
+</tr>
+<tr>
+<td>configuration names an undefined operator</td>
+<td><code>Error: The initial predicate Op specified in the configuration file</code></td>
+<td>151</td>
+</tr>
+<tr>
+<td>parse or semantic error</td>
+<td><code>Error: Parsing or semantic analysis failed.</code></td>
+<td>150</td>
+</tr>
+<tr>
+<td>a decimal in the spec (§3.5)</td>
+<td><code>Error: TLC can't handle real numbers.</code> and the decimal as written</td>
+<td>151</td>
+</tr>
+<tr>
+<td>a numeral above 2^31 - 1 (§3.5)</td>
+<td><code>Error: TLC can't handle a number this big.</code> and the numeral</td>
+<td>255</td>
+</tr>
+<tr>
+<td>a property TLC cannot check, such as <code>\EE x : F</code> or <code>\AA x : F</code></td>
+<td><code>Error: TLC cannot handle the temporal formula</code> and its location, before checking</td>
+<td>255</td>
+</tr>
+</tbody>
+</table>
+<p>The evaluation messages, as the line after <code>Error: Evaluating assumption</code>
+or as the first line of an action error:</p>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Message</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>a \div 0</code>, <code>a % 0</code></td>
+<td><code>The second argument of \div is 0.</code></td>
+</tr>
+<tr>
+<td><code>0 ^ 0</code></td>
+<td><code>0^0 is undefined.</code></td>
+</tr>
+<tr>
+<td>result outside 32 bits</td>
+<td><code>Overflow when computing a+b</code> (the operator and operands)</td>
+</tr>
+<tr>
+<td><code>f[a]</code> outside <code>DOMAIN f</code></td>
+<td><code>Attempted to apply function:</code> / <code>f</code> / <code>to argument a, which is not in the domain of the function.</code></td>
+</tr>
+<tr>
+<td><code>t[i]</code> for a tuple <code>t</code></td>
+<td><code>Attempted to apply tuple</code> / <code>t</code> / <code>to integer i which is out of domain.</code></td>
+</tr>
+<tr>
+<td><code>r["f"]</code> for a record <code>r</code></td>
+<td><code>Attempted to apply the record</code> / <code>r</code> / <code>to nonexistent record field f.</code></td>
+</tr>
+<tr>
+<td><code>r.f</code> for a record <code>r</code></td>
+<td><code>Attempted to select nonexistent field "f" from the record</code> / <code>r</code> / location</td>
+</tr>
+<tr>
+<td><code>f[a]</code> for a lazy <code>f</code> (§6.6)</td>
+<td><code>In applying the function</code> / <code>f,</code> / <code>the first argument is:</code> / <code>a</code> / <code>which is not in its domain.</code>; with several bounds, <code>the argument number k is:</code>, or <code>the argument list is:</code> and <code>which does not match its formal parameter.</code> when <code>a</code> is not a tuple. Where <code>f[a]</code> is part of an action or the initial predicate (§10.2), TLC binds <code>a</code> itself and reports a RuntimeException: <code>which</code> follows <code>a</code> on its line, but on the next for a tuple pattern among several bounds, the location of <code>f</code> follows, and an <code>a</code> that is no tuple for several bounds is <code>Attempted to apply a function to an argument not in its domain.</code></td>
+</tr>
+<tr>
+<td><code>CHOOSE</code> with no witness</td>
+<td><code>Attempted to compute the value of an expression of form</code> / <code>CHOOSE x \in S: P, but no element of S satisfied P.</code></td>
+</tr>
+<tr>
+<td><code>CASE</code> with no true guard</td>
+<td><code>Attempted to evaluate a CASE with no conditions true.</code></td>
+</tr>
+<tr>
+<td><code>1 = "a"</code></td>
+<td><code>Attempted to check equality of integer 1 with non-integer:</code> / <code>"a"</code></td>
+</tr>
+<tr>
+<td><code>&lt;&lt;&gt;&gt; = {}</code></td>
+<td><code>Attempted to check equality of the function &lt;&lt; &gt;&gt; with the value:</code> / <code>{}</code></td>
+</tr>
+<tr>
+<td>a non-Boolean <code>/\</code> operand</td>
+<td><code>Attempted to evaluate an expression of form P /\ Q when P was</code> / <code>an integer.</code></td>
+</tr>
+<tr>
+<td>quantifier over <code>Nat</code></td>
+<td><code>TLC encountered a non-enumerable quantifier bound</code> / <code>Nat.</code></td>
+</tr>
+<tr>
+<td><code>+</code>, <code>-</code>, <code>*</code>, <code>\div</code>, <code>%</code>, <code>^</code>, <code>..</code> of a non-integer</td>
+<td><code>Cannot cast tlc2.value.impl.BoolValue to tlc2.value.impl.IntValue</code>, naming the class TLC keeps the value in</td>
+</tr>
+<tr>
+<td><code>x \in v</code> for a value <code>v</code> that is not a set</td>
+<td><code>Attempted to check if the value:</code> / <code>x</code> / <code>is an element of the integer 2</code> (or <code>the string</code>, <code>the boolean</code>, <code>the function</code>); for a tuple, <code>Attempted to check set membership in a tuple value.</code>; for a record, <code>Attempted to check if element:</code> / <code>x</code> / <code>is in the record:</code> / <code>v</code></td>
+</tr>
+<tr>
+<td>a value of the wrong kind in <code>Seq(S)</code>, <code>SUBSET S</code>, <code>[S -&gt; T]</code>, <code>[a : S]</code>, <code>S \X T</code></td>
+<td>TLC's message for that set, such as <code>Attempted to check if non-record</code> / <code>x</code> / <code>is in the set of records:</code> / <code>S</code></td>
+</tr>
+<tr>
+<td>comparing <code>Nat</code>, <code>Int</code>, <code>STRING</code> or <code>Seq(S)</code> with another set</td>
+<td><code>Attempted to compare overridden value Nat with non-overridden value:</code> / <code>S</code></td>
+</tr>
+<tr>
+<td>enumerating or counting a set with an infinite part</td>
+<td>TLC's message for the part, such as <code>Attempted to compute the number of elements in the overridden value Nat.</code></td>
+</tr>
+</tbody>
+</table>
+<p>An error inside an operator of §8, which TLC implements in Java, such as
+in the test of <code>SelectSeq</code>, follows a preamble for each such operator it is
+inside, outermost first: <code>Attempted to apply the operator overridden by the
+Java method</code> / its signature, as in <code>public static tlc2.value.impl.Value
+tlc2.module.Sequences.SelectSeq(tlc2.value.impl.Value,tlc2.value.impl.Value),</code>
+/ <code>but it produced the following error:</code>. The location of the inner error,
+if any, ends the message. Errors that TLC raises as <code>EvalException</code>s, which
+are those the operators of §8 raise about their own arguments, have no
+preamble.</p>
+<p>A message that names an expression is followed by its location, <code>line l,
+col c to line l2, col c2 of module M</code>.</p>
+<h2 id="12-exclusions">12 Exclusions</h2>
+<p>Not covered: the proof language (<code>PROOF</code>, steps, <code>USE</code>, <code>BY</code>; skipped,
+except that a <code>HIDE</code> may name only theorems, assumptions, and steps, and a
+theorem's statement is kept for §5.7), computing with real numbers and
+with <code>\AA</code> and <code>\EE</code> (which TLC cannot either; §3.5, §11.3), <code>-generate</code>,
+the configuration's <code>_PERIODIC</code>, <code>_RL_REWARD</code> and <code>_POSSIBLE</code> (rejected),
+writing simulated behaviors to files (<code>-simulate file=</code>), simulation with
+several workers, the order of <code>Print</code> output in a simulation, the order
+of a record's fields in a simulated behavior (TLC's constructor order
+until it compares or fingerprints the record), checkpointing, multiple workers' scheduling, distributed TLC, and the
+TLA⁺ Toolbox outputs (<code>-tool</code>).</p>
+</article>
+</body>
+</html>

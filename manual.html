@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manyan manual · Manyan</title>
+<link rel="icon" href="logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="index.html">Manyan</a><a href="playground.html">Playground</a><a href="manual.html" aria-current=page>Manual</a><a href="roadmap.html">Roadmap</a><a href="benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="manyan-manual">Manyan manual</h1>
+<p>Manyan checks TLA+ specifications the way TLC does: it reads a module and a
+model configuration, explores every reachable state breadth-first, and
+prints what TLC 1.8.0 prints. What Manyan accepts and what it must print are
+defined by <a href="standards/tla2.html">the Manyan TLA+ Standard</a>; this manual covers
+how to run it.</p>
+<h2 id="building">Building</h2>
+<pre><code class="language-sh">make            # builds ./manyan from manyan.c and manyan-std.c; needs a C11 compiler
+make install    # installs bin/manyan and include/manyan.h, manyan-std.h under PREFIX (/usr/local)
+</code></pre>
+<p><code>make</code> builds Manyan instrumented, runs the conformance suite with it, and
+builds it again with the profile; the result is 10 to 25% faster than a
+plain <code>-O2</code> build. It needs python3 to run the suite and, with clang,
+<code>llvm-profdata</code> (Xcode has it); without them, it builds Manyan plain.</p>
+<p>Manyan is one C file with no dependencies beyond the C library and POSIX
+(<code>fork</code>, <code>mmap</code> for workers).</p>
+<p><code>pip install manyan</code> installs the executable a release ships, onto the
+PATH; <code>python/wheel.py</code> packs it. <code>npm install @soasme/manyan</code> is Manyan compiled
+to WebAssembly with Emscripten (<code>make wasm</code>), which runs in a browser or
+Node.js on files given in memory: one worker, as WebAssembly cannot fork,
+and no <code>IOExec</code> (javascript/README.md). The
+<a href="playground.html">playground</a> runs it, built from main.</p>
+<h2 id="running">Running</h2>
+<pre><code class="language-sh">manyan [-config FILE] [-deadlock] [-workers N|auto] [-dump dot FILE] SPEC
+manyan -simulate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
+manyan -generate [num=N][,file=FILE] [-depth D] [-seed S] [-aril A] [-config FILE] [-deadlock] SPEC
+</code></pre>
+<p><code>SPEC</code> is the root module, with or without <code>.tla</code>. Modules it extends or
+instantiates are read from the same directory; the standard modules
+(Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
+Randomization, RealTime, Toolbox, TLCExt, Json) are built in. A module of
+CommunityModules beside the spec gets the operators TLC computes in Java
+for it; <a href="std.html">std.md</a> lists them.</p>
+<table>
+<thead>
+<tr>
+<th>option</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-config FILE</code></td>
+<td>the model configuration; <code>SPEC.cfg</code> by default</td>
+</tr>
+<tr>
+<td><code>-deadlock</code></td>
+<td>do not report deadlock, as TLC's <code>-deadlock</code></td>
+</tr>
+<tr>
+<td><code>-workers N</code></td>
+<td>expand states with N processes; <code>auto</code> uses one per core</td>
+</tr>
+<tr>
+<td><code>-dump dot FILE</code></td>
+<td>write the state graph to <code>FILE.dot</code> (FILE if it ends in <code>.dot</code>) in Graphviz dot format, as TLC does, with one worker; <code>-dump dot,actionlabels FILE</code> labels each step with its action</td>
+</tr>
+<tr>
+<td><code>-simulate [num=N]</code></td>
+<td>check N random behaviors (no limit by default) instead of every state</td>
+</tr>
+<tr>
+<td><code>-generate</code></td>
+<td>simulate, building each successor by random choices instead of all of an action's successors, as TLC's <code>-generate</code>; takes <code>-simulate</code>'s <code>num=</code> and <code>file=</code></td>
+</tr>
+<tr>
+<td><code>-simulate file=FILE</code></td>
+<td>also write each behavior that ends without an error to <code>FILE_0_N</code>, a module defining its states <code>STATE_1</code>, <code>STATE_2</code>, ..., each after a comment naming its action, as TLC does</td>
+</tr>
+<tr>
+<td><code>-depth D</code></td>
+<td>the length of each random behavior, in steps (100)</td>
+</tr>
+<tr>
+<td><code>-seed S</code>, <code>-aril A</code></td>
+<td>choose the random behaviors, as TLC's options do</td>
+</tr>
+<tr>
+<td><code>-symbolic</code></td>
+<td>experimental: check behaviors of up to <code>-length</code> steps with a SAT solver instead of enumerating states, as Apalache does (see <a href="#symbolic-checking-experimental">Symbolic checking</a>)</td>
+</tr>
+<tr>
+<td><code>-length N</code></td>
+<td>symbolic checking: the steps in a behavior (10)</td>
+</tr>
+<tr>
+<td><code>-cinit C</code></td>
+<td>symbolic checking: the operator that chooses the constants the configuration leaves, as Apalache's <code>--cinit</code></td>
+</tr>
+<tr>
+<td><code>-max-error N</code></td>
+<td>symbolic checking: the invariant violations to find (1), as Apalache's <code>--max-error</code>: those the configuration's <code>VIEW</code> tells apart</td>
+</tr>
+<tr>
+<td><code>-run-dir DIR</code></td>
+<td>symbolic checking: write each counterexample to <code>DIR</code> in ITF, as Apalache's <code>--run-dir</code></td>
+</tr>
+<tr>
+<td><code>-typecheck</code></td>
+<td>experimental: check the module's types as Apalache's <code>apalache-mc typecheck</code> does, without a configuration (see <a href="#type-checking-experimental">Type checking</a>)</td>
+</tr>
+<tr>
+<td><code>-version</code></td>
+<td>print the version and exit</td>
+</tr>
+<tr>
+<td><code>-nowarning</code></td>
+<td>turn off TLC's warnings, such as that of an EXCEPT outside the domain</td>
+</tr>
+<tr>
+<td><code>-continue</code></td>
+<td>go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with <code>No error has been found.</code>; a simulation ends the behavior and exits 255 at the end; one worker</td>
+</tr>
+<tr>
+<td><code>-view</code></td>
+<td>print each state an error reports as the value of the configuration's <code>VIEW</code>, as TLC does</td>
+</tr>
+<tr>
+<td><code>-Dk=v</code></td>
+<td>set Java's system property <code>k</code>, which <code>TLCGet("-Dk")</code> reads, as <code>java -Dk=v</code> does; <code>-Dtlc2.tool.impl.Tool.cdot=true</code> turns on TLC's incomplete action composition <code>A \cdot B</code></td>
+</tr>
+<tr>
+<td><code>-stack N</code></td>
+<td>let expressions nest and definitions call at most N deep, and report TLC's <code>StackOverflowError</code> past that (exit 255 while parsing, 75 while evaluating); TLC's own depth depends on its Java stack. Without it calls go 5000 deep and parsing as deep as the C stack goes, so a spec nested far deeper crashes</td>
+</tr>
+<tr>
+<td><code>-userFile FILE</code></td>
+<td>write the output of <code>Print</code> and <code>PrintT</code> to FILE instead of standard output</td>
+</tr>
+<tr>
+<td><code>-difftrace</code></td>
+<td>print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole</td>
+</tr>
+<tr>
+<td><code>-inv EXPR</code></td>
+<td>also check <code>EXPR</code> as an invariant, after the configuration's, as TLC's <code>-inv</code>: an operator of the spec keeps its name, another expression is named <code>__DebuggerExpr__</code> and the time in milliseconds</td>
+</tr>
+<tr>
+<td><code>-invlevel N</code></td>
+<td>report the first behavior of N states, as TLC's: the invariant <code>TLCGet("level") &lt; N</code></td>
+</tr>
+<tr>
+<td><code>-postCondition M!Op</code></td>
+<td>also check <code>Op</code> of module <code>M</code> once the search is done, after the configuration's <code>POSTCONDITION</code>s; as TLC, the spec extends <code>M</code></td>
+</tr>
+<tr>
+<td><code>-dumpTrace json FILE</code></td>
+<td>write the counterexample to FILE in TLC's JSON: its states, the actions between them and the variables, as <code>CounterExample</code> of TLCExt gives them</td>
+</tr>
+<tr>
+<td><code>-result FILE</code></td>
+<td>Manyan's own: write what the check found to FILE in JSON, however the run ends; the output is TLC's still (see <a href="#library">Library</a>)</td>
+</tr>
+<tr>
+<td><code>-noGenerateSpecTE</code></td>
+<td>as TLC's: TLC then sets up no trace spec, which shows in the order of <code>CounterExample</code>'s fields</td>
+</tr>
+<tr>
+<td><code>-fp N</code></td>
+<td>take TLC's fingerprints with its Nth polynomial, 0 to 130 (0 without it, where TLC picks one at random): they order a state's successors in a temporal property's check, and so its counterexample, seed the draws of <code>RandomElement</code> and the Randomization module when model checking, and are <code>TLCFP</code>'s values</td>
+</tr>
+<tr>
+<td><code>-metadir DIR</code>, <code>-fpmem F</code>, <code>-fpbits N</code>, <code>-gzip</code>, <code>-cleanup</code>, <code>-teSpecOutDir DIR</code>, <code>-lncheck WHEN</code></td>
+<td>accepted for TLC's command lines, and ignored: Manyan writes no metadata or trace spec, and checks liveness once the states are found, as <code>-lncheck final</code></td>
+</tr>
+<tr>
+<td><code>-h</code></td>
+<td>print the usage and exit</td>
+</tr>
+</tbody>
+</table>
+<p>A run prints TLC's report on standard output: the initial states, then
+either <code>Model checking completed. No error has been found.</code> or the first
+error with its trace, then the state counts and the depth of the search.
+Manyan leaves out TLC's banner, timing and progress lines; everything else
+matches TLC's text (Standard §11).</p>
+<h2 id="model-configuration">Model configuration</h2>
+<p>The configuration file uses TLC's syntax (Standard §9):</p>
+<pre><code>CONSTANTS N = 3  Procs = {p1, p2}   \* p1, p2 become model values
+INIT Init                           \* or SPECIFICATION Spec
+NEXT Next
+INVARIANT TypeOK Safe
+PROPERTY Liveness
+CONSTRAINT Bounded
+ACTION_CONSTRAINT Steps
+SYMMETRY Perms
+VIEW Abstract
+ALIAS Shown                         \* how a trace's states print
+POSTCONDITION Done                  \* checked once the search is done
+_POSSIBLE Reached                    \* must hold in some state or step
+CHECK_DEADLOCK FALSE
+</code></pre>
+<p><code>CONSTANT C &lt;- Def</code> replaces a constant or operator by a definition, and
+<code>CONSTANT D &lt;- [M] Def</code> or <code>D = [M] v</code> a definition <code>D</code> of module <code>M</code>.
+<code>SPECIFICATION</code> takes a
+formula <code>Init /\ [][Next]_vars /\ Fairness</code>; its <code>WF_</code> and <code>SF_</code>
+conjuncts, and others such as <code>&lt;&gt;[][A]_vars</code>, are the fairness assumptions
+temporal properties are checked under.</p>
+<h2 id="what-is-checked">What is checked</h2>
+<ul>
+<li><strong>Assumptions.</strong> Each <code>ASSUME</code> must be true, or the run stops (exit 10).</li>
+<li><strong>Safety.</strong> Every invariant holds in every reachable state (exit 12 with
+  the shortest trace to a violation); every action property <code>[][A]_v</code>
+  holds on every step.</li>
+<li><strong>Deadlock.</strong> Each reachable state has a successor, unless deadlock
+  checking is off (exit 11).</li>
+<li><strong>Liveness.</strong> Temporal properties hold on every fair behavior, checked
+  after the state graph is complete (exit 13 with a lasso-shaped
+  counterexample).</li>
+<li><strong>Postconditions.</strong> Each <code>POSTCONDITION</code> holds once the search is done,
+  and each <code>_POSSIBLE</code> predicate held in some state, or step, of the
+  model; TLC evaluates one only where the constraints hold (exit 10).</li>
+<li><strong>Evaluation errors.</strong> An expression TLC cannot evaluate stops the run
+  with TLC's message and location (exit 75, or 255 for errors TLC's
+  standard-module operators report).</li>
+</ul>
+<p><code>Print</code>, <code>PrintT</code> and <code>Assert</code> behave as in TLC, including the extra
+output TLC produces when it reconstructs a trace.</p>
+<h2 id="simulation">Simulation</h2>
+<p><code>-simulate</code> checks random behaviors instead of the whole state graph: from
+an initial state drawn at random, it takes a random action's successors,
+checks every one of them against the invariants and action properties,
+and moves to one in the constraints at random, until the behavior has
+taken <code>-depth</code> steps or stops (Standard §10.8). Temporal properties are
+checked on each behavior as TLC's simulator checks them: without its
+finite stuttering, on the product TLC builds from it, which follows only
+the tableau nodes new at each state; a violation that needs another node
+there is not found, as in TLC.
+With the same <code>-seed</code> and <code>-aril</code>, Manyan draws the same behaviors as TLC
+with one worker and prints the same report; <code>-workers</code> is ignored. A
+seed is drawn at random unless one is given.</p>
+<p><code>-generate</code> simulates too, as TLC's <code>-generate</code> does, but builds one
+successor at a time: within an action it tries a random disjunct, then
+the others by a random prime step, and each <code>\E</code> binding and each value
+of <code>x' \in S</code> or <code>x' \subseteq S</code> in TLC's random order, until a
+successor is kept in the constraints. <code>TLCGet("config").mode</code> is
+<code>"generate"</code>. As in TLC, a <code>CASE</code> in an action is an error.</p>
+<h2 id="symbolic-checking-experimental">Symbolic checking (experimental)</h2>
+<p><code>-symbolic</code> checks a specification the way Apalache's <code>apalache-mc check</code>
+does: it unrolls <code>Init</code> and <code>-length</code> steps of <code>Next</code> into one formula,
+encodes TLA⁺ values as bits, and asks a built-in SAT solver whether some
+behavior that long violates an invariant or deadlocks. No state is
+enumerated, so <code>x \in Int</code> or <code>x' \in x..(x + 100000)</code> costs a few
+comparisons, not a state each. A counterexample is replayed through the
+evaluator before it is printed, in TLC's format; one that does not replay
+is reported as a bug.</p>
+<p>It reads the configuration as Apalache does: <code>INIT</code>, <code>NEXT</code>,
+<code>INVARIANT</code> (an invariant with primes is an action invariant, checked on
+each step; an operator of one parameter is a trace invariant, checked of
+each behavior so far, given as a sequence of records of the variables),
+<code>PROPERTY</code> and <code>CONSTANT</code>. In <code>Init</code>, <code>x'</code> is <code>x</code>. <code>-cinit C</code> lets the operator <code>C</code> choose the
+constants the configuration leaves, as <code>Init</code> chooses the variables, and
+the assumptions then constrain that choice. As Apalache's, a definition
+<code>OVERRIDE_X</code> stands for the constant or operator <code>X</code> the configuration
+gives none, and a cycle such definitions make is refused. A constant <code>Init</code> or
+invariant is checked like any other, and an expression the evaluator
+fails on, such as <code>Head(&lt;&lt;&gt;&gt;)</code>, is some unknown value there, as in
+Apalache. Apalache's own module is built in. Checked against Apalache
+0.63.0: <code>make test-symbolic</code> runs 226 of Apalache's integration tests and
+64 more, and <code>make full-bench-symbolic</code> the models tlaplus/Examples checks
+with Apalache (<a href="symbolic-bench.html">symbolic-bench</a>).</p>
+<p>A temporal property is checked as Apalache checks one, on lassos: a
+behavior of up to <code>-length</code> steps whose last state is one before it,
+which then repeats forever. A behavior that never repeats a state is no
+counterexample, and none stutters but as <code>Next</code> does. A violation is
+printed as TLC prints one, ending with <code>Back to state N</code>.</p>
+<p>Apalache has no fairness, constraints or <code>ENABLED</code>. With a property of a
+specification with <code>WF_</code> or <code>SF_</code>, or with <code>CONSTRAINT</code> or
+<code>ACTION_CONSTRAINT</code> in the configuration, the verdict is TLC's: a counterexample to a property is a
+fair lasso, which may also stutter forever at its last state (<code>State N:
+Stuttering</code>), and is reported only if no invariant is violated and no
+state deadlocks in behaviors of up to <code>-length</code> steps; a deadlock is a
+state without a successor in any behavior. A state outside the
+constraints has its invariants checked, but no successors. <code>ENABLED A</code>,
+in an invariant, a property or an action, is TLC's too: where the solver supposes
+<code>A</code> disabled, it is asked again for a step of <code>A</code> from that state.</p>
+<p><code>-max-error N</code> goes on past a violation, as Apalache's <code>--max-error</code>
+does, until N are found: each behavior after one must differ from it in
+the configuration's <code>VIEW</code> of some state, so that the violations found
+are as many as the views tell apart. Each is printed as TLC prints one.</p>
+<p><code>-run-dir DIR</code> also writes each counterexample in Apalache's Informal
+Trace Format (ITF, its ADR-015), as Apalache writes it there:
+<code>violationN.itf.json</code> for the Nth violation, <code>violation0.itf.json</code> for a
+deadlock, and <code>violation.itf.json</code> for the last. Each value is written by
+its type, and the constants are in each state. A lasso ends at the last
+state before its loop, with <code>"loop"</code> the index of the first state on it;
+Apalache instead repeats that state and adds its tableau's variables.
+<code>vars</code> lists the variables as declared. Apalache's <code>.tla</code> and <code>.json</code>
+counterexamples are not written.</p>
+<p>As Apalache does, <code>-symbolic</code> refuses a specification that is not well
+typed, a recursive operator or function, a set or <code>&lt;&lt;&gt;&gt;</code> whose type is
+left open (<code>Cardinality({{}})</code>: annotate the empty set), a <code>Repeat</code>
+whose count is no literal, and a constant the configuration gives a
+value not of its type: a model value is a string, but <code>p_OF_PROC</code> a
+<code>PROC</code>. It refuses, too, a disjunct, or an arm of <code>IF</code> or <code>CASE</code>, that
+assigns other variables than its siblings: in <code>(x' = 1 \/ y' = 2) /\
+x' = 1 /\ y' = 2</code>, TLC takes either disjunct, but Apalache finds which
+<code>x' = e</code> or <code>x' \in S</code> assigns by the syntax alone, and needs each
+disjunct to assign the same, and every variable assigned, even by an
+action never enabled.</p>
+<p><code>Gen(n)</code> is any value of its type, with sets, functions and sequences of
+up to <code>n</code> elements, as in Apalache: the specification is type checked
+first, as <code>-typecheck</code> checks it, and each call makes another value, of
+the type the operators it is called in are instantiated with there. A
+string, or a value of an uninterpreted type <code>T</code>, is one the specification
+has or a fresh one, <code>FRESHk</code> or <code>FRESHk_OF_T</code>, as Apalache makes them; a
+variant is one of its tags.</p>
+<p>Not supported, by decision: functions over an infinite domain, and
+integers beyond 64 bits. A counterexample is replayed through the
+evaluator, whose integers are 64 bits (TLC's are 32), and whose
+functions are finite, as TLC's are; Apalache's own verdict on such a
+function is wrong where it is tested (InfDomFun). <a href="apalache-gaps.html">Apalache
+gaps</a> tracks what Apalache does that <code>-symbolic</code> does not.</p>
+<h2 id="type-checking-experimental">Type checking (experimental)</h2>
+<p><code>-typecheck</code> checks a module's types as Apalache's type checker, Snowcat,
+does, and prints what it prints:</p>
+<pre><code>$ manyan -typecheck MC
+Type checking MC.tla
+ &gt; Your types are purrfect!
+Type checker [OK]
+</code></pre>
+<p>Every <code>CONSTANT</code> and <code>VARIABLE</code> needs a <code>@type:</code> annotation in the
+comment before its name, and an operator may have one before its
+definition. <code>@typeAlias: name = type;</code> names a type, and the old
+upper-case aliases are read too. The rest is inferred: records and
+variants with rows, tuples, sequences, functions, sets and operators,
+polymorphic where nothing fixes a type. A type error names where it is
+and each definition whose type could not be computed, and exits with 120;
+a missing or unreadable annotation is a typing input error, and exits
+with 255. Apalache's modules (<code>Apalache</code>, <code>Variants</code>, <code>Option</code>) and the
+types it gives the standard and community modules are built in.</p>
+<p><code>make test-typecheck</code> runs Apalache 0.63.0's 71 type checking tests, each
+with Apalache's outcome (<code>tests/typecheck/apalache</code>). Where several
+<code>CONSTANT</code>s or <code>VARIABLE</code>s lack an annotation, Manyan names the one
+Apalache names: a variable before a constant, the last in the order of
+SANY's table of the root module's names.</p>
+<h2 id="exit-statuses">Exit statuses</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">status</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">0</td>
+<td>no error</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>an assumption is false</td>
+</tr>
+<tr>
+<td style="text-align: right;">11</td>
+<td>deadlock</td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td>an invariant is violated</td>
+</tr>
+<tr>
+<td style="text-align: right;">13</td>
+<td>a temporal or action property is violated</td>
+</tr>
+<tr>
+<td style="text-align: right;">14</td>
+<td>an <code>Assert</code> failed</td>
+</tr>
+<tr>
+<td style="text-align: right;">75</td>
+<td>an evaluation error</td>
+</tr>
+<tr>
+<td style="text-align: right;">76</td>
+<td>an invariant is not a state predicate, or cannot be evaluated in a state the search reached</td>
+</tr>
+<tr>
+<td style="text-align: right;">77</td>
+<td>a temporal property is a tautology</td>
+</tr>
+<tr>
+<td style="text-align: right;">150</td>
+<td>the spec does not parse or fails semantic checks</td>
+</tr>
+<tr>
+<td style="text-align: right;">151</td>
+<td>the configuration names what the spec does not have, or a constant invariant that is not <code>TRUE</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">255</td>
+<td>another error, such as a configuration that does not parse</td>
+</tr>
+</tbody>
+</table>
+<h2 id="workers">Workers</h2>
+<p>With <code>-workers N</code>, N processes expand states: Manyan forks N - 1 once the
+search reaches a level of 256 states or more, and is the last itself. They
+share the state store and the fingerprint set, read-only, and expand the
+level in batches of 32 states; Manyan merges their successors in the order one
+process would find them, and expands a batch while it waits for one. A state whose
+expansion reports anything (an error, a violation, a deadlock, output from
+<code>Print</code>) is expanded again by Manyan itself, so the output, including which
+violation is reported and its trace, is the same for every N. Levels
+smaller than 256 states are expanded by Manyan alone.</p>
+<p>The initial states are computed by the workers too, when <code>Init</code> chooses
+among enough alternatives (an element of <code>x \in S</code>, a disjunct, a
+binding of <code>\E</code>): its first choices split it into slices, at least 32 for
+each worker, which they compute and Manyan merges in order. An <code>Init</code>
+that, down to those choices, fails, prints or draws a random element,
+or a specification with temporal properties, is computed by Manyan alone;
+so is a slice whose states report anything, in its turn.</p>
+<h2 id="library">Library</h2>
+<p><code>manyan.h</code> declares one entry point:</p>
+<pre><code class="language-c">#include &quot;manyan.h&quot;
+
+ManyanResult r;
+ManyanOptions o = {.spec = &quot;MySpec&quot;, .check_deadlock = 1, .workers = 1, .result = &amp;r};
+int status = manyan_check(&amp;o);   /* prints the report; returns an exit status */
+</code></pre>
+<p>The result is what the report says, as values to walk with <code>manyan.h</code>'s
+<code>manyan_kind</code>, <code>manyan_field</code> and the rest, not text to parse:</p>
+<ul>
+<li><code>r.length</code> states of the first counterexample the report prints whole, 0
+  for none. A behavior cut short by an error rebuilding it has none.</li>
+<li><code>r.states[i]</code>: a record of the variables that have a value (a successor an
+  action leaves incomplete lacks some).</li>
+<li><code>r.actions[i]</code>: the step into state <code>i</code>, as <code>TLCGet("action")</code> gives it,
+  the initial predicate's for the first; with <code>r.loop</code>, <code>r.actions[r.length]</code>
+  is the step back.</li>
+<li><code>r.loop</code>: the state, from 1, the last steps back to, its own where it
+  stutters; 0 for a behavior that ends.</li>
+<li><code>r.violated</code>: the invariants and properties the report names violated,
+  NULL-terminated.</li>
+<li><code>r.generated</code>, <code>r.distinct</code>, <code>r.left</code>, <code>r.depth</code>: the counts it reports
+  last, -1 where it reports none (a simulation reports only <code>generated</code>).</li>
+</ul>
+<p><code>-result FILE</code> writes the executable's result as one JSON object, its
+fields those above, a count it does not report <code>null</code>. A value is written
+as Apalache's ITF writes one: a boolean, integer or string as itself, a
+tuple a list, a record (a function from names) an object, another
+function <code>{"#map": [[key, value], ...]}</code>, a set <code>{"#set": [...]}</code>, and any
+other, such as a model value, <code>{"#tla": text}</code>, TLC's text of it, which no
+record is. The npm package's <code>run</code> and the Python package's <code>manyan.run</code>
+give it as their languages' values.</p>
+<p>Compile <code>manyan.c</code> with <code>-DMANYAN_NO_MAIN</code> to link it into another program, with
+<code>manyan-std.c</code> and a call of <code>manyan_std_init()</code> before <code>manyan_check</code> for the
+operators of <a href="std.html">std.md</a>. <code>manyan_define</code> adds a native operator of your
+own, as std.md shows.</p>
+<h2 id="testing">Testing</h2>
+<pre><code class="language-sh">make test              # tests/spec with 1 and with 4 workers, also checking each result against its report; the Python package
+make test-javascript   # tests/spec with the WebAssembly build, but for IOExec, and its result in JavaScript (needs emcc and node)
+make site              # docs/ as the site's HTML pages, with the playground, in .obj/site (needs Python-Markdown)
+make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)
+make bless ONLY=name   # writes a test's expected output from TLC
+make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)
+make fuzz              # mutated tests/spec models under the sanitizer build
+make fuzz-oracle       # random expressions, printed by Manyan and by TLC
+make fuzz-sim          # random simulations of tests/spec models, by Manyan and by TLC
+make fuzz-check        # tests/spec models checked with random options, by Manyan and by TLC
+make fuzz-live         # random temporal properties under fairness, by Manyan and by TLC
+make bench             # times Manyan against TLC; writes docs/benchmark.md
+make test-symbolic     # tests/symbolic with -symbolic
+make test-symbolic-oracle  # also runs Apalache 0.63.0 on every test (downloads it)
+make bless-symbolic ONLY=name  # writes a test's expected outcome from Apalache
+make full-bench-symbolic  # tlaplus/Examples' Apalache models; writes docs/symbolic-bench.md
+make test-typecheck    # tests/typecheck with -typecheck
+make test-typecheck-oracle  # also runs Apalache 0.63.0 on every test
+make bless-typecheck ONLY=name  # writes a test's expected outcome from Apalache
+</code></pre>
+<p>A test in <code>tests/symbolic</code> is a module and its configuration, as in
+<code>tests/spec</code>, with an <code>options:</code> line for <code>-length</code>, <code>-deadlock</code> and
+<code>-cinit</code>; <code>NAME.out</code> is Apalache's outcome (no error, the invariant
+violated or a deadlock, with the length of the counterexample) and exit
+status. With <code>NAME.itf.json</code>, <code>-run-dir</code> must write that counterexample. <code>tests/symbolic/apalache</code> is ported from Apalache's own
+integration tests by <code>tests/apalache_port.py</code>. Each run is killed past
+<code>--memory</code> MB resident (1000, 3000 with an oracle), and only as many run
+at once as keep to half the machine's memory.</p>
+<p>A test in <code>tests/typecheck</code> is <code>NAME.tla</code> with the modules it uses in
+<code>NAME.files</code>; <code>NAME.out</code> is Apalache's outcome: <code>Type checker [OK]</code>,
+<code>Type checker [FAILED]</code> with the definitions it could not type, or its
+typing input error, then the exit status.</p>
+<p>A test in <code>tests/spec</code> is <code>NAME.tla</code>: a module, then its configuration
+after the line that ends the module. <code>NAME.out</code> is TLC's normalized
+output and exit status. <code>tests/spec/tlc</code> holds models imported from TLC's
+own test suite.</p>
+<p><code>make fuzz</code> swaps, drops or repeats one to three tokens of a random test's
+model (most mutants still parse) and runs the sanitizer build on it, half
+the time as a random simulation; it
+must end with one of Manyan's exit statuses, without a signal or a sanitizer
+report. A model that fails is kept as <code>.obj/crash-SEED-RUN.tla</code>.
+<code>make fuzz-oracle</code> writes random constant expressions as <code>ASSUME
+PrintT(e)</code> and checks that Manyan prints what TLC prints, narrowing a
+difference to one expression. <code>make fuzz-sim</code> simulates random tests'
+models with random seeds and depths, with Manyan and with TLC, one
+behavior of a model that prints, asks or counts <code>_POSSIBLE</code> predicates:
+TLC's worker goes on past an error until it is stopped. <code>make fuzz-check</code> checks random tests' models
+with random options (<code>-deadlock</code>, <code>-continue</code>, <code>-difftrace</code>,
+<code>-nowarning</code>, <code>-view</code>), Manyan with one or four workers. <code>make
+fuzz-live</code> checks a random temporal property of a random state graph
+under random weak and strong fairness, with Manyan and with TLC. All five take <code>RUNS=</code> (1000) and <code>SEED=</code> (1);
+a run with a seed is repeatable. A case any of them finds becomes a test in
+<code>tests/spec</code>.</p>
+<h2 id="limitations">Limitations</h2>
+<p>Not supported, by decision, each for the reason given:</p>
+<ul>
+<li>the proof language: parsed and skipped, as TLC does.</li>
+<li><code>-terse</code>: TLC prints a value as it builds it, an operator's body
+  through SANY's own printing; Manyan builds its values first.</li>
+<li><code>-maxSetSize</code>: Manyan does not bound the sets it builds, where TLC
+  fails past 10^6 elements, an artifact of its Java arrays.</li>
+<li><code>-dfid</code>: TLC's iterative deepening searches depth-first to a bound it
+  raises, and finds a longer trace than breadth-first, which finds the
+  shortest and checks the whole state space without a bound.</li>
+<li><code>-coverage</code> and <code>-tool</code>: their output is TLC's cost model and its
+  Toolbox's message codes, made for the Toolbox's views.</li>
+<li><code>-generateSpecTE</code>, and the <code>_TTrace</code> module TLC writes at an error,
+  which reads the trace from a <code>.bin</code> in Java's serialization; so too
+  <code>-dumpTrace tlc</code> and <code>-loadTrace</code>. <code>-dumpTrace</code>'s other formats are
+  written by CommunityModules' operators that Manyan does not have.</li>
+<li>checkpoints (<code>-checkpoint</code>, <code>-recover</code>) and distributed checking: TLC's
+  files are its JVM's; models Manyan checks seldom run for the hours that
+  call for them.</li>
+<li>the configuration's <code>_PERIODIC</code> is evaluated, as TLC does, at a
+  simulation's last progress report; TLC evaluates it at its report each
+  minute too, which Manyan does not print. <code>_RL_REWARD</code> is read only by
+  TLC's reinforcement learning simulation, which a Java property turns
+  on and which learns by TLC's fingerprints. <code>_POSSIBLE</code> is not read
+  with <code>-symbolic</code>.</li>
+<li>TLC picks its fingerprints' polynomial at random on each run, so a
+  temporal property's counterexample, <code>TLCFP</code>, and the draws of
+  <code>RandomElement</code>, <code>RandomSubset</code> and <code>RandomSetOfSubsets</code> in <code>Init</code> and
+  <code>Next</code> when model checking, which TLC seeds with the state's
+  fingerprint, change from run to run. Manyan takes TLC's first, or the
+  one <code>-fp</code> gives, and so prints what TLC prints with the same <code>-fp</code>.
+  TLC fingerprints a model value by its name's index in its table of
+  names, which the configuration's begin; one <code>TLCModelValue</code> makes is
+  indexed after the names SANY reads, and Manyan's index is another.</li>
+</ul>
+<p><code>Trace</code> is the behavior to the state evaluated; to
+rebuild it TLC evaluates <code>Init</code> again, and with more than one initial
+state may give a shorter one. In a simulation
+that stops at an error before its last behavior, TLC's worker goes on
+with the next one while the behavior is printed, so its <code>Print</code> output
+may come between the states; Manyan stops at the error. There a temporal
+property is checked on the whole graph of each behavior, where TLC may
+miss a counterexample of a property such as <code>P ~&gt; Q</code>, or report another.
+A simulated behavior prints each record with its fields in the standard
+order; TLC prints a record in its constructor's order until it first
+compares or fingerprints it, which it does as it goes. Real numbers
+(<code>Reals</code>, decimals) and <code>\AA</code>/<code>\EE</code> give TLC's errors, as TLC cannot
+check them either. <code>RandomElement</code>, <code>RandomSubset</code> and
+<code>RandomSetOfSubsets</code> draw as TLC in a simulation, and in the assumptions
+and constants when model checking.</p>
+<p>Known gaps, not decisions, each to be closed:</p>
+<ul>
+<li>A temporal property's verdict is TLC's, but its counterexample may be
+  another one TLC could print. TLC builds its tableau of particles, linked
+  in the order of their index, and Manyan's tableau has other nodes, so
+  where there is a tableau the cycle found or the path to it may differ.
+  Of 900 random graphs of <code>tests/fuzz.py live</code>, each checked with the
+  same random <code>-fp</code>, all print what TLC prints.</li>
+<li><code>Print</code> and <code>PrintT</code> in a fairness condition or a temporal property
+  print what Manyan evaluates, as its search needs each condition; TLC
+  evaluates all of them on every state and step as it finds them, and
+  prints each time. So do the actions TLC evaluates for them, such as
+  <code>ENABLED</code> or <code>WF_v(A)</code>'s steps.</li>
+<li>TLC's tableau checker generates a state's successors again where its
+  product meets the state anew, and so prints again what the actions
+  print. Manyan does so for the first temporal property with a tableau;
+  as its tableau has other nodes than TLC's (above), the number of times
+  may differ, and a second such property prints nothing again.</li>
+<li>TLC evaluates the constant definitions of each instance at startup,
+  <code>L!D</code> once for <code>L == INSTANCE M</code>, and keeps their values; Manyan
+  evaluates them where they are used, so their <code>Print</code>s show then, and
+  each time.</li>
+<li>With <code>-noGenerateSpecTE</code>, an error in one of Naturals' operators TLC
+  computes in Java names its class <code>Integers</code>, as without; TLC names
+  <code>Naturals</code> until it reports a first error, and reads Integers then.</li>
+<li>Where TLC fails with a Java exception, hangs, or prints as a
+  simulation's counterexample a lasso that does not violate the property,
+  Manyan reports what the model does instead.</li>
+<li>Four of tlaplus/Examples print other output than TLC, for the reasons
+  the <a href="fullbench.html">full benchmark</a> gives.</li>
+<li><code>-symbolic</code> and <code>-typecheck</code>: what Apalache does that they do not is in
+  <a href="apalache-gaps.html">Apalache gaps</a>.</li>
+</ul>
+</article>
+</body>
+</html>
