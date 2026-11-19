@@ -17376,9 +17376,36 @@ static void sat_room(int n) {
     sat.buf2 = xrealloc(sat.buf2, sizeof(int) * (size_t)sat.capbuf);
 }
 
+/* Whether literal p of a learned clause is implied by the clause's others
+   (seen), through reasons at the levels in `levels` (a mask of their low 5
+   bits), as MiniSat's recursive minimization; what it marks seen in turn
+   is kept in clear[*nclear...] when it is. */
+static int sat_redundant(int p, unsigned levels, int *stack, int *clear, int *nclear) {
+    int top = *nclear, n = 0;
+    stack[n++] = p;
+    while (n) {
+        Clause *c = sat.reason[stack[--n] >> 1];
+        for (int k = 1; k < c->n; k++) {
+            int q = c->lits[k], v = q >> 1;
+            if (sat.seen[v] || !sat.level[v]) continue;
+            if (sat.reason[v] && (1u << (sat.level[v] & 31)) & levels) {
+                sat.seen[v] = 1;
+                stack[n++] = q;
+                clear[(*nclear)++] = q;
+            } else {
+                for (int j = top; j < *nclear; j++) sat.seen[clear[j] >> 1] = 0;
+                *nclear = top;
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 /* The first-UIP clause of a conflict in sat.buf, its asserting literal
    first and one of the next level second: returns the level to go back to. */
 static int sat_analyze(Clause *c, int *nout) {
+    static int *stack, *clear, cap;
     sat_room(sat.nvars + 1);
     int *out = sat.buf, path = 0, p = -1, idx = sat.ntrail - 1, n = 1;
     do {
@@ -17399,15 +17426,18 @@ static int sat_analyze(Clause *c, int *nout) {
     } while (path > 0);
     out[0] = p ^ 1;
     /* Leave out the literals the others imply. */
-    memcpy(sat.buf2, out, sizeof(int) * (size_t)n);
-    int m = 1;
-    for (int i = 1; i < n; i++) {
-        Clause *r = sat.reason[out[i] >> 1];
-        int keep = !r;
-        for (int k = 1; r && k < r->n && !keep; k++) { int u = r->lits[k] >> 1; keep = !sat.seen[u] && sat.level[u] > 0; }
-        if (keep) out[m++] = out[i];
+    if (cap < sat.nvars + 1) {
+        cap = sat.nvars + 1;
+        stack = xrealloc(stack, sizeof(int) * (size_t)cap);
+        clear = xrealloc(clear, sizeof(int) * (size_t)cap);
     }
-    for (int i = 1; i < n; i++) sat.seen[sat.buf2[i] >> 1] = 0;
+    memcpy(clear, out, sizeof(int) * (size_t)n);
+    int m = 1, nclear = n;
+    unsigned levels = 0;
+    for (int i = 1; i < n; i++) levels |= 1u << (sat.level[out[i] >> 1] & 31);
+    for (int i = 1; i < n; i++)
+        if (!sat.reason[out[i] >> 1] || !sat_redundant(out[i], levels, stack, clear, &nclear)) out[m++] = out[i];
+    for (int i = 1; i < nclear; i++) sat.seen[clear[i] >> 1] = 0;
     sat.glue = 0;
     for (int i = 0; i < m; i++) {
         int lv = sat.level[out[i] >> 1];
