@@ -1,3 +1,9 @@
+unreleased:
+
+- fixed: npm's `run()` and `npx manyan-wasm` threw "Unexpected end of
+  JSON input" for `-version` or a usage error, where no check begins; the
+  result is null there, as Python's `manyan.run` gives None
+
 2026-11-19 0.15.0:
 
 - full bench: every exhaustive-search model of tlaplus/Examples, each run

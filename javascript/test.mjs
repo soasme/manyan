@@ -85,3 +85,12 @@ await test("a parse error", ["P"], spec("P", "VARIABLE", "INIT Init\n"), (r, { s
   assert.equal(status, 150);
   assert.deepEqual([r.states, r.violated, r.generated], [[], [], null]);
 });
+
+await test("-version", ["-version"], {}, (r, { output }) => {
+  assert.equal(r, null);
+  assert.match(output, /^manyan version /);
+});
+
+await test("a usage error", ["-workers"], {}, (r) => {
+  assert.equal(r, null);
+});

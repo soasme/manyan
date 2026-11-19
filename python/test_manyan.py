@@ -95,6 +95,11 @@ Inv == m # M""", "CONSTANT M = M\nINIT Init\nNEXT Next\nINVARIANT Inv\n")).resul
         run = check(["-workers"], {})
         self.assertIsNone(run.result)
 
+    def test_version(self):
+        run = check(["-version"], {})
+        self.assertIsNone(run.result)
+        self.assertTrue(run.output.startswith("manyan version "))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,9 +47,12 @@ function decode(x) {
   return Object.fromEntries(Object.entries(x).map(([k, v]) => [k, decode(v)]));
 }
 
+// What the check found; null where none began, as for -version or a usage
+// error, which leave the file empty.
 function result(FS) {
-  if (!FS.analyzePath(RESULT).exists) return null;
-  const r = JSON.parse(FS.readFile(RESULT, { encoding: "utf8" }));
+  const text = FS.analyzePath(RESULT).exists ? FS.readFile(RESULT, { encoding: "utf8" }) : "";
+  if (!text) return null;
+  const r = JSON.parse(text);
   return { ...r, states: decode(r.states), actions: decode(r.actions) };
 }
 
