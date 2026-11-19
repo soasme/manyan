@@ -10,6 +10,8 @@ Then the engine runs on N random state graphs, and the search it did must
 be one the model BFS allows: the model (checked by TLC when given, else by
 the engine) must reach the engine's result. A violation fixes the length
 of its trace; a search without error fixes the counts and the depth.
+The models, then the graphs, are checked as many at once as keep each
+TLC's JVM, as 1000 MB, to half the machine's memory.
 """
 import argparse
 import random
@@ -17,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,19 +39,28 @@ def tlc_command(tlc):
     return tlc.split() + ["-workers", "1", "-metadir", spec_runner.metadir()]
 
 
+POOL = spec_runner.workers(1000)
+
+
+def model(engine, tlc, path):
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        spec_runner.stage(path, directory)
+        for other in TLA.glob("*.tla"):
+            if other != path:
+                (directory / other.name).write_text(other.read_text())
+        mine = check(engine, path.stem, directory)
+        ok = "No error has been found" in mine
+        if tlc:
+            ok = ok and check(tlc_command(tlc), path.stem, directory) == mine
+        return ok, mine
+
+
 def models(engine, tlc):
     failed = 0
-    for path in sorted(TLA.glob("MC*.tla")):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            spec_runner.stage(path, directory)
-            for other in TLA.glob("*.tla"):
-                if other != path:
-                    (directory / other.name).write_text(other.read_text())
-            mine = check(engine, path.stem, directory)
-            ok = "No error has been found" in mine
-            if tlc:
-                ok = ok and check(tlc_command(tlc), path.stem, directory) == mine
+    paths = sorted(TLA.glob("MC*.tla"))
+    with ThreadPoolExecutor(POOL) as pool:
+        for path, (ok, mine) in zip(paths, pool.map(lambda p: model(engine, tlc, p), paths)):
             failed += not ok
             print("ok  " if ok else "FAIL", path.relative_to(ROOT))
             if not ok:
@@ -100,17 +112,25 @@ def allowed(checker, n, succ, init, bad, outcome):
 
 def graphs(engine, tlc, count, seed):
     rng = random.Random(seed)
-    failed = 0
+    drawn = []
     for i in range(count):
-        checker = tlc_command(tlc) if tlc else engine   # TLC needs a fresh metadir for each run
         n = rng.randint(1, 6)
         succ = [{m for m in range(1, n + 1) if rng.random() < 0.35} for _ in range(n)]
         init = {m for m in range(1, n + 1) if rng.random() < 0.3} or {1}
         bad = {m for m in range(1, n + 1) if rng.random() < 0.15}
-        outcome = run_graph(engine, n, succ, init, bad)
-        if not allowed(checker, n, succ, init, bad, outcome):
-            failed += 1
-            print("FAIL graph", succ, init, bad, "->", outcome)
+        drawn.append((n, succ, init, bad))
+
+    def one(graph):
+        checker = tlc_command(tlc) if tlc else engine   # TLC needs a fresh metadir for each run
+        outcome = run_graph(engine, *graph)
+        return outcome, allowed(checker, *graph, outcome)
+
+    failed = 0
+    with ThreadPoolExecutor(POOL) as pool:
+        for (n, succ, init, bad), (outcome, ok) in zip(drawn, pool.map(one, drawn)):
+            if not ok:
+                failed += 1
+                print("FAIL graph", succ, init, bad, "->", outcome)
     print(f"{count - failed}/{count} random graphs searched as the model allows")
     return failed
 
