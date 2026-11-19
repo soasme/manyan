@@ -1,4 +1,4 @@
-unreleased:
+2026-11-19 0.15.1:
 
 - fixed: npm's `run()` and `npx manyan-wasm` threw "Unexpected end of
   JSON input" for `-version` or a usage error, where no check begins; the
