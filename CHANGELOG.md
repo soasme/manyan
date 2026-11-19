@@ -1,3 +1,38 @@
+unreleased:
+
+- the oracle is TLC 1.8.0 at bc1b506, every test blessed by it
+- `TLCGet` and `TLCSet` take every key TLC 1.8.0's do: named registers
+  (`TLCSet("s:k", v)`, `TLCGet("s:k")`, read by `TLCGetOrDefault` too),
+  `"all"` and `"all:named"`, `"spec"`, and `"stats"` of a search;
+  `TLCGet("generated")` is defined during a search, as TLC counts it.
+  TLC's own test-model/TLCSet.tla is a test
+- an action of no definition is named `UnnamedAction` in
+  `TLCGet("action")` and in the result's `actions`, where it was
+  `Action`, as TLC names it; a trace still prints `<Action line ...>`
+- fixed: an initial predicate seen through an instance that substitutes
+  another variable for one of its own is unnamed, as TLC's: a simulation
+  prints `<Initial predicate>`; two `[][Next]_v` conjuncts are an error
+  after both subscripts are warned of, as TLC orders them
+- states in less memory: a variable's value many states share is stored
+  once, its parts when the whole does not pay; a state's record 32 -> 20
+  bytes, a fingerprint's slot 8 -> 4; the store mapped with one worker as
+  with several. Bench, peak MB: counters 68 -> 50, closure 13 -> 8,
+  queue 16 -> 10; ElevatorSafetyLarge 65.6 -> 26.1 bytes a state
+- liveness in less memory: each property's product dropped with it,
+  steps and product nodes mapped, a value many states share decoded
+  once; aba_asyn_byz 5.07 -> 3.98 GB, CoffeeCan3000Beans 5.54 -> 4.67
+  GB. A filter over a record set or a product makes each element in
+  turn: CoffeeCan at 1500 beans, safety 495 -> 160 MB
+- full bench: four of the six models that held more than 4 GB print what
+  TLC prints, ElevatorSafetyLarge's 59 million states among them; 177 of
+  197 print what TLC prints. TLC does not finish the other two
+- faster: the bench's liveness 0.18 -> 0.14 s, interning looked up by a
+  value's fingerprint hash; `-symbolic` proves sums equal by their terms,
+  compares `x \in lo..hi` with its bounds, restarts as Glucose and
+  minimizes learned clauses as MiniSat: Paxos at length 7 81 -> 38 s,
+  tests/symbolic's slowest 22 -> 0.7 s
+- `make test` 96 -> 37 s; `make test-tla` 171 -> 129 s
+
 2026-11-19 0.15.1:
 
 - fixed: npm's `run()` and `npx manyan-wasm` threw "Unexpected end of
