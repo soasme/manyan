@@ -17720,8 +17720,157 @@ static int *bv_not(const int *a) {
     return r;
 }
 
-static int *bv_add(const int *a, const int *b) { int o, *s = bv_add_carry(a, b, L_FALSE, &o); no_overflow(o); return s; }
-static int *bv_sub(const int *a, const int *b) { int o, *s = bv_add_carry(a, bv_not(b), L_TRUE, &o); no_overflow(o); return s; }
+/* A sum of words, each times a constant, plus a constant: a + d - (b + d)
+   is a - b. The word + or - makes is the first made for its sum, so equal
+   sums are the same literals; one that cancels or merges a word is built
+   from its sum, its words in the order they were first met. Each + and -
+   still asserts that it does not overflow, and a word is its sum modulo
+   2^64, its value where none does. */
+typedef struct { int n; int64_t k; int *atom; int64_t *coef; } Lin;   /* atom: ids, ascending */
+typedef struct { int *word; Lin *lin; int id; } LinSlot;   /* lin NULL: the word is atom id */
+
+static LinSlot *lin_slots;
+static int nlin_slots, caplin_slots;
+static int **lin_atoms, nlin_atoms;
+typedef struct { Lin *lin; int *word; } SumSlot;   /* the word first made for each sum */
+static SumSlot *sum_slots;
+static int nsum_slots, capsum_slots;
+
+static uint64_t lin_hash(const Lin *l) {
+    uint64_t h = fmix((uint64_t)l->k ^ (uint64_t)l->n << 40);
+    for (int i = 0; i < l->n; i++) h = fmix(h ^ (uint64_t)l->atom[i]) + fmix((uint64_t)l->coef[i] ^ h);
+    return h;
+}
+
+static int lin_same(const Lin *a, const Lin *b) {
+    return a->n == b->n && a->k == b->k && !memcmp(a->atom, b->atom, sizeof(int) * (size_t)a->n) &&
+           !memcmp(a->coef, b->coef, sizeof(int64_t) * (size_t)a->n);
+}
+
+static SumSlot *sum_find(const Lin *l) {
+    if (2 * (nsum_slots + 1) > capsum_slots) {
+        int cap = capsum_slots ? 2 * capsum_slots : 1024;
+        SumSlot *t = xcalloc((size_t)cap, sizeof(SumSlot));
+        for (int i = 0; i < capsum_slots; i++) {
+            if (!sum_slots[i].lin) continue;
+            int j = (int)(lin_hash(sum_slots[i].lin) & (uint64_t)(cap - 1));
+            while (t[j].lin) j = (j + 1) & (cap - 1);
+            t[j] = sum_slots[i];
+        }
+        free(sum_slots);
+        sum_slots = t;
+        capsum_slots = cap;
+    }
+    int j = (int)(lin_hash(l) & (uint64_t)(capsum_slots - 1));
+    while (sum_slots[j].lin && !lin_same(sum_slots[j].lin, l)) j = (j + 1) & (capsum_slots - 1);
+    return &sum_slots[j];
+}
+
+static uint64_t word_hash(const int *w) { return hash_bytes((const char *)w, sizeof(int) * BW, 0); }
+
+static LinSlot *lin_find(const int *w) {
+    if (2 * (nlin_slots + 1) > caplin_slots) {
+        int cap = caplin_slots ? 2 * caplin_slots : 1024;
+        LinSlot *t = xcalloc((size_t)cap, sizeof(LinSlot));
+        for (int i = 0; i < caplin_slots; i++) {
+            if (!lin_slots[i].word) continue;
+            int j = (int)(word_hash(lin_slots[i].word) & (uint64_t)(cap - 1));
+            while (t[j].word) j = (j + 1) & (cap - 1);
+            t[j] = lin_slots[i];
+        }
+        free(lin_slots);
+        lin_slots = t;
+        caplin_slots = cap;
+    }
+    int j = (int)(word_hash(w) & (uint64_t)(caplin_slots - 1));
+    while (lin_slots[j].word && memcmp(lin_slots[j].word, w, sizeof(int) * BW)) j = (j + 1) & (caplin_slots - 1);
+    return &lin_slots[j];
+}
+
+static Lin *lin_new(int n) {
+    Lin *l = NEW(Lin);
+    l->n = n;
+    l->atom = NEWN(int, n);
+    l->coef = NEWN(int64_t, n);
+    return l;
+}
+
+/* w's sum: a constant, the sum + or - made it from, or w itself. */
+static Lin *lin_of(const int *w) {
+    int64_t k;
+    Lin *l;
+    if (bv_value(w, &k)) { l = lin_new(0); l->k = k; return l; }
+    LinSlot *slot = lin_find(w);
+    if (!slot->word) {
+        slot->word = xmalloc(sizeof(int) * BW);
+        memcpy(slot->word, w, sizeof(int) * BW);
+        lin_atoms = xrealloc(lin_atoms, sizeof(int *) * (size_t)(nlin_atoms + 1));
+        lin_atoms[slot->id = nlin_atoms++] = slot->word;
+        nlin_slots++;
+    }
+    if (slot->lin) return slot->lin;
+    l = lin_new(1);
+    l->atom[0] = slot->id, l->coef[0] = 1;
+    return l;
+}
+
+/* a + sign * b, wrapping. */
+static int *bv_wrap_add(const int *a, const int *b, int sign) {
+    int o;
+    return bv_add_carry(a, sign < 0 ? bv_not(b) : b, sign < 0 ? L_TRUE : L_FALSE, &o);
+}
+
+static int *bv_lin_word(const Lin *l) {
+    int *w = bv_const(l->k);
+    for (int i = 0; i < l->n; i++) {
+        uint64_t c = l->coef[i] < 0 ? -(uint64_t)l->coef[i] : (uint64_t)l->coef[i];
+        int *t = bv_const(0), *x = lin_atoms[l->atom[i]];
+        for (int bit = 0; bit < BW && c >> bit; bit++) {   /* c x, shifting x */
+            if (c >> bit & 1) t = bv_wrap_add(t, x, 1);
+            if (c >> bit > 1) {
+                int *y = NEWN(int, BW);
+                y[0] = L_FALSE;
+                for (int j = 1; j < BW; j++) y[j] = x[j - 1];
+                x = y;
+            }
+        }
+        w = bv_wrap_add(w, t, l->coef[i] < 0 ? -1 : 1);
+    }
+    return w;
+}
+
+/* a + sign * b, of which s is the word as added. */
+static int *bv_lin(const int *a, const int *b, int sign, int *s) {
+    Lin *x = lin_of(a), *y = lin_of(b), *l = lin_new(x->n + y->n);
+    int n = 0, i = 0, j = 0;
+    while (i < x->n || j < y->n) {
+        int take_x = j == y->n || (i < x->n && x->atom[i] <= y->atom[j]);
+        int take_y = i == x->n || (j < y->n && y->atom[j] <= x->atom[i]);
+        int atom = take_x ? x->atom[i] : y->atom[j];
+        int64_t c = (int64_t)((uint64_t)(take_x ? x->coef[i++] : 0) + (uint64_t)sign * (uint64_t)(take_y ? y->coef[j++] : 0));
+        if (c) l->atom[n] = atom, l->coef[n++] = c;
+    }
+    l->n = n;
+    l->k = (int64_t)((uint64_t)x->k + (uint64_t)sign * (uint64_t)y->k);
+    if (!n) return bv_const(l->k);
+    if (n == 1 && l->coef[0] == 1 && !l->k) return lin_atoms[l->atom[0]];
+    SumSlot *sum = sum_find(l);
+    if (sum->lin) return sum->word;
+    int *w = n < x->n + y->n ? bv_lin_word(l) : s;
+    sum->lin = l, sum->word = w, nsum_slots++;
+    LinSlot *slot = lin_find(w);
+    if (!slot->word) {
+        slot->word = xmalloc(sizeof(int) * BW);
+        memcpy(slot->word, w, sizeof(int) * BW);
+        slot->lin = l;
+        slot->id = -1;
+        nlin_slots++;
+    }
+    return w;
+}
+
+static int *bv_add(const int *a, const int *b) { int o, *s = bv_add_carry(a, b, L_FALSE, &o); no_overflow(o); return bv_lin(a, b, 1, s); }
+static int *bv_sub(const int *a, const int *b) { int o, *s = bv_add_carry(a, bv_not(b), L_TRUE, &o); no_overflow(o); return bv_lin(a, b, -1, s); }
 static int *bv_neg(const int *a) { return bv_sub(bv_const(0), a); }
 
 /* The product, in twice the width: it overflows unless the high half
