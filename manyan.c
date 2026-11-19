@@ -7526,19 +7526,52 @@ NATIVE(n_javatime) { UNUSED; effects++; return mk_int((int64_t)time(NULL) & 0x7f
 static void encode(Buf *b, Value *v);
 static Value *decode(const char **p);
 
-/* TLCSet's registers, each its value encoded, as values do not outlive
-   the state being expanded. */
-static Buf *registers;
-static int nregisters;
 static int starting;   /* the model is being read: TLC's checker, which TLCGet asks, does not exist yet */
+/* TLCSet's registers, numbered by a natural or named by a string "s:...",
+   each its value encoded, as values do not outlive the state being
+   expanded. A named one's key is -1 - its string's id. */
+typedef struct { int64_t key; Buf val; } Register;
+static Register *registers;
+static int nregisters;
+static Value *register_key(int64_t key) { return key < 0 ? mk_str((int)(-1 - key)) : mk_int(key); }
+static Buf *register_at(Value *k, int make) {
+    int64_t key = k->kind == V_INT ? k->u.i : -1 - (int64_t)k->u.i;
+    for (int i = 0; i < nregisters; i++) if (registers[i].key == key) return &registers[i].val;
+    if (!make) return NULL;
+    registers = xrealloc(registers, sizeof(Register) * (size_t)(nregisters + 1));
+    registers[nregisters] = (Register){key, {0}};
+    return &registers[nregisters++].val;
+}
+static Value *register_get(Value *k) {
+    Buf *b = starting ? NULL : register_at(k, 0);
+    if (!b) return NULL;
+    const char *p = b->s;
+    return decode(&p);
+}
+/* TLCGet("all") or "all:named": the numbered or named registers, each to
+   the tuple of its value in each worker, which in manyan is the one. */
+static Value *registers_all(int named) {
+    List keys = {0}, vals = {0};
+    for (int i = 0; i < nregisters; i++)
+        if ((registers[i].key < 0) == named) {
+            const char *p = registers[i].val.s;
+            Value *t = mk_tuple(1);
+            t->u.fcn.vals[0] = decode(&p);
+            list_add(&keys, register_key(registers[i].key)), list_add(&vals, t);
+        }
+    return mk_fcn_from(&keys, &vals);
+}
 static int64_t search_counter(const char *key);
-static int checking_posts;   /* the search is over: its count of states generated is TLC's */
+static int checking_posts;   /* the search is over and its postconditions are being checked */
 static long sim_traces;   /* the behavior a simulation generates, from 1; 0 for the initial states */
 static Value *search_config(void);
 static Value *tlc_revision(void);
 static Value *sim_stats(void);
+static Value *search_stats(void);
 static Value *action_record(Value **st);
 static Value *action_value(int act);
+static Value *spec_value(void);
+static int next_named(void);
 
 /* TLC's Java system properties, which TLCGet("-Dk") reads and TLCSet("-Dk", v)
    sets: pairs of k and its value, interned. A worker leaves them to manyan. */
@@ -7563,18 +7596,25 @@ NATIVE(n_tlcget) {
         if (!strcmp(key, "level")) return mk_int(cur_level + primed);   /* primed, the next state's */
         if (!strcmp(key, "config") && !starting) return search_config();
         if (!strcmp(key, "revision")) return tlc_revision();
-        if (!strcmp(key, "stats") && simulating) return sim_stats();
+        if (!strcmp(key, "stats") && !starting) return simulating ? sim_stats() : search_stats();
         if (!strcmp(key, "action")) return action_record(primed ? next_state : cur_state);
+        if (!strcmp(key, "spec") && !starting) return spec_value();
         if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
+        if (!starting && (!strcmp(key, "all") || !strcmp(key, "all:named"))) return registers_all(key[3] == ':');
+        if (!strncmp(key, "s:", 2)) {
+            Value *v = register_get(k);
+            if (!v) fail("TLCGet(%s) was undefined.", key);
+            return v;
+        }
         int64_t n = starting ? -1 : search_counter(key);
         if (n < 0) fail("TLCGet(%s) was undefined.", key);
         return mk_int(n);
     }
     if (k->kind != V_INT || k->u.i < 0)
         fail("The argument of TLCGet should be a nonnegative integer, but instead it is:\n%s", pretty(k));
-    if (starting || k->u.i >= nregisters || !registers[k->u.i].n) fail("TLCGet(%s) was undefined.", pretty(k));
-    const char *p = registers[k->u.i].s;
-    return decode(&p);
+    Value *v = register_get(k);
+    if (!v) fail("TLCGet(%s) was undefined.", pretty(k));
+    return v;
 }
 
 NATIVE(n_tlcset) {
@@ -7592,16 +7632,11 @@ NATIVE(n_tlcset) {
         *p = intern(pretty(a[1]));
         return TRUEV;
     }
-    if (a[0]->kind != V_INT || a[0]->u.i < 0)
+    if (a[0]->kind == V_STR ? strncmp(S(a[0]->u.i), "s:", 2) : a[0]->kind != V_INT || a[0]->u.i < 0)
         fail_module("The first argument of TLCSet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
-    int i = (int)a[0]->u.i;
-    if (i >= nregisters) {
-        registers = xrealloc(registers, sizeof(Buf) * (size_t)(i + 1));
-        memset(registers + nregisters, 0, sizeof(Buf) * (size_t)(i + 1 - nregisters));
-        nregisters = i + 1;
-    }
-    registers[i].n = 0;
-    encode(&registers[i], a[1]);
+    Buf *b = register_at(a[0], 1);
+    b->n = 0;
+    encode(b, a[1]);
     return TRUEV;
 }
 
@@ -8190,13 +8225,12 @@ NATIVE(n_tlcmodelvalue) {
     return mk_model((int)a[0]->u.i);
 }
 
-/* TLCGetOrDefault(i, d): register i, or d when nothing is kept there. */
+/* TLCGetOrDefault(k, d): register k, or d when nothing is kept there. */
 NATIVE(n_tlcgetordefault) {
     UNUSED;
     effects++;
-    if (a[0]->kind != V_INT || starting || a[0]->u.i < 0 || a[0]->u.i >= nregisters || !registers[a[0]->u.i].n) return a[1];
-    const char *p = registers[a[0]->u.i].s;
-    return decode(&p);
+    Value *v = (a[0]->kind == V_INT && a[0]->u.i >= 0) || (a[0]->kind == V_STR && !strncmp(S(a[0]->u.i), "s:", 2)) ? register_get(a[0]) : NULL;
+    return v ? v : a[1];
 }
 
 static Value *trace_value(void);
@@ -8554,6 +8588,7 @@ typedef struct Cont { Expr *e; Ctx c; struct Cont *next; int unchanged; } Cont; 
 
 static int (*gen_emit)(void);   /* called with each complete assignment; nonzero stops */
 static int64_t generated;          /* states generated, as TLC counts them */
+static int64_t initials;           /* of them, the initial states */
 
 /* What the check found, where the caller wants it: the counts TLC reports
    last, and the names and counterexample of its first error. */
@@ -10058,13 +10093,22 @@ static Value **decode_state(int idx) {
 
 /* ---------------------------------------------------------------- the model */
 
-typedef struct { Def *def; Expr *expr; Ctx ctx; int name, possible; } Check;   /* expr, in ctx; possible: 1 + its _POSSIBLE's index */
+/* expr, in ctx; possible: 1 + its _POSSIBLE's index; where: a property's
+   part's location, as TLCGet("spec") gives it */
+typedef struct { Def *def; Expr *expr; Ctx ctx; int name, possible; Expr *where; } Check;
 
 static Expr *init_expr, *next_expr;
 /* The last of the initial predicates, which a simulation names an initial
    state by: a definition's body by the definition, as TLC's Action. */
 static int init_name;   /* the initial predicate's name in a simulation, 0 if none */
 static Expr *init_where;
+static int *init_names, ninits;   /* each part's, as TLCGet("spec") gives them */
+static Expr **init_wheres;
+static void add_init(void) {
+    init_names = xrealloc(init_names, sizeof(int) * (size_t)(ninits + 1));
+    init_wheres = xrealloc(init_wheres, sizeof(Expr *) * (size_t)(ninits + 1));
+    init_names[ninits] = init_name, init_wheres[ninits++] = init_where;
+}
 static Ctx root_ctx;
 static Check *invariants, *implied_inits, *constraints, *action_constraints, *action_props, *temporal_props;
 static int ninvariants, nimplied_inits, nconstraints, naction_constraints, naction_props, ntemporal_props;
@@ -10080,7 +10124,7 @@ static Expr *spec_subscript;
 
 static void add_check(Check **list, int *n, Def *d, Expr *e, Ctx c, int name) {
     *list = xrealloc(*list, sizeof(Check) * (size_t)(*n + 1));
-    (*list)[*n] = (Check){d, e, c, name, 0};
+    (*list)[*n] = (Check){d, e, c, name, 0, NULL};
     (*n)++;
 }
 
@@ -11667,7 +11711,7 @@ static int live_expanded = -1;   /* see search_counter */
 static int64_t search_counter(const char *key) {
     if (!strcmp(key, "duration")) return time(NULL) - started;
     int which = !strcmp(key, "distinct") ? 1 : !strcmp(key, "queue") ? 2 : !strcmp(key, "diameter") ? 3
-              : !strcmp(key, "generated") && checking_posts ? 4 : 0;
+              : !strcmp(key, "generated") ? 4 : 0;
     if (!which || simulating) return -1;
     if (in_worker) worker_cannot();   /* the counts are the search's, not a worker's */
     /* In an atom of a temporal property on state live_expanded or a step
@@ -12639,6 +12683,7 @@ static int search(void) {
         printf("Error: No next state actions defined to generate successor states from.\n");
         return MANYAN_FAILURE_EVAL;
     }
+    initials = generated;
     gen_init = 0;
     gen_emit = next_emit;
     for (int lo = 0; lo < nstates;) {
@@ -12730,7 +12775,9 @@ static Value *action_value(int act) {
         return mk_record(2, names, vals);
     }
     Action *a = act < 0 ? NULL : &actions[act];
-    Value *vals[] = {mk_str(a ? a->name : init_name ? init_name : intern("Initial predicate")),
+    int name = a ? a->name : init_name ? init_name : intern("Initial predicate");
+    if (a && name == intern("Action") && !next_named()) name = intern("UnnamedAction");   /* TLC's for an action of no definition */
+    Value *vals[] = {mk_str(name),
                      location_record(a ? a->loc : init_where), NULL, NULL};
     List keys = {0}, args = {0};
     for (int i = 0; a && a->op && i < a->op->nparams; i++)
@@ -12745,6 +12792,61 @@ static Value *action_value(int act) {
     vals[2]->made = MADE_RECORD;
     vals[3] = params;
     return mk_record(4, names, vals);
+}
+
+/* Whether the next-state action is a definition's, which names its parts. */
+static int next_named(void) {
+    return (next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL) && !next_expr->def->part;
+}
+
+/* The next-state action, split as TLC splits it as it starts, or when
+   TLCGet("spec") first asks for its actions. */
+static void split_next(void) {
+    static int split;
+    if (split++ || !next_expr) return;
+    Arena *a = arena;
+    arena = &perm_arena;
+    split_action(next_expr, root_ctx, next_named() ? next_expr->def->name : intern("Action"), NULL);
+    arena = a;
+}
+
+/* A part of the specification as TLC's record of its Action, or of a
+   declaration or definition: its name and location. */
+static Value *part_record(int name, Expr *where) {
+    const char *names[] = {"name", "location"};
+    Value *vals[] = {mk_str(name ? name : intern("UnnamedAction")), location_record(where)};
+    return mk_record(2, names, vals);
+}
+
+/* The records of the checks of a list, each named by its definition and
+   located by its body; a constraint by the whole definition, a property's
+   part by its own. */
+static Value *checks_value(Check *list, int n, int whole) {
+    List l = {0};
+    for (int i = 0; i < n; i++) {
+        Def *d = list[i].def;
+        Expr all = *d->where;
+        all.l2 = d->body->l2, all.c2 = d->body->c2;
+        list_add(&l, part_record(d->name, list[i].where ? list[i].where : whole ? &all : d->body));
+    }
+    return list_set(&l);
+}
+
+/* TLCGet("spec"): the specification as TLC has processed it. */
+static Value *spec_value(void) {
+    split_next();
+    List inits = {0}, acts = {0}, fair = {0}, vs = {0};
+    for (int i = 0; i < ninits; i++) list_add(&inits, part_record(init_names[i], init_wheres[i]));
+    for (int i = 0; i < nactions; i++) list_add(&acts, action_value(i));
+    for (int i = 0; i < nfairness; i++) list_add(&fair, part_record(0, fairness[i]));
+    for (int i = 0; i < nvars; i++) list_add(&vs, part_record(vars[i]->name, vars[i]->where));
+    const char *names[] = {"actions", "impliedinits", "impliedactions", "invariants", "impliedtemporals", "temporals",
+                           "inits", "variables", "actionconstraints", "constraints"};
+    Value *vals[] = {list_set(&acts), checks_value(implied_inits, nimplied_inits, 0), checks_value(action_props, naction_props, 0),
+                     checks_value(invariants, ninvariants, 0), checks_value(temporal_props, ntemporal_props, 0), list_set(&fair), list_set(&inits),
+                     list_set(&vs), checks_value(action_constraints, naction_constraints, 1),
+                     checks_value(constraints, nconstraints, 1)};
+    return mk_record(10, names, vals);
 }
 
 static Value *action_record(Value **st) {
@@ -12791,6 +12893,15 @@ static Value *trace_value(void) {
     Value *t = mk_tuple(l.n);
     for (int i = 0; i < l.n; i++) t->u.fcn.vals[i] = state_record((Value **)l.v[i]);
     return t;
+}
+
+/* TLCGet("stats") of a search: its counts, as TLC's of one worker. */
+static Value *search_stats(void) {
+    const char *names[] = {"worker", "duration", "generated", "diameter", "distinct", "initial", "queue"};
+    Value *vals[] = {mk_int(0), mk_int(search_counter("duration")), mk_int(search_counter("generated")),
+                     mk_int(search_counter("diameter")), mk_int(search_counter("distinct")),
+                     mk_int(gen_init ? generated : initials), mk_int(search_counter("queue"))};
+    return mk_record(7, names, vals);
 }
 
 /* TLCGet("stats") of a simulation; the behavior's actions are those into
@@ -13648,6 +13759,16 @@ static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, c
     }
 }
 
+/* Whether an instance substitutes for a variable other than its namesake:
+   TLC leaves an initial predicate seen through it unnamed. */
+static int renames_variable(Def *in) {
+    for (int i = 0; in && i < in->nsubst; i++) {
+        Expr *x = in->subst_expr[i];
+        if (in->subst_decl[i]->kind == D_VAR && !(x->kind == K_DECL && x->def->name == in->subst_decl[i]->name)) return 1;
+    }
+    return 0;
+}
+
 /* The initial predicate's name and location, as TLC labels its states in
    a simulation: a definition's, or one seen through an instance's as its
    action would be (split_action). */
@@ -13657,6 +13778,7 @@ static void name_init(Expr *e) {
     init_where = d ? d->body : e;
     if (e->kind == K_INSTCALL && e->def->kind == D_OP && !e->def->native) {
         init_name = instance_name(e, &in);
+        if (renames_variable(in)) init_name = 0;
         init_where = in ? in->where : e->def->body;
     }
 }
@@ -13678,10 +13800,9 @@ static void use_specification(Expr *spec) {
             Def *in = NULL;
             if (call) instance_name(call, &in);
             if (in) init_where = in->where;   /* TLC locates a part through an instance that substitutes there */
+            if (renames_variable(in)) init_name = 0;
+            add_init();
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
-            if (nnext++)
-                config_error("The specification contains more than one conjunct of the form [][Next]_v,\n"
-                             "but TLC can handle only specifications with one next-state relation.");
             Expr *sq = unfold(e->args[0]);
             next_expr = in_instance(call, sq->args[0]);
             spec_subscript = in_instance(call, sq->args[1]);
@@ -13697,6 +13818,9 @@ static void use_specification(Expr *spec) {
                     }
             }
             free(in);
+            if (nnext++)   /* as TLC, once it has warned of this one's subscript */
+                config_error("The specification contains more than one conjunct of the form [][Next]_v,\n"
+                             "but TLC can handle only specifications with one next-state relation.");
         } else if (expr_level(e) == 2) {
             config_error("TLC cannot handle this conjunct of the spec:\n%s", loc_str(e));
         } else if (e->kind == K_ALWAYS && expr_level(e->args[0]) <= 1 && e->args[0]->kind != X_NUM &&
@@ -13832,14 +13956,20 @@ static void use_property(Expr *p) {
         Expr *e = parts[i].e, *call = parts[i].call;
         Ctx c = parts[i].c;
         int name = parts[i].name, level = level_in(in_instance(call, e), c);
-        if (level <= 1) { add_check(&implied_inits, &nimplied_inits, d, in_instance(call, e), c, name); continue; }
-        if (level == 2) action_property(e, name);
-        if (e->kind == K_ALWAYS) {
+        Def *in = NULL;
+        if (call) instance_name(call, &in);
+        Check **list = &temporal_props;
+        int *nlist = &ntemporal_props;
+        Expr *x = e, *where = e;
+        if (level <= 1) list = &implied_inits, nlist = &nimplied_inits;
+        else if (level == 2) action_property(e, name);
+        else if (e->kind == K_ALWAYS) {
             Expr *body = unfold(e->args[0]);
-            if (level_in(in_instance(call, body), c) <= 1) { add_check(&invariants, &ninvariants, d, in_instance(call, body), c, name); continue; }
-            if (body->kind == X_SQACT) { add_check(&action_props, &naction_props, d, in_instance(call, body), c, name); continue; }
+            if (level_in(in_instance(call, body), c) <= 1) list = &invariants, nlist = &ninvariants, x = body, where = e->args[0];
+            else if (body->kind == X_SQACT) list = &action_props, nlist = &naction_props, x = where = body;
         }
-        add_check(&temporal_props, &ntemporal_props, d, in_instance(call, e), c, name);
+        add_check(list, nlist, d, in_instance(call, x), c, name);
+        (*list)[*nlist - 1].where = in ? in->where : where;
     }
     free(parts);
 }
@@ -14339,6 +14469,7 @@ static int setup_model(void) {
         if (init) {
             init_expr = init;
             name_init(init);
+            add_init();
         }
         if (next) next_expr = next;
     }
@@ -23757,10 +23888,7 @@ int manyan_check(const ManyanOptions *o) {
         print_error_text();
         return MANYAN_ERROR;
     }
-    if (next_expr) {
-        int named = (next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL) && !next_expr->def->part;
-        split_action(next_expr, root_ctx, named ? next_expr->def->name : intern("Action"), NULL);
-    }
+    split_next();
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "manyan: cannot write %s\n", o->dump); return MANYAN_ERROR; }

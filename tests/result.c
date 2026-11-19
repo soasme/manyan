@@ -31,9 +31,11 @@ static const char *action_name(ManyanValue *action) {
     return manyan_string_value(manyan_field(action, "name"), NULL);
 }
 
-/* The step at p, "<Name ...", is the action's. */
+/* The step at p, "<Name ...", is the action's; TLC prints its
+   UnnamedAction as Action. */
 static void check_action(const char *p, ManyanValue *action, size_t i) {
     const char *name = action_name(action);
+    if (!strcmp(name, "UnnamedAction")) name = "Action";
     if (*p != '<' || strncmp(p + 1, name, strlen(name)))
         mismatch("the step into state %zu is %s, but %.40s is printed", i + 1, name, p);
 }

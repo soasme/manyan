@@ -1,6 +1,6 @@
 ---- MODULE tlcget_generated_violation ----
 \* After an invariant fails, a postcondition reads the states generated
-\* as TLC counts them: each action's states before they are checked.
+\* as TLC counts them.
 EXTENDS Naturals, TLC
 VARIABLE x
 Init == x \in {0, 1}

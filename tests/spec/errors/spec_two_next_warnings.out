@@ -1,0 +1,8 @@
+Warning: The subscript of the next-state relation specified by the specification
+does not seem to contain the state variable w
+(Use the -nowarning option to disable this warning.)
+Warning: The subscript of the next-state relation specified by the specification
+does not seem to contain the state variable z
+Error: The specification contains more than one conjunct of the form [][Next]_v,
+but TLC can handle only specifications with one next-state relation.
+exit 151

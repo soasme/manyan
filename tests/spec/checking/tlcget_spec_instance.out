@@ -1,0 +1,64 @@
+[ actions |->
+      { [ name |-> "UnnamedAction",
+          location |->
+              [ beginLine |-> 7,
+                beginColumn |-> 1,
+                endLine |-> 7,
+                endColumn |-> 31,
+                module |-> "tlcget_spec_instance" ] ] },
+  impliedinits |->
+      { [ name |-> "P",
+          location |->
+              [ beginLine |-> 7,
+                beginColumn |-> 1,
+                endLine |-> 7,
+                endColumn |-> 31,
+                module |-> "tlcget_spec_instance" ] ] },
+  impliedactions |->
+      { [ name |-> "P",
+          location |->
+              [ beginLine |-> 7,
+                beginColumn |-> 1,
+                endLine |-> 7,
+                endColumn |-> 31,
+                module |-> "tlcget_spec_instance" ] ] },
+  invariants |->
+      { [ name |-> "Inv",
+          location |->
+              [ beginLine |-> 11,
+                beginColumn |-> 8,
+                endLine |-> 11,
+                endColumn |-> 46,
+                module |-> "tlcget_spec_instance" ] ] },
+  impliedtemporals |-> {},
+  temporals |-> {},
+  inits |->
+      { [ name |-> "UnnamedAction",
+          location |->
+              [ beginLine |-> 7,
+                beginColumn |-> 1,
+                endLine |-> 7,
+                endColumn |-> 31,
+                module |-> "tlcget_spec_instance" ] ] },
+  variables |->
+      { [ name |-> "x",
+          location |->
+              [ beginLine |-> 6,
+                beginColumn |-> 10,
+                endLine |-> 6,
+                endColumn |-> 10,
+                module |-> "tlcget_spec_instance" ] ] },
+  actionconstraints |-> {},
+  constraints |-> {} ]
+Finished computing initial states: 1 distinct state generated.
+{ [ name |-> "UnnamedAction",
+    location |->
+        [ beginLine |-> 7,
+          beginColumn |-> 1,
+          endLine |-> 7,
+          endColumn |-> 31,
+          module |-> "tlcget_spec_instance" ] ] }
+Model checking completed. No error has been found.
+2 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 0

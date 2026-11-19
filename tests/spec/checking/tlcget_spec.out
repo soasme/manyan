@@ -1,0 +1,145 @@
+[ actions |->
+      { [ name |-> "B",
+          location |->
+              [ beginLine |-> 11,
+                beginColumn |-> 6,
+                endLine |-> 11,
+                endColumn |-> 39,
+                module |-> "tlcget_spec" ] ],
+        [ name |-> "A",
+          location |->
+              [ beginLine |-> 10,
+                beginColumn |-> 9,
+                endLine |-> 10,
+                endColumn |-> 42,
+                module |-> "tlcget_spec" ],
+          context |-> [p |-> 1],
+          parameters |-> <<"p">> ],
+        [ name |-> "A",
+          location |->
+              [ beginLine |-> 10,
+                beginColumn |-> 9,
+                endLine |-> 10,
+                endColumn |-> 42,
+                module |-> "tlcget_spec" ],
+          context |-> [p |-> 2],
+          parameters |-> <<"p">> ] },
+  impliedinits |->
+      { [ name |-> "Prop",
+          location |->
+              [ beginLine |-> 16,
+                beginColumn |-> 8,
+                endLine |-> 16,
+                endColumn |-> 12,
+                module |-> "tlcget_spec" ] ] },
+  impliedactions |->
+      { [ name |-> "Prop",
+          location |->
+              [ beginLine |-> 17,
+                beginColumn |-> 10,
+                endLine |-> 17,
+                endColumn |-> 23,
+                module |-> "tlcget_spec" ] ] },
+  invariants |->
+      { [ name |-> "TypeOK",
+          location |->
+              [ beginLine |-> 14,
+                beginColumn |-> 11,
+                endLine |-> 14,
+                endColumn |-> 32,
+                module |-> "tlcget_spec" ] ],
+        [ name |-> "Small",
+          location |->
+              [ beginLine |-> 15,
+                beginColumn |-> 10,
+                endLine |-> 15,
+                endColumn |-> 15,
+                module |-> "tlcget_spec" ] ],
+        [ name |-> "Prop",
+          location |->
+              [ beginLine |-> 19,
+                beginColumn |-> 31,
+                endLine |-> 19,
+                endColumn |-> 35,
+                module |-> "tlcget_spec" ] ],
+        [ name |-> "Prop",
+          location |->
+              [ beginLine |-> 19,
+                beginColumn |-> 43,
+                endLine |-> 19,
+                endColumn |-> 48,
+                module |-> "tlcget_spec" ] ] },
+  impliedtemporals |->
+      { [ name |-> "Prop",
+          location |->
+              [ beginLine |-> 18,
+                beginColumn |-> 7,
+                endLine |-> 18,
+                endColumn |-> 15,
+                module |-> "tlcget_spec" ] ] },
+  temporals |->
+      { [ name |-> "UnnamedAction",
+          location |->
+              [ beginLine |-> 13,
+                beginColumn |-> 43,
+                endLine |-> 13,
+                endColumn |-> 52,
+                module |-> "tlcget_spec" ] ],
+        [ name |-> "UnnamedAction",
+          location |->
+              [ beginLine |-> 13,
+                beginColumn |-> 57,
+                endLine |-> 13,
+                endColumn |-> 69,
+                module |-> "tlcget_spec" ] ] },
+  inits |->
+      { [ name |-> "Init",
+          location |->
+              [ beginLine |-> 9,
+                beginColumn |-> 9,
+                endLine |-> 9,
+                endColumn |-> 22,
+                module |-> "tlcget_spec" ] ],
+        [ name |-> "UnnamedAction",
+          location |->
+              [ beginLine |-> 13,
+                beginColumn |-> 17,
+                endLine |-> 13,
+                endColumn |-> 21,
+                module |-> "tlcget_spec" ] ] },
+  variables |->
+      { [ name |-> "x",
+          location |->
+              [ beginLine |-> 7,
+                beginColumn |-> 11,
+                endLine |-> 7,
+                endColumn |-> 11,
+                module |-> "tlcget_spec" ] ],
+        [ name |-> "y",
+          location |->
+              [ beginLine |-> 7,
+                beginColumn |-> 14,
+                endLine |-> 7,
+                endColumn |-> 14,
+                module |-> "tlcget_spec" ] ] },
+  actionconstraints |->
+      { [ name |-> "ACon",
+          location |->
+              [ beginLine |-> 21,
+                beginColumn |-> 1,
+                endLine |-> 21,
+                endColumn |-> 14,
+                module |-> "tlcget_spec" ] ] },
+  constraints |->
+      { [ name |-> "Con",
+          location |->
+              [ beginLine |-> 20,
+                beginColumn |-> 1,
+                endLine |-> 20,
+                endColumn |-> 12,
+                module |-> "tlcget_spec" ] ] } ]
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+13 states generated, 8 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 0

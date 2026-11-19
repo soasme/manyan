@@ -585,8 +585,12 @@ writes `out` and yields `TRUE`; `Assert(c, out)` is `TRUE` when `c` is and
 otherwise an error (§11.3). Printing a value, and `ToString`, enumerate
 the sets in it, so an infinite `S \cup T` or `S \ T` is an error there.
 `Any` is the set of every value; it prints as `ANY`. `TLCSet(i, v)`, for
-a natural number `i`, keeps `v` in register `i` and yields `TRUE`;
-`TLCGet(i)` yields it, and is an error when nothing was kept;
+a natural number `i` or a string `i` that begins with `s:`, keeps `v` in
+register `i` and yields `TRUE`; `TLCGet(i)` yields it, and is an error
+when nothing was kept; `TLCGet("all")` is the function from each
+numbered register to the tuple of its value in each of TLC's workers,
+`TLCGet("all:named")` the same of the named ones, and a tuple has one
+value in Manyan, whose workers print what one does;
 `TLCGet("-Dk")` is Java's system property `k`, the string `"-Dk"` when
 unset, and `TLCSet("-Dk", v)` sets it to `v` as printed;
 `TLCGet("level")` is the depth of the state a predicate is evaluated on
@@ -597,10 +601,19 @@ and the assumptions);
 fingerprint polynomial; of a simulation, with `mode |-> "simulate"`, it
 also has `traces` (-1 without `num=`), `depth`, `aril |-> "0"` and `sched
 |-> "random"`, and its assumptions find the search's counters undefined.
-`TLCGet("distinct")`, `"queue"` and `"diameter"` are the search's counts
-of states found, queued and the depth reached; `TLCGet("generated")`, of
-states generated, only in a postcondition: during the search TLC counts
-an action's states before it checks them, Manyan as it checks each. TLC implements `TLCGet` by an evaluation method, so
+`TLCGet("distinct")`, `"queue"`, `"diameter"` and `"generated"` are the
+search's counts of states found, queued, the depth reached and states
+generated, each successor counted as it is checked; `TLCGet("stats")` is
+the record of them with `initial`, the initial states generated,
+`duration` and `worker |-> 0`.
+`TLCGet("spec")` is the specification as TLC processed it: the records
+of name and location of its initial predicates, of its actions as split
+(§11.2, `TLCGet("action")`'s), of its fairness conjuncts, its invariants
+and each `[]P` of its properties, the properties' other parts, its
+variables and its constraints. A part with no definition is named
+`UnnamedAction`, a property's part by the property, and one seen through
+an instance that substitutes is located by the instance. TLC's coverage,
+which `-coverage` adds to each, is left out. TLC implements `TLCGet` by an evaluation method, so
 its errors carry that method's preamble (§11.3). That method's level is
 1: a definition that uses `TLCGet` is not evaluated once as a constant,
 but each time it is used, and a substitution `C <- d` of one is
@@ -618,7 +631,8 @@ value of `k` and kept; of a state-level `e`, `k` is evaluated and then `e`
 twice, as TLC's search keeps nothing in a state and its definition computes
 `e` again (once in a simulation, which keeps it); of an action, `e`.
 `TLCModelValue(s)` is the model value named by the string `s`.
-`TLCGetOrDefault(i, d)` is register `i`, or `d` if nothing is kept there.
+`TLCGetOrDefault(i, d)` is register `i`, numbered or named, or `d` if
+nothing is kept there.
 `TLCGet`, `AssertError` and `TLCCache` are evaluation methods: they
 evaluate their arguments themselves, inside their method, so an error
 there carries the method's preamble.

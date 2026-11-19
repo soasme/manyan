@@ -1,0 +1,6 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 24 of module tlcget_named_undefined failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.TLCGetSet.TLCGetEval(tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context,tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel),
+but it produced the following error:
+TLCGet(s:b) was undefined.
+exit 10
