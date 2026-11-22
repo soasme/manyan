@@ -1,4 +1,4 @@
-unreleased:
+2026-11-23 0.16.1:
 
 - Python: `manyan.check(spec, **options)` checks in Python's own process,
   through the library the wheel carries, its options `ManyanOptions`'
