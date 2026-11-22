@@ -335,6 +335,11 @@ The result is what the report says, as values to walk with `manyan.h`'s
 - `r.generated`, `r.distinct`, `r.left`, `r.depth`: the counts it reports
   last, -1 where it reports none (a simulation reports only `generated`).
 
+A program may check again, one model at a time: each check is as the
+first in a process, and an error, even a parse error, returns its status
+rather than exiting. The values live until the next check, which frees
+what the last made as it starts.
+
 `-result FILE` writes the executable's result as one JSON object, its
 fields those above, a count it does not report `null`. A value is written
 as Apalache's ITF writes one: a boolean, integer or string as itself, a
@@ -342,17 +347,19 @@ tuple a list, a record (a function from names) an object, another
 function `{"#map": [[key, value], ...]}`, a set `{"#set": [...]}`, and any
 other, such as a model value, `{"#tla": text}`, TLC's text of it, which no
 record is. The npm package's `run` and the Python package's `manyan.run`
-give it as their languages' values.
+give it as their languages' values; `manyan.check` gives the same from
+the library, in Python's process.
 
 Compile `manyan.c` with `-DMANYAN_NO_MAIN` to link it into another program, with
 `manyan-std.c` and a call of `manyan_std_init()` before `manyan_check` for the
 operators of [std.md](std.md). `manyan_define` adds a native operator of your
-own, as std.md shows.
+own, as std.md shows. `make lib` builds the two as `libmanyan.so`
+(`.dylib` on macOS), as the Python package loads them.
 
 ## Testing
 
 ```sh
-make test              # tests/spec with 1 and with 4 workers, also checking each result against its report; the Python package
+make test              # tests/spec with 1 and with 4 workers, also checking each result against its report and each second check in a process against a first; the Python package
 make test-javascript   # tests/spec with the WebAssembly build, but for IOExec, and its result in JavaScript (needs emcc and node)
 make site              # docs/ as the site's HTML pages, with the playground, in .obj/site (needs Python-Markdown)
 make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)

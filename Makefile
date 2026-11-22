@@ -44,7 +44,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all test test-spec test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -80,7 +80,7 @@ else
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
-test: test-spec test-result test-python test-symbolic test-typecheck
+test: test-spec test-result test-again test-python test-symbolic test-typecheck
 
 test-spec: manyan
 	python3 tests/spec_runner.py ./manyan --strict
@@ -95,9 +95,26 @@ test-result: $(OBJDIR)/manyan-result
 	python3 tests/spec_runner.py $(OBJDIR)/manyan-result --strict
 	python3 tests/spec_runner.py "$(OBJDIR)/manyan-result -workers 4 -result result.json" --strict
 
-# The Python package's run(), on this executable.
-test-python: manyan
-	python3 python/test_manyan.py
+# A second check in one process prints what a first does, every global reset.
+$(OBJDIR)/manyan-again: tests/again.c $(SRC) $(HDR)
+	mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) tests/again.c manyan-std.c $(LDLIBS) -o $@
+
+test-again: $(OBJDIR)/manyan-again
+	python3 tests/spec_runner.py $(OBJDIR)/manyan-again --strict
+	python3 tests/spec_runner.py "$(OBJDIR)/manyan-again -workers 4" --strict
+
+# manyan.c and manyan-std.c built to link at run time, as the Python
+# package's check() loads them.
+SOEXT = $(if $(findstring Darwin,$(shell uname)),dylib,so)
+LIB = libmanyan.$(SOEXT)
+lib: $(LIB)
+$(LIB): $(SRC) $(HDR)
+	$(CC) $(CFLAGS) -shared -fPIC -DMANYAN_NO_MAIN $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
+
+# The Python package's run(), on this executable, and its check(), on this library.
+test-python: manyan $(LIB)
+	MANYAN_LIB=$(abspath $(LIB)) python3 python/test_manyan.py
 
 # The oracle must agree with every expected output, which validates the tests.
 test-spec-oracle: manyan $(TLA_JAR) $(COMMUNITY)
@@ -270,4 +287,4 @@ install: manyan
 	install -m 644 manyan.h manyan-std.h $(DESTDIR)$(PREFIX)/include/
 
 clean:
-	rm -f manyan javascript/manyan.mjs javascript/manyan.wasm
+	rm -f manyan libmanyan.so libmanyan.dylib javascript/manyan.mjs javascript/manyan.wasm

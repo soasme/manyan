@@ -5,7 +5,8 @@ so `pip install manyan` gives the same program as a release, workers and all.
     python3 python/wheel.py PLATFORM_TAG OUT_DIR FILE...
 
 FILE is the executable and anything it needs beside it (cygwin1.dll on
-Windows). The version is manyan.h's.
+Windows), or the library manyan.check loads (libmanyan.so or .dylib),
+which goes in the package. The version is manyan.h's.
 """
 import base64
 import hashlib
@@ -36,7 +37,8 @@ Description-Content-Type: text/markdown
     wheel = f"Wheel-Version: 1.0\nGenerator: manyan wheel.py\nRoot-Is-Purelib: false\nTag: py3-none-{tag}\n"
 
     entries = [(f"manyan/{p.name}", p.read_bytes(), 0o644) for p in sorted((HERE / "manyan").glob("*.py"))]
-    entries += [(f"{dist}.data/scripts/{Path(f).name}", Path(f).read_bytes(), 0o755) for f in files]
+    entries += [(f"manyan/{Path(f).name}" if Path(f).name.startswith("libmanyan.") else f"{dist}.data/scripts/{Path(f).name}",
+                 Path(f).read_bytes(), 0o755) for f in files]
     entries += [(f"{dist}.dist-info/METADATA", metadata.encode(), 0o644),
                 (f"{dist}.dist-info/WHEEL", wheel.encode(), 0o644),
                 (f"{dist}.dist-info/licenses/LICENSE", (ROOT / "LICENSE").read_bytes(), 0o644)]

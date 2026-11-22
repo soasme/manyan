@@ -1,5 +1,6 @@
-"""manyan.run's result: what the check found, as values. `make test-python`
-runs it on ./manyan, or on the executable MANYAN names."""
+"""manyan.run's result: what the check found, as values; and manyan.check's,
+the same in this process. `make test-python` runs them on ./manyan and on
+the library MANYAN_LIB names, or on the executable MANYAN names."""
 import os
 import shutil
 import sys
@@ -13,13 +14,23 @@ import manyan  # noqa: E402
 from manyan import Function, Printed  # noqa: E402
 
 manyan.find_manyan_bin = lambda: os.environ.get("MANYAN", str(ROOT / "manyan"))
+manyan.find_manyan_lib = lambda: os.environ["MANYAN_LIB"]
 
 
-def check(args, files):
+def check(args, files, **options):
+    """manyan.run(args), which, for a spec, manyan.check(spec, **options) gives too."""
     with tempfile.TemporaryDirectory() as d:
         for name, text in files.items():
             Path(d, name).write_text(text)
-        return manyan.run(args, cwd=d)
+        run = manyan.run(args, cwd=d)
+        if args and not args[-1].startswith("-") and "MANYAN_LIB" in os.environ:
+            here = os.getcwd()
+            os.chdir(d)
+            try:
+                assert manyan.check(args[-1], **options) == run, args
+            finally:
+                os.chdir(here)
+        return run
 
 
 def spec(name, body, cfg):
@@ -83,13 +94,23 @@ Inv == m # M""", "CONSTANT M = M\nINIT Init\nNEXT Next\nINVARIANT Inv\n")).resul
 
     def test_simulation(self):
         r = check(["-simulate", "-seed", "1", "S"], spec("S", "EXTENDS Naturals\nVARIABLE x\nInit == x = 0\n"
-                  "Next == x' = x + 1\nInv == x < 2", "INIT Init\nNEXT Next\nINVARIANT Inv\n")).result
+                  "Next == x' = x + 1\nInv == x < 2", "INIT Init\nNEXT Next\nINVARIANT Inv\n"),
+                  simulate=True, seed=1).result
         self.assertEqual((r.states, r.generated, r.distinct), ([{"x": 0}, {"x": 1}, {"x": 2}], 3, None))
 
     def test_parse_error(self):
         run = check(["P"], spec("P", "VARIABLE", "INIT Init\n"))
         self.assertEqual(run.status, 150)
         self.assertEqual((run.result.states, run.result.generated), ([], None))
+
+    def test_options(self):
+        files = {"D.tla": (ROOT / "examples/DieHard.tla").read_text().replace("MODULE DieHard", "MODULE D"),
+                 "M.cfg": "INIT Init\nNEXT Next\n"}
+        r = check(["-workers", "4", "-deadlock", "-config", "M.cfg", "-Dtlc2.tool.impl.Tool.cdot=true", "D"], files,
+                  workers=4, check_deadlock=False, config="M.cfg", properties=["tlc2.tool.impl.Tool.cdot=true"]).result
+        self.assertEqual((r.violated, r.distinct), ([], 16))
+        with self.assertRaises(TypeError):
+            manyan.check("DieHard", deadlock=False)
 
     def test_usage_error(self):
         run = check(["-workers"], {})

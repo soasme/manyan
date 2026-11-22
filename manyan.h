@@ -24,7 +24,7 @@ enum {
 };
 
 /* What a check found, as values (below): manyan_check fills it in where
-   ManyanOptions.result points. The values live until the process ends. */
+   ManyanOptions.result points. The values live until the next check. */
 typedef struct ManyanValue ManyanValue;
 typedef struct {
     size_t length;                /* the states of the first counterexample TLC reports, 0 for none */
@@ -73,7 +73,8 @@ typedef struct {
 } ManyanOptions;
 
 /* Check the model and print TLC's report to standard output. Returns an
-   exit status. */
+   exit status. Each check is as the first in a process; one runs at a
+   time, and frees what the last made as it starts. */
 int manyan_check(const ManyanOptions *options);
 
 /* == Native operators ==
@@ -127,7 +128,7 @@ const char *manyan_print(ManyanValue *);         /* as TLC prints it */
 const char *manyan_to_string(ManyanValue *);     /* as TLC's toString gives it: on one line */
 const char *manyan_class(ManyanValue *);         /* the Java class TLC keeps it in, as "IntValue" */
 size_t manyan_kept(ManyanValue *record, size_t i);   /* the index of field i as TLC's Java sees a record it has not normalized: as written */
-void *manyan_alloc(size_t);   /* zeroed memory that lives as values do: never freed, so a failing native loses none */
+void *manyan_alloc(size_t);   /* zeroed memory that lives as values do: freed by the next check, so a failing native loses none */
 /* Java's String.format(fmt, args...), each arg a string; its exception
    the native's, as manyan_throw. */
 ManyanValue *manyan_format(ManyanCall *, const char *fmt, size_t n, const char *const *args);

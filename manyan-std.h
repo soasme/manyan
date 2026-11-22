@@ -5,7 +5,8 @@
 
 #include "manyan.h"
 
-/* Defines them all with manyan_define. Returns 0, or -1 when out of memory. */
+/* Defines them all with manyan_define, once however often it is called.
+   Returns 0, or -1 when out of memory. */
 int manyan_std_init(void);
 
 #endif

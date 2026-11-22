@@ -64,22 +64,74 @@ static _Noreturn void stop(int status) {
     exit(status);
 }
 
-static void *xmalloc(size_t n) {
-    void *p = malloc(n ? n : 1);
-    if (!p) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
-    return p;
+/* Each block allocated in a check is linked here by its header, and the
+   next check frees them all as it starts; one allocated outside a check,
+   as a worker's or a caller's, is linked to nothing. */
+typedef union Block { struct { union Block *prev, *next; } link; max_align_t align; } Block;
+static Block blocks = {{&blocks, &blocks}};
+
+static void *linked(Block *b, int tracked) {
+    if (!b) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
+    b->link.prev = b->link.next = NULL;
+    if (tracked) {
+        b->link.prev = &blocks, b->link.next = blocks.link.next;
+        blocks.link.next = blocks.link.next->link.prev = b;
+    }
+    return b + 1;
 }
+
+static Block *unlinked(Block *b) {
+    if (b->link.next) b->link.prev->link.next = b->link.next, b->link.next->link.prev = b->link.prev;
+    return b;
+}
+
+static void *xmalloc(size_t n) { return linked(malloc(sizeof(Block) + n), quit != NULL); }
+static void *xcalloc(size_t n, size_t size) { return linked(calloc(1, sizeof(Block) + n * size), quit != NULL); }
+static void xfree(void *p) { if (p) free(unlinked((Block *)p - 1)); }
 
 static void *xrealloc(void *p, size_t n) {
-    p = realloc(p, n ? n : 1);
-    if (!p) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
+    if (!p) return xmalloc(n);
+    Block *b = (Block *)p - 1;
+    int tracked = b->link.next != NULL;
+    return linked(realloc(unlinked(b), sizeof(Block) + n), tracked);
+}
+
+static char *xstrndup(const char *s, size_t n) {
+    n = strnlen(s, n);
+    char *p = xmalloc(n + 1);
+    memcpy(p, s, n);
+    p[n] = 0;
     return p;
 }
 
-static void *xcalloc(size_t n, size_t size) {
-    void *p = calloc(n ? n : 1, size);
-    if (!p) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
+static char *xstrdup(const char *s) { return xstrndup(s, SIZE_MAX); }
+
+/* The memory a check maps, for the next to unmap. */
+static struct { void *p; size_t n; } *maps;
+static size_t nmaps;
+
+static void *map(size_t n, int flags) {
+    void *p = mmap(NULL, n, PROT_READ | PROT_WRITE, flags | MAP_ANON | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) return NULL;
+    void *grown = realloc(maps, sizeof *maps * (nmaps + 1));
+    if (!grown) { munmap(p, n); return NULL; }
+    maps = grown;
+    maps[nmaps].p = p, maps[nmaps++].n = n;
     return p;
+}
+
+static void unmap(void *p) {
+    for (size_t i = 0; i < nmaps; i++)
+        if (maps[i].p == p) { munmap(p, maps[i].n); maps[i] = maps[--nmaps]; return; }
+}
+
+/* Frees and unmaps what the last check allocated and mapped. */
+static void free_check(void) {
+    for (Block *b = blocks.link.next, *next; b != &blocks; b = next) next = b->link.next, free(b);
+    blocks.link.prev = blocks.link.next = &blocks;
+    for (size_t i = 0; i < nmaps; i++) munmap(maps[i].p, maps[i].n);
+    free(maps);
+    maps = NULL, nmaps = 0;
 }
 
 /* Memory the caller fills, 8-byte aligned; alloc's is zeroed. */
@@ -122,15 +174,15 @@ static unsigned scratch_resets;   /* a value's address names it only between two
 static void arena_reset(Arena *a) {
     scratch_resets += a == &scratch_arena;
     Chunk *c = a->head;
-    while (c && c->next) { Chunk *next = c->next; free(c); c = next; }
+    while (c && c->next) { Chunk *next = c->next; xfree(c); c = next; }
     if (c) c->used = 0;
     a->head = c;
 }
 
 static void arena_free(Arena *a) {
     arena_reset(a);
-    free(a->head);
-    free(a->spare);
+    xfree(a->head);
+    xfree(a->spare);
     a->head = a->spare = NULL;
 }
 
@@ -140,7 +192,7 @@ static void arena_join(Arena *a, Arena *b) {
     while (last && last->next) last = last->next;
     if (last && a->head) last->next = a->head->next, a->head->next = b->head;
     else if (last) a->head = b->head;
-    free(b->spare);
+    xfree(b->spare);
     b->head = b->spare = NULL;
 }
 
@@ -187,7 +239,7 @@ static void region_close(Region *r) {
         Chunk *c = r->a->head;
         r->a->head = c->next;
         if (!r->a->spare && c->size == 1 << 20) r->a->spare = c;
-        else free(c);
+        else xfree(c);
     }
     if (r->c) r->c->used = r->used;
 }
@@ -224,13 +276,13 @@ static void buf_printf(Buf *b, const char *fmt, ...) {
     vsnprintf(big, (size_t)n + 1, fmt, ap);
     va_end(ap);
     buf_add(b, big, (size_t)n);
-    free(big);
+    xfree(big);
 }
 
 static char *buf_take(Buf *b) {
     char *s = alloc(b->n + 1);
     if (b->n) memcpy(s, b->s, b->n);
-    free(b->s);
+    xfree(b->s);
     b->s = NULL; b->n = b->cap = 0;
     return s;
 }
@@ -266,7 +318,7 @@ static int intern_n(const char *s, int len) {
             while (table[j]) j = (j + 1) & (size - 1);
             table[j] = i + 1;
         }
-        free(str_table);
+        xfree(str_table);
         str_table = table;
         str_table_size = size;
     }
@@ -416,7 +468,7 @@ static _Noreturn void vfail(Expr *e, int module, int status, const char *fmt, va
     } else {
         buf_puts(&error_message, small);
     }
-    free(small);
+    xfree(small);
     java_depth = 0;   /* errors are caught outside every standard operator */
     error_expr = e;
     error_module = module;
@@ -1296,7 +1348,7 @@ static int each_function(Value **dom, int nd, Value *rng, int range, int (*fn)(V
         for (; i >= 0; i--) { if (++idx[i] < rng->n) break; idx[i] = 0; }
         if (i < 0) break;
     }
-    free(idx);
+    xfree(idx);
     return r;
 }
 
@@ -1352,7 +1404,7 @@ static int each_product(Value *s, Value **sets, int (*fn)(Value *, void *), void
         for (; i >= 0; i--) { if (++idx[i] < sets[i]->n) break; idx[i] = 0; }
         if (i < 0) break;
     }
-    free(idx);
+    xfree(idx);
     return r;
 }
 
@@ -2369,7 +2421,7 @@ static Tok *lex(const char *src, const char *file, int *count) {
         Tok *t = &toks[n];
         memset(t, 0, sizeof *t);
         t->line = L.line; t->col = L.col;
-        if (memchr(src + gap, '@', (size_t)(L.pos - gap))) t->notes = strndup(src + gap, (size_t)(L.pos - gap));
+        if (memchr(src + gap, '@', (size_t)(L.pos - gap))) t->notes = xstrndup(src + gap, (size_t)(L.pos - gap));
         const char *s = src + L.pos;
         if (!*s) { t->kind = T_EOF; n++; break; }
         int len = 0;
@@ -3303,10 +3355,10 @@ static Expr *parse_unary(const OpInfo **prefix) {
     return parse_postfix();
 }
 
+static int binary_nesting;   /* every nesting of expressions passes here */
 /* An expression whose operators all bind tighter than `bound` (§6.1). */
 static Expr *parse_binary(int bound) {
-    static int nesting;   /* every nesting of expressions passes here */
-    if (++nesting > stack_limit && stack_limit) {
+    if (++binary_nesting > stack_limit && stack_limit) {
         printf("Error: %s\n", stack_overflow);
         stop(MANYAN_ERROR);
     }
@@ -3358,7 +3410,7 @@ static Expr *parse_binary(int bound) {
         left = e;
         last = info;
     }
-    nesting--;
+    binary_nesting--;
     return left;
 }
 
@@ -4084,11 +4136,11 @@ static char *monolith_module(const char *name) {
     const char *start = NULL;
     for (const char *line = root_text; *line;) {
         const char *end = line + strcspn(line, "\n");
-        if (start && !strncmp(line, "====", 4)) return strndup(start, (size_t)(end - start));
+        if (start && !strncmp(line, "====", 4)) return xstrndup(start, (size_t)(end - start));
         if (!start && module_marker(line, end > line && end[-1] == '\r' ? end - 1 : end, name)) start = line;
         line = *end ? end + 1 : end;
     }
-    return start ? strdup(start) : NULL;
+    return start ? xstrdup(start) : NULL;
 }
 
 static Module *load_module(int name, Module *from) {
@@ -4115,7 +4167,7 @@ static Module *load_module(int name, Module *from) {
         stop(MANYAN_ERROR_PARSE);
     }
     m = parse_text(text, path);
-    free(file);
+    xfree(file);
     m->standard = standard;
     check_file_name(m, S(name));
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
@@ -4220,8 +4272,8 @@ static void check_outer(Module *m, Def *d) {
     buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
                here.s, S(d->name), there.s);
     file->nwarnings++;
-    free(here.s);
-    free(there.s);
+    xfree(here.s);
+    xfree(there.s);
 }
 
 /* SANY's warnings so far, all of them printed as each file's module is
@@ -4265,8 +4317,8 @@ static int inherited_conflict(Module *m, Def *d, Def *instance) {
                                          : "%s\n\nWarning: the definition of '%s' conflicts with \nits definition at %s.\n\n\n",
                here.s, S(d->name), there.s);
     file->nwarnings++;
-    free(here.s);
-    free(there.s);
+    xfree(here.s);
+    xfree(there.s);
     return 1;
 }
 
@@ -4881,7 +4933,7 @@ static void lint_records(Module *m) {
                        "In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.\n"
                        "Therefore, DOMAIN [%s |-> ...] = {\"%s\"} holds true.\n\n\n",
                        field->line, field->col, field->line, field->col + (int)strlen(n) - 1, S(m->name), n, n, there.s, n, n, n);
-            free(there.s);
+            xfree(there.s);
         }
     }
 }
@@ -6004,21 +6056,21 @@ static void warning(const char *text) {
     fflush(stdout);
 }
 
+static char **except_seen;
+static int nexcept_seen;
 /* TLC's warning that an EXCEPT names a key outside the domain, each
    message once: the first, with the -nowarning line, is another. */
 static void warn_except(Expr *e) {
-    static char **seen;
-    static int nseen;
     if (nowarning) return;
     if (in_worker) worker_cannot();   /* the search prints in order */
     Buf b = {0};
     buf_puts(&b, warned ? "+" : "-");
     buf_puts(&b, "The EXCEPT was applied to non-existing fields of the value at\n");
     loc_text(&b, e);
-    for (int i = 0; i < nseen; i++)
-        if (!strcmp(seen[i], b.s)) { free(b.s); return; }
-    seen = xrealloc(seen, sizeof(char *) * (size_t)(nseen + 1));
-    seen[nseen++] = b.s;
+    for (int i = 0; i < nexcept_seen; i++)
+        if (!strcmp(except_seen[i], b.s)) { xfree(b.s); return; }
+    except_seen = xrealloc(except_seen, sizeof(char *) * (size_t)(nexcept_seen + 1));
+    except_seen[nexcept_seen++] = b.s;
     warning(b.s + 1);
 }
 
@@ -6373,25 +6425,25 @@ static int fixed_expr(Expr *e) {
     return f;
 }
 
+static int fixed_making;   /* making a fixed set, whose fixed parts are made so too */
 /* The set make makes of e: in the search, where e is fixed, once, in the
    permanent arena, naming e as its source as a set made anew would. */
 static Value *ev_fixed(Expr *e, Ctx c, Value *(*make)(Expr *, Ctx)) {
-    static int fixing;   /* making a fixed set, whose fixed parts are made so too */
     if (c.inst) return make(e, c);
     if (e->value) return e->value;   /* replaying too, in the permanent arena */
-    if ((arena != &scratch_arena && !fixing) || !fixed_expr(e)) return make(e, c);
+    if ((arena != &scratch_arena && !fixed_making) || !fixed_expr(e)) return make(e, c);
     Arena *saved = arena;
-    int was = fixing;
+    int was = fixed_making;
     sigjmp_buf *outer = handler, here;
     handler = &here;
-    if (sigsetjmp(here, 0)) { handler = outer; arena = saved; fixing = was; raise_error(); }
+    if (sigsetjmp(here, 0)) { handler = outer; arena = saved; fixed_making = was; raise_error(); }
     arena = &perm_arena;
-    fixing = 1;
+    fixed_making = 1;
     Value *t = make(e, c);
     (t->kind == V_LAZY ? t : t->u.set.product)->u.l.expr = e;
     handler = outer;
     arena = saved;
-    fixing = was;
+    fixed_making = was;
     return e->value = t;
 }
 
@@ -6585,24 +6637,24 @@ typedef struct { Expr *e; int step, used; Value *v; } GenValue;
 static GenValue *gen_values;
 static int ngen_values, gen_step;
 
+static int apalache_name;
 /* Whether d is the operator name of Apalache's module. */
 static int apalache_op(Def *d, const char *name) {
-    static int apalache;
-    if (!apalache) apalache = intern("Apalache");
-    return d->mod && d->mod->name == apalache && d->kind == D_OP && !strcmp(S(d->name), name);
+    if (!apalache_name) apalache_name = intern("Apalache");
+    return d->mod && d->mod->name == apalache_name && d->kind == D_OP && !strcmp(S(d->name), name);
 }
 
+static int folds_name;
 /* Apalache's ApaFoldSet, or the same fold of its rewired community modules. */
 static int is_fold_set(Def *d) {
-    static int folds;
-    if (!folds) folds = intern("__apalache_folds");
-    return apalache_op(d, "ApaFoldSet") || (d->mod && d->mod->name == folds && !strcmp(S(d->name), "__ApalacheFoldSet"));
+    if (!folds_name) folds_name = intern("__apalache_folds");
+    return apalache_op(d, "ApaFoldSet") || (d->mod && d->mod->name == folds_name && !strcmp(S(d->name), "__ApalacheFoldSet"));
 }
 
+static int gen_name;
 static int is_gen(Def *d) {
-    static int gen;
-    if (!gen) gen = intern("Gen");
-    return d->name == gen && apalache_op(d, "Gen");
+    if (!gen_name) gen_name = intern("Gen");
+    return d->name == gen_name && apalache_op(d, "Gen");
 }
 
 static Value *gen_value(Expr *call) {
@@ -7160,12 +7212,12 @@ Value *manyan_element(Value *s, size_t i) { return realize(s->u.set.elems[i]); }
 int manyan_compare(Value *a, Value *b) { return vcmp(a, b); }
 void *manyan_alloc(size_t n) { return alloc(n); }
 
+static char format_msg[64];
 /* Java's String.format(f, args), each argument a string: %s and %S, with
    flag -, a width and a precision, %b, %h, %n and %%, an argument by its
    index or in turn. Any other conversion of a string is Java's exception,
    whose message it gives, its class in cls; NULL if none. */
 static const char *java_format(Buf *b, const char *f, int n, const char *const *args, const char **cls) {
-    static char msg[64];
     int next = 0;
     for (const char *p = f; *p; p++) {
         if (*p != '%') { buf_add(b, p, 1); continue; }
@@ -7188,20 +7240,20 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
         char c = *p;
         if (c == '%' || c == 'n') { buf_puts(b, c == '%' ? "%" : "\n"); continue; }
         if (!c || !strchr("sSbBhHdoxXeEfgGaAcCtT", c)) {
-            snprintf(msg, sizeof msg, "Conversion = '%c'", c ? c : '%');
+            snprintf(format_msg, sizeof format_msg, "Conversion = '%c'", c ? c : '%');
             *cls = "java.util.UnknownFormatConversionException";
-            return msg;
+            return format_msg;
         }
         int i = index ? (int)index - 1 : next++;
         if (i >= n) {
-            snprintf(msg, sizeof msg, "Format specifier '%.*s'", (int)(p - spec + 1), spec);
+            snprintf(format_msg, sizeof format_msg, "Format specifier '%.*s'", (int)(p - spec + 1), spec);
             *cls = "java.util.MissingFormatArgumentException";
-            return msg;
+            return format_msg;
         }
         if (!strchr("sSbBhH", c)) {
-            snprintf(msg, sizeof msg, "%c != java.lang.String", tolower((unsigned char)c));
+            snprintf(format_msg, sizeof format_msg, "%c != java.lang.String", tolower((unsigned char)c));
             *cls = "java.util.IllegalFormatConversionException";
-            return msg;
+            return format_msg;
         }
         Buf t = {0};
         if (c == 's' || c == 'S') buf_puts(&t, args[i]);
@@ -7214,7 +7266,7 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
         int len = prec >= 0 && (size_t)prec < t.n ? prec : (int)t.n;
         if (isupper((unsigned char)c)) for (int k = 0; k < len; k++) t.s[k] = (char)toupper((unsigned char)t.s[k]);
         buf_printf(b, left ? "%-*.*s" : "%*.*s", width, len, t.s ? t.s : "");
-        free(t.s);
+        xfree(t.s);
     }
     return NULL;
 }
@@ -7240,9 +7292,9 @@ size_t manyan_kept(Value *v, size_t i) {
 Value *manyan_format(ManyanCall *call, const char *fmt, size_t n, const char *const *args) {
     Buf b = {0};
     const char *cls, *why = java_format(&b, fmt, (int)n, args, &cls);
-    if (why) { free(b.s); manyan_throw(call, "%s", why); }
+    if (why) { xfree(b.s); manyan_throw(call, "%s", why); }
     Value *v = mk_str(intern(b.s ? b.s : ""));
-    free(b.s);
+    xfree(b.s);
     return v;
 }
 
@@ -7350,7 +7402,7 @@ static Value *str_concat(Value *s, Value *t) {
     buf_puts(&b, S(s->u.i));
     buf_puts(&b, S(t->u.i));
     int id = intern_n(b.s ? b.s : "", (int)b.n);
-    free(b.s);
+    xfree(b.s);
     return mk_str(id);
 }
 
@@ -8006,16 +8058,16 @@ static Value *random_element(Value *s) {
 
 NATIVE(n_randomelement) { UNUSED; return random_element(a[0]); }
 
+static int tlc_primes[1341];
 /* The i-th of the 1341 primes from 1277011 on, TLC's RandomGenerator's. */
 static int tlc_prime(int i) {
-    static int primes[1341];
-    if (!primes[0])
+    if (!tlc_primes[0])
         for (int p = 1277011, k = 0; k < 1341; p += 2) {
             int prime = 1;
             for (int d = 3; d * d <= p && prime; d += 2) prime = p % d != 0;
-            if (prime) primes[k++] = p;
+            if (prime) tlc_primes[k++] = p;
         }
-    return primes[i];
+    return tlc_primes[i];
 }
 
 /* The increment of TLC's draws: one of its primes, at random. */
@@ -8613,7 +8665,7 @@ static void found_violated(int name) {
     const char **v = xmalloc(sizeof(char *) * (n + 2));
     memcpy(v, found->violated, sizeof(char *) * n);
     v[n] = S(name), v[n + 1] = NULL;
-    if (n) free((void *)found->violated);
+    if (n) xfree((void *)found->violated);
     found->violated = v;
 }
 
@@ -8729,7 +8781,7 @@ static ErrorState error_save(void) {
 static void error_restore(ErrorState *e) {
     error_reset();
     buf_puts(&error_message, e->msg.s);
-    free(e->msg.s);
+    xfree(e->msg.s);
     error_expr = e->expr, error_status = e->status, error_module = e->module, stackless = e->stackless;
 }
 
@@ -8752,7 +8804,7 @@ NATIVE(n_asserterror) {
     java_depth = 0;
     int failed = sigsetjmp(here, 0);
     if (!failed) eval(call->args[1], c);
-    else if (error_java) { eval_restore(s); free(saved.msg.s); raise_error(); }   /* Java's own exception */
+    else if (error_java) { eval_restore(s); xfree(saved.msg.s); raise_error(); }   /* Java's own exception */
     int same = failed && !strcmp(error_message.s ? error_message.s : "", S((int)err->num));
     eval_restore(s);
     error_restore(&saved);
@@ -9471,7 +9523,7 @@ static int instance_name(Expr *e, Def **in) {
     }
     buf_puts(&b, S(e->def->name));
     int name = intern(b.s);
-    free(b.s);
+    xfree(b.s);
     return name;
 }
 
@@ -9738,7 +9790,7 @@ static void memo_room(void) {
             for (int j = 0; j < old[i].d->nparams; j++) kv[j].kind = old[i].kind[j], kv[j].u.i = old[i].x[j], k[j] = &kv[j];
             memos[memo_slot(old[i].d, k, old[i].d->nparams)] = old[i];
         }
-    free(old);
+    xfree(old);
 }
 
 static Value *memo_call(Def *d, Expr *e, Ctx c) {
@@ -10059,8 +10111,7 @@ static void *mapped(size_t bytes) {
     (void)bytes;
     return NULL;
 #else
-    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
+    return map(bytes, MAP_PRIVATE);
 #endif
 }
 
@@ -10086,8 +10137,8 @@ static void fp_insert(int idx) {
             if (!table) table = xcalloc((size_t)size, sizeof(FpSlot));
         }
         for (int i = 0; i < fp_size; i++) if (fp_table[i].state) fp_put(table, size, state_fp(FP_INDEX(fp_table[i].state)), FP_INDEX(fp_table[i].state));
-        if (was_mapped) munmap(fp_table, sizeof(FpSlot) * (size_t)fp_size);
-        else if (!fp_region) free(fp_table);
+        if (was_mapped) unmap(fp_table);
+        else if (!fp_region) xfree(fp_table);
         fp_table = table;
         fp_size = size;
     }
@@ -10130,7 +10181,6 @@ static int check_deadlock = 1;
 static Module *root;
 static Expr **fairness;       /* WF and SF conjuncts of the specification */
 static int nfairness;
-static Expr *spec_subscript;
 
 static void add_check(Check **list, int *n, Def *d, Expr *e, Ctx c, int name) {
     *list = xrealloc(*list, sizeof(Check) * (size_t)(*n + 1));
@@ -10211,7 +10261,7 @@ static Value *permutation_group(Value *generators) {
             list_add(&g, c);
             table[h] = g.n;
             if ((size_t)g.n * 2 > size) {   /* grow, rehashing */
-                free(table);
+                xfree(table);
                 size *= 2;
                 table = xcalloc(size, sizeof(int));
                 for (int k = 0; k < g.n; k++) {
@@ -10222,7 +10272,7 @@ static Value *permutation_group(Value *generators) {
             }
         }
     }
-    free(table);
+    xfree(table);
     return list_set(&g);
 }
 
@@ -10345,6 +10395,9 @@ static uint64_t tlc_state_fp(Value **st) {
     return fp;
 }
 
+static uint64_t *fp_fps, *fp_vh;
+static Value **fp_last;
+static unsigned *fp_last_resets;
 static uint64_t fingerprint(Value **st) {
     if (view_expr) {
         Value **saved = cur_state;
@@ -10359,33 +10412,30 @@ static uint64_t fingerprint(Value **st) {
         return h;
     }
     /* The least fingerprint of the state's permutations. A successor shares
-       most of its values with its state's: each variable's last value and
+       most of its values with its state's: each variable's fp_last value and
        its hashes under the permutations, h[p] the same for all if unmoved,
        are kept. */
-    static uint64_t *fps, *vh;
-    static Value **last;
-    static unsigned *last_resets;
-    if (!fps) {
-        fps = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry);
-        vh = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry * (size_t)nvars);
-        last = xcalloc((size_t)nvars, sizeof(Value *));
-        last_resets = xcalloc((size_t)nvars, sizeof(unsigned));
+    if (!fp_fps) {
+        fp_fps = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry);
+        fp_vh = xmalloc(sizeof(uint64_t) * (size_t)nsymmetry * (size_t)nvars);
+        fp_last = xcalloc((size_t)nvars, sizeof(Value *));
+        fp_last_resets = xcalloc((size_t)nvars, sizeof(unsigned));
     }
-    memset(fps, 0, sizeof(uint64_t) * (size_t)nsymmetry);
+    memset(fp_fps, 0, sizeof(uint64_t) * (size_t)nsymmetry);
     for (int i = 0; i < nvars; i++) {
-        uint64_t *h = vh + (size_t)i * (size_t)nsymmetry;
-        if (st[i] != last[i] || last_resets[i] != scratch_resets) {
+        uint64_t *h = fp_vh + (size_t)i * (size_t)nsymmetry;
+        if (st[i] != fp_last[i] || fp_last_resets[i] != scratch_resets) {
             if (!permuted_hashes(st[i], h, 0, 0)) {
                 uint64_t same = elem_hash(st[i]);
                 for (int p = 0; p < nsymmetry; p++) h[p] = same;
             }
-            last[i] = st[i];
-            last_resets[i] = scratch_resets;
+            fp_last[i] = st[i];
+            fp_last_resets[i] = scratch_resets;
         }
-        for (int p = 0; p < nsymmetry; p++) fps[p] = fmix(fps[p] + h[p]);
+        for (int p = 0; p < nsymmetry; p++) fp_fps[p] = fmix(fp_fps[p] + h[p]);
     }
-    uint64_t best = fps[0];
-    for (int p = 1; p < nsymmetry; p++) if (fps[p] < best) best = fps[p];
+    uint64_t best = fp_fps[0];
+    for (int p = 1; p < nsymmetry; p++) if (fp_fps[p] < best) best = fp_fps[p];
     return best;
 }
 
@@ -10455,7 +10505,7 @@ static void intern_grow(size_t n) {
         atomic_store(&t[j].key, atomic_load(&islots[i].key));
         atomic_store(&t[j].id, atomic_load(&islots[i].id));
     }
-    if (!intern_region) free(islots);
+    if (!intern_region) xfree(islots);
     islots = t;
     nislots = n;
 }
@@ -10541,40 +10591,40 @@ static int intern_parts(Buf *b, Value *v) {
    value at the address the last was at, before the scratch arena is
    reset, is the same, as fingerprint has it, and takes the same id. */
 #define INTERN_WINDOW 16384
+static int *enc_tries, *enc_saved, *enc_whole;   /* whole: 1, its parts interned; 2, none */
+static Value **enc_last;
+static unsigned *enc_last_resets;
+static uint32_t *enc_last_id;
 static void encode_state(Buf *b, Value **st) {
-    static int *tries, *saved, *whole;   /* whole: 1, its parts interned; 2, none */
-    static Value **last;
-    static unsigned *last_resets;
-    static uint32_t *last_id;
     if (simulating) {   /* a simulation empties the store for each behavior */
         for (int i = 0; i < nvars; i++) encode(b, st[i]);
         return;
     }
     if (!ioff) ioff = xmalloc(sizeof(uint64_t) * (capids = 1024));
-    if (!tries) {
-        tries = xcalloc((size_t)nvars + 1, sizeof(int)), saved = xcalloc((size_t)nvars + 1, sizeof(int)), whole = xcalloc((size_t)nvars + 1, sizeof(int));
-        last = xcalloc((size_t)nvars + 1, sizeof(Value *)), last_resets = xcalloc((size_t)nvars + 1, sizeof(unsigned));
-        last_id = xcalloc((size_t)nvars + 1, sizeof(uint32_t));
+    if (!enc_tries) {
+        enc_tries = xcalloc((size_t)nvars + 1, sizeof(int)), enc_saved = xcalloc((size_t)nvars + 1, sizeof(int)), enc_whole = xcalloc((size_t)nvars + 1, sizeof(int));
+        enc_last = xcalloc((size_t)nvars + 1, sizeof(Value *)), enc_last_resets = xcalloc((size_t)nvars + 1, sizeof(unsigned));
+        enc_last_id = xcalloc((size_t)nvars + 1, sizeof(uint32_t));
     }
     for (int i = 0; i < nvars; i++) {
-        if (whole[i] == 2) { encode(b, st[i]); continue; }
+        if (enc_whole[i] == 2) { encode(b, st[i]); continue; }
         uint32_t id = 0;
-        if (whole[i]) saved[i] += intern_parts(b, st[i]);
-        else if (st[i] == last[i] && last_resets[i] == scratch_resets) { put_tagged(b, 'v', last_id[i] - 1); continue; }
-        else saved[i] += intern_into(b, st[i], 4, &id);
-        if (++tries[i] == (in_worker ? INTERN_WINDOW / nworkers : INTERN_WINDOW)) {   /* a worker sees its share */
-            whole[i] += saved[i] <= 0;
-            tries[i] = saved[i] = 0;
+        if (enc_whole[i]) enc_saved[i] += intern_parts(b, st[i]);
+        else if (st[i] == enc_last[i] && enc_last_resets[i] == scratch_resets) { put_tagged(b, 'v', enc_last_id[i] - 1); continue; }
+        else enc_saved[i] += intern_into(b, st[i], 4, &id);
+        if (++enc_tries[i] == (in_worker ? INTERN_WINDOW / nworkers : INTERN_WINDOW)) {   /* a worker sees its share */
+            enc_whole[i] += enc_saved[i] <= 0;
+            enc_tries[i] = enc_saved[i] = 0;
         }
-        if (id) last[i] = st[i], last_resets[i] = scratch_resets, last_id[i] = id;
+        if (id) enc_last[i] = st[i], enc_last_resets[i] = scratch_resets, enc_last_id[i] = id;
     }
 }
 
+static Buf add_one;   /* the state's values go in the store before it */
 static int add_state(Value **st, uint64_t fp, int parent, int action, int depth) {
-    static Buf one;   /* the state's values go in the store before it */
-    one.n = 0;
-    encode_state(&one, st);
-    return add_record(store_put(one.s, one.n), fp, parent, action, depth);
+    add_one.n = 0;
+    encode_state(&add_one, st);
+    return add_record(store_put(add_one.s, add_one.n), fp, parent, action, depth);
 }
 
 /* ---------------------------------------------------------------- reporting */
@@ -10623,7 +10673,7 @@ static void action_label(int action) {
     Buf b = {0};
     action_text(&b, action, "Initial predicate");
     fputs(b.s, stdout);
-    free(b.s);
+    xfree(b.s);
 }
 
 static int cur_action;
@@ -10860,23 +10910,23 @@ static void trace_state_text(Buf *b, Value **st, Value **next, int level, int di
         if (!diff || !shown_was(was_record, was_state, vars[i]->name, st[i]))
             buf_printf(b, "/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
     buf_printf(b, "/\\ _ALIASEvalError = %s\n", pretty(mk_str(intern(why.s))));
-    free(why.s);
+    xfree(why.s);
 }
 
 static void print_trace_state(Value **st, Value **next, int level) {
     Buf b = {0};
     trace_state_text(&b, st, next, level, 0);
     fputs(b.s ? b.s : "", stdout);
-    free(b.s);
+    xfree(b.s);
 }
 
+static Buf numbered_text;   /* TLC makes the state's text before it prints its number; an error may end it */
 static void print_numbered(int number, int action, Value **st, Value **prev, Value **next) {
-    static Buf b;   /* TLC makes the state's text before it prints its number; an error may end it */
-    b.n = 0;
-    if (b.s) b.s[0] = 0;
+    numbered_text.n = 0;
+    if (numbered_text.s) numbered_text.s[0] = 0;
     /* With -difftrace TLC prints a state after another as what changed, not as the view. */
     int diff = diff_trace && prev && !alias_name, shown = view_trace && view_expr && !diff;
-    if (!diff && !shown) trace_state_text(&b, st, next, number, diff_trace && prev);
+    if (!diff && !shown) trace_state_text(&numbered_text, st, next, number, diff_trace && prev);
     printf("State %d: ", number);
     action_label(action);
     printf("\n");
@@ -10886,7 +10936,7 @@ static void print_numbered(int number, int action, Value **st, Value **prev, Val
             if (!unchanged(prev[i], st[i]))
                 printf("%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
     }
-    printf("%s\n", b.s ? b.s : "");
+    printf("%s\n", numbered_text.s ? numbered_text.s : "");
 }
 
 /* TLC's report of a Java exception, up to its message. */
@@ -10907,7 +10957,7 @@ static void print_error_text(void) {
     Buf b = {0};
     error_text(&b);
     fputs(b.s, stdout);
-    free(b.s);
+    xfree(b.s);
 }
 
 /* While TLC rebuilds a behavior, the states it rebuilt up to the one it
@@ -11017,7 +11067,7 @@ static int check_possibles(void) {
                "Others may be unwitnessed too; only witnessed predicates appear with a\n"
                "non-zero count in the record printed above.\n"
                "See https://explain.tlapl.us/possible-conditions for additional details.\n", S(possibles[i].name), b.s);
-        free(b.s);
+        xfree(b.s);
         return MANYAN_VIOLATION_ASSUMPTION;
     }
     return 0;
@@ -11045,7 +11095,7 @@ static int check_posts(int after_error) {
             print_exception("java.lang.RuntimeException", ": ");
             printf("%s\n", why.s);
         }
-        free(why.s);
+        xfree(why.s);
         post_trace.n = 0;
         return simulating ? MANYAN_ERROR_CONFIG : !after_error ? MANYAN_ERROR : keep_going && !simulating ? -1 : 0;
     }
@@ -11066,7 +11116,7 @@ static int check_posts(int after_error) {
         if (sigsetjmp(here, 0)) {
             printf("Error: Evaluating postcondition %s at %s failed.\n", S(posts[i].name), b.s);
             print_error_text();
-            free(b.s);
+            xfree(b.s);
             status = MANYAN_VIOLATION_ASSUMPTION;
             continue;
         }
@@ -11079,7 +11129,7 @@ static int check_posts(int after_error) {
             printf("Error: Postcondition %s at %s is false.\n", S(posts[i].name), b.s);
             status = MANYAN_VIOLATION_ASSUMPTION;
         }
-        free(b.s);
+        xfree(b.s);
     }
     if (!status) status = check_possibles();
     checking_posts = 0;
@@ -11130,7 +11180,7 @@ static void print_error_message(void) {
         Buf b = {0};
         node_text(&b, error_expr);
         printf("\n%s", b.s);
-        free(b.s);
+        xfree(b.s);
     }
     printf("\n");
 }
@@ -11288,7 +11338,7 @@ static void dump_node(int idx, Value **st) {
     }
     if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), b.s);
     else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)state_fp(idx), b.s, b.s);
-    free(b.s);
+    xfree(b.s);
     if (states[idx].parent < 0) dump_rank(idx);
 }
 
@@ -11307,7 +11357,7 @@ static void dump_close(void) {
     fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
     fclose(dump_file);
     dump_file = NULL;
-    free(dump_ranked);
+    xfree(dump_ranked);
     dump_ranked = NULL;
     dump_nranked = 0;
 }
@@ -11427,7 +11477,7 @@ NATIVE(n_picksuccessor) {
                 break;
             }
         }
-        free(b.s), free(t.s);
+        xfree(b.s), xfree(t.s);
     }
     free(line);
     return TRUEV;
@@ -11441,7 +11491,7 @@ static int violation_fresh;
 static int continued_trace(const char *check, int name, Value **st) {
     int failed = trace_states(expanding, st, cur_action, 2);
     if (!failed) return 0;
-    char *why = strdup(trace_failure.s);
+    char *why = xstrdup(trace_failure.s);
     const char *java = trace_failure_java;
     printf("Error: Evaluating %s %s failed.\n%s", check, S(name), why);
     print_trace(expanding, st, cur_action);
@@ -11449,7 +11499,7 @@ static int continued_trace(const char *check, int name, Value **st) {
     else printf("Error: ");   /* an EvalException of TLC's own, plainly */
     fputs(why, stdout);
     print_trace(expanding, st, cur_action);
-    free(why);
+    xfree(why);
     violation = MANYAN_ERROR;
     /* TLC replays the step, which may now fail: an error of the step. */
     if (replay_error(expanding_state)) {
@@ -11579,7 +11629,7 @@ static Value *post_state(Value ***st, int n, int i, int aliased) {
     for (int v = 0; v < nvars; v++) list_add(&keys, mk_str(vars[v]->name)), list_add(&vals, st[i][v]);
     if (aliased && !alias)   /* TLC's record of the state, with why */
         list_add(&keys, mk_str(intern("_ALIASEvalError"))), list_add(&vals, mk_str(intern(why.s ? why.s : "")));
-    free(why.s);
+    xfree(why.s);
     if (alias && fcn_is_record(alias)) return alias;
     Value *r = mk_fcn_from(&keys, &vals);
     r->made = MADE_RECORD;
@@ -11957,8 +12007,8 @@ static long w_unit;            /* the state it expands, or Init's slice */
 static Buf w_bytes;
 
 static void *shared(size_t bytes) {
-    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) { fputs("manyan: cannot reserve shared memory for workers\n", stderr); stop(MANYAN_ERROR); }
+    void *p = map(bytes, MAP_SHARED);
+    if (!p) { fputs("manyan: cannot reserve shared memory for workers\n", stderr); stop(MANYAN_ERROR); }
     return p;
 }
 
@@ -12253,7 +12303,7 @@ static void start_workers(int n) {
 static void stop_workers(void) {
     if (!workers_running) return;
     for (int i = 0; i < nforked; i++) close(to_worker[i][1]);
-    for (int i = 0; i < nforked; i++) waitpid(worker_pids[i], NULL, 0);
+    for (int i = 0; i < nforked; i++) waitpid(worker_pids[i], NULL, 0), close(from_worker[i][0]);
     workers_running = 0;
 }
 
@@ -12535,7 +12585,7 @@ static void print_unfingerprinted(Expr **fps, int n) {
             Buf b = {0};
             loc_text(&b, fps[i]);
             printf("%d) %s\n", i, b.s);
-            free(b.s);
+            xfree(b.s);
         }
     }
     printf("\nReason:\n");
@@ -12549,7 +12599,8 @@ static int search(void) {
     else if (!states && (states = mapped(sizeof(StateRec) * ((size_t)1 << 29)))) {
         capstates = 1 << 29, states_mapped = 1;
         char *s = mapped((size_t)1 << 36);
-        if (s) memcpy(s, store.s, store.n + (store.s != NULL)), free(store.s), store.s = s, store.cap = (size_t)1 << 36, store_mapped = 1;
+        if (s && store.s) memcpy(s, store.s, store.n + 1), xfree(store.s);
+        if (s) store.s = s, store.cap = (size_t)1 << 36, store_mapped = 1;
     }
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
@@ -12659,7 +12710,7 @@ static int search(void) {
             if (nfp) print_trace(expanding, NULL, 0);
             else print_next_failure(expanding, NULL, 0, status);
             error_restore(&replayed);
-        } else free(first.msg.s);
+        } else xfree(first.msg.s);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
         if (status == MANYAN_FAILURE_EVAL && error_module == 1) status = MANYAN_ERROR;
@@ -12810,11 +12861,11 @@ static int next_named(void) {
     return (next_expr->kind == K_CALL || next_expr->kind == K_INSTCALL) && !next_expr->def->part;
 }
 
+static int next_split;
 /* The next-state action, split as TLC splits it as it starts, or when
    TLCGet("spec") first asks for its actions. */
 static void split_next(void) {
-    static int split;
-    if (split++ || !next_expr) return;
+    if (next_split++ || !next_expr) return;
     Arena *a = arena;
     arena = &perm_arena;
     split_action(next_expr, root_ctx, next_named() ? next_expr->def->name : intern("Action"), NULL);
@@ -12949,18 +13000,18 @@ static int same_state(Value **s, Value **t) {
     return 1;
 }
 
+static States behavior_all, behavior_b;
 /* The behavior so far, then `last` reached by act if it is not NULL, as
    TLC's worker gives it: a state equal to the one before it left out,
    compared from the end. */
 static States *sim_behavior(States *trace, Value **last, int act) {
-    static States all, b;
-    all.n = b.n = 0;
-    for (int i = 0; i < trace->n; i++) sim_push(&all, trace->a[i], trace->act[i]);
-    if (last) sim_push(&all, last, act);
-    char *keep = NEWN(char, all.n);
-    for (int i = all.n - 1; i >= 0; i--) keep[i] = !i || !same_state(all.a[i], all.a[i - 1]);
-    for (int i = 0; i < all.n; i++) if (keep[i]) sim_push(&b, all.a[i], all.act[i]);
-    return &b;
+    behavior_all.n = behavior_b.n = 0;
+    for (int i = 0; i < trace->n; i++) sim_push(&behavior_all, trace->a[i], trace->act[i]);
+    if (last) sim_push(&behavior_all, last, act);
+    char *keep = NEWN(char, behavior_all.n);
+    for (int i = behavior_all.n - 1; i >= 0; i--) keep[i] = !i || !same_state(behavior_all.a[i], behavior_all.a[i - 1]);
+    for (int i = 0; i < behavior_all.n; i++) if (keep[i]) sim_push(&behavior_b, behavior_all.a[i], behavior_all.act[i]);
+    return &behavior_b;
 }
 
 static void materialize(Value *v);
@@ -13076,7 +13127,7 @@ static void live_eval(void);
    step. */
 static int sim_violates(States *trace) {
     for (int i = 0; i < nstates && state_edges; i++) {
-        if (!edge_pool) free(state_edges[i].edges);
+        if (!edge_pool) xfree(state_edges[i].edges);
         state_edges[i] = (Edges){0};
     }
     edge_pool_used = 0;
@@ -13131,15 +13182,18 @@ static void sim_write(const char *file, long t, States *trace) {
         Buf b = {0};
         action_text(&b, trace->act[i], "Action");
         fprintf(f, "\\* %s\nSTATE_%d == \n", b.s, i + 1);
-        free(b.s);
+        xfree(b.s);
         fprint_state(f, trace->a[i]);
         fprintf(f, "\n\n");
     }
     fprintf(f, "=================================================\n");
     fclose(f);
-    free(name.s);
+    xfree(name.s);
 }
 
+static States sim_init_states;   /* read after an error jumps back */
+static EvalState sim_fresh;
+static Arena sim_init_arena;     /* the initial states, kept for good */
 /* Random simulation (§10.8): TLC's behaviors for the seed, from one worker.
    The initial states are kept for good; a behavior, with all it
    evaluates, until it ends. */
@@ -13154,13 +13208,11 @@ static int simulate(const ManyanOptions *o) {
     succ = NEWN(Value *, nvars);
     sigjmp_buf here;
     handler = &here;
-    static States init;   /* static: read after an error jumps back */
     States *const trace = &sim_trace;
-    static EvalState fresh;
-    fresh = eval_save();
+    sim_fresh = eval_save();
     if (sigsetjmp(here, 0)) {
         Arena *in_use = arena;
-        eval_restore(fresh);     /* the error may have left an evaluation, primed */
+        eval_restore(sim_fresh);     /* the error may have left an evaluation, primed */
         arena = in_use;
         handler = NULL;
         int invariant = checking_invariant();
@@ -13188,21 +13240,20 @@ static int simulate(const ManyanOptions *o) {
         }
         return status;
     }
-    static Arena init_arena;     /* the initial states, kept for good */
-    arena = &init_arena;
+    arena = &sim_init_arena;
     gen_target = cur_state = NEWN(Value *, nvars);
     next_state = NULL;
     gen_init = 1;
     gen_emit = sim_emit;
     gen(init_expr, root_ctx, NULL);
     gen_init = 0;
-    init = sim_found;
+    sim_init_states = sim_found;
     sim_found = (States){0};
-    generated = init.n;
-    printf("Computed %d initial states...\n", init.n);
+    generated = sim_init_states.n;
+    printf("Computed %d initial states...\n", sim_init_states.n);
     int in_model = 0;   /* as TLC, the behaviors start in the model: those kept first */
-    for (int i = 0; i < init.n; i++) {
-        Value **st = init.a[i];
+    for (int i = 0; i < sim_init_states.n; i++) {
+        Value **st = sim_init_states.a[i];
         for (int v = 0; v < nvars; v++)
             if (!st[v]) {
                 printf("Error: State is not completely specified by the initial predicate:\n");
@@ -13214,7 +13265,7 @@ static int simulate(const ManyanOptions *o) {
         Region *r = region_open();
         int violated = check_initial(st);
         region_close(r);
-        arena = &init_arena;
+        arena = &sim_init_arena;
         if (violated && check_posts(1)) {   /* TLC's error, as one in an invariant */
             printf("While working on the initial state:\n");
             print_state(st);
@@ -13222,9 +13273,9 @@ static int simulate(const ManyanOptions *o) {
             return MANYAN_ERROR;
         }
         if (violated) return violated;
-        if (check_list(constraints, nconstraints, st) < 0) init.a[in_model++] = st;
+        if (check_list(constraints, nconstraints, st) < 0) sim_init_states.a[in_model++] = st;
     }
-    if (!init.n) {
+    if (!sim_init_states.n) {
         printf("Error: There is no state satisfying the initial state predicate.\n");
         return MANYAN_ERROR;
     }
@@ -13232,8 +13283,8 @@ static int simulate(const ManyanOptions *o) {
         printf("Error: There is no state satisfying the initial state predicate and the state-constraint(s).\n");
         return MANYAN_ERROR;
     }
-    init.n = in_model;
-    printf("Finished computing initial states: %d distinct state generated.\n", init.n);
+    sim_init_states.n = in_model;
+    printf("Finished computing initial states: %d distinct state generated.\n", sim_init_states.n);
     arena = &perm_arena;
     collect_fairnesses();
     arena = &scratch_arena;
@@ -13242,7 +13293,7 @@ static int simulate(const ManyanOptions *o) {
         arena_reset(&scratch_arena);
         trace->n = 0;
         sim_traces = t + 1;
-        Value **st = init.a[rng_index(init.n)];
+        Value **st = sim_init_states.a[rng_index(sim_init_states.n)];
         tlc_cache_behavior(st);
         sim_push(trace, st, -1);
         int ended = 0;
@@ -13304,7 +13355,7 @@ static int simulate(const ManyanOptions *o) {
         Buf b = {0};
         loc_text(&b, periodic_expr->def->body);
         printf("Error: Assumption %s is false.\n", b.s);   /* TLC's stops the simulation, not its exit status */
-        free(b.s);
+        xfree(b.s);
     }
     return post;
 }
@@ -13431,7 +13482,7 @@ static int cfg_token(CfgLexer *L) {
         }
         L->pos += cfg_len = n + 1;
         cfg_str = intern_n(b.s ? b.s : "", (int)b.n);   /* as TLC, in the order it reads them, as model values */
-        free(b.s);
+        xfree(b.s);
         return 's';
     }
     L->pos += cfg_len = s[0] == '<' && s[1] == '-' ? 2 : 1;
@@ -13816,9 +13867,8 @@ static void use_specification(Expr *spec) {
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
             Expr *sq = unfold(e->args[0]);
             next_expr = in_instance(call, sq->args[0]);
-            spec_subscript = in_instance(call, sq->args[1]);
             char *in = xcalloc((size_t)nvars + 1, 1);
-            subscript_vars(spec_subscript, NULL, NULL, NULL, 0, in, 0);
+            subscript_vars(in_instance(call, sq->args[1]), NULL, NULL, NULL, 0, in, 0);
             if (!nowarning) {
                 for (int v = 0; v < nvars; v++)
                     if (!in[v]) {
@@ -13828,7 +13878,7 @@ static void use_specification(Expr *spec) {
                         warning(text);
                     }
             }
-            free(in);
+            xfree(in);
             if (nnext++)   /* as TLC, once it has warned of this one's subscript */
                 config_error("The specification contains more than one conjunct of the form [][Next]_v,\n"
                              "but TLC can handle only specifications with one next-state relation.");
@@ -13845,8 +13895,8 @@ static void use_specification(Expr *spec) {
         }
     }
     if (ninit) init_expr = conjoin(init, ninit);
-    free(parts);
-    free(init);
+    xfree(parts);
+    xfree(init);
 }
 
 /* The parts of a property, as TLC's processConfigProps finds them
@@ -13913,7 +13963,7 @@ static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int
             property_parts(e->args[i], call, c, intern(b.s), out, n);
             b.n = 0;
         }
-        free(b.s);
+        xfree(b.s);
         return;
     case X_FORALL: {
         if (call || !bounds_constant(e)) break;
@@ -13930,7 +13980,7 @@ static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int
         if (!each.n) config_error("The liveness formula is a tautology.");
         loc_text(&b, e->args[0]);
         for (int i = 0; i < each.n; i++) property_parts(e->args[0], call, *(Ctx *)each.v[i], intern(b.s), out, n);
-        free(b.s);
+        xfree(b.s);
         return;
     }
     }
@@ -13982,7 +14032,7 @@ static void use_property(Expr *p) {
         add_check(list, nlist, d, in_instance(call, x), c, name);
         (*list)[*nlist - 1].where = in ? in->where : where;
     }
-    free(parts);
+    xfree(parts);
 }
 
 static Value *def_body(Def *d) { return d->kind == D_FCN ? fcndef_value(d, (Ctx){NULL, NULL}) : eval(d->body, (Ctx){NULL, NULL}); }
@@ -14156,7 +14206,7 @@ static CtxNames context_names(Module *m) {
     for (int i = 0; i < m->nextends; i++) {
         CtxNames x = context_names(load_module(m->extends[i], m));
         for (int k = 0; k < x.n; k++) if (!x.a[k].local) ctx_put(&c, x.a[k]);
-        free(x.a);
+        xfree(x.a);
     }
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
@@ -14180,12 +14230,12 @@ static CtxNames context_names(Module *m) {
                         buf_printf(&name, "%s!%s", S(d->name), e.name);
                         int id = intern(name.s);   /* before S reads strs, which interning moves */
                         e.name = S(id);
-                        free(name.s);
+                        xfree(name.s);
                     }
                     e.local = u->local;
                     ctx_put(&c, e);
                 }
-            free(t.a);
+            xfree(t.a);
             if (u->kind == 1) continue;
         }
         ctx_put(&c, (CtxName){S(d->name), 0, u->local, d});
@@ -14222,7 +14272,7 @@ static CtxNames context_enumeration(Module *m) {
                     link[e] = heads[hash[e] % (unsigned)bigger];
                     heads[hash[e] % (unsigned)bigger] = e;
                 }
-            free(head);
+            xfree(head);
             cap = bigger;
             head = heads;
         }
@@ -14234,10 +14284,10 @@ static CtxNames context_enumeration(Module *m) {
     for (int i = cap - 1; i >= 0; i--)
         for (int e = head[i]; e >= 0; e = link[e])
             if (e >= nbuiltins) ctx_put(&out, c.a[e - nbuiltins]);
-    free(hash);
-    free(link);
-    free(head);
-    free(c.a);
+    xfree(hash);
+    xfree(link);
+    xfree(head);
+    xfree(c.a);
     return out;
 }
 
@@ -14250,7 +14300,7 @@ static void order_variables(void) {
         if (c.a[i].def && c.a[i].def->kind == D_VAR && n > 0) order[--n] = c.a[i].def;
     if (n == 0 && nvars) memcpy(vars, order, sizeof(Def *) * (size_t)nvars);
     for (int i = 0; i < nvars; i++) vars[i]->var_index = i;
-    free(c.a);
+    xfree(c.a);
 }
 
 /* The text of e as SANY's human-readable image: its tokens, without the
@@ -14304,16 +14354,16 @@ static void warn_symmetry_sets(Expr *body, Value *g) {
         for (int j = 0; j < ncfg; j++)
             if (strncmp(cfg[j].keyword, "CONSTANT", 8) == 0 && cfg[j].op != '=' && !cfg[j].module && cfg[j].target == id) { name = (char *)S(cfg[j].name); break; }
         buf_printf(&names, "%s%s", n++ ? ", and " : "", name);
-        free(image.s);
+        xfree(image.s);
     }
     if (n) {
         Buf b = {0};
         buf_printf(&b, "The set%s %s %s been defined to be a symmetry set but contain%s less than two elements.",
                    n > 1 ? "s" : "", names.s, n > 1 ? "have" : "has", n > 1 ? "" : "s");
         warning(b.s);
-        free(b.s);
+        xfree(b.s);
     }
-    free(names.s);
+    xfree(names.s);
 }
 
 /* Whether to check the invariant or property e the configuration names.
@@ -14333,7 +14383,7 @@ static int config_check(Expr *e, const char *what) {
                        "To assert constant-level formulas in your spec, use ASSUME ConstInv. If you optionally want to give the assumption a name, write ASSUME YourAssumption == ConstInv instead. "
                        "See https://explain.tlapl.us/assumptions-and-invariants for additional details.", S(e->def->name));
             warning(b.s);
-            free(b.s);
+            xfree(b.s);
         }
         return 0;
     }
@@ -14456,7 +14506,7 @@ static int names_const(Def *c) {
     for (int i = 0; i < root->nunits; i++) if (root->units[i].kind == 2) collect_names(root->units[i].expr, &ds, &n, &cap);
     int found = 0;
     for (int i = 0; i < n && !found; i++) found = ds[i] == c;
-    free(ds);
+    xfree(ds);
     return found;
 }
 
@@ -14557,7 +14607,7 @@ static int setup_model(void) {
                            "into a temporal formula, asserting that %s holds in all states of every behavior. "
                            "See https://explain.tlapl.us/invariants-and-properties for additional details.", p, p, p, p, p);
                 warning(b.s);
-                free(b.s);
+                xfree(b.s);
             }
             if (symbolic_mode) add_check(&temporal_props, &ntemporal_props, e->def, e, root_ctx, it->name);   /* the whole formula, on a lasso */
             else if (config_check(e, "property")) use_property(e);
@@ -14707,7 +14757,7 @@ static _Noreturn void cannot_handle(Expr *e, const char *why) {
     if (why) buf_printf(&b, ":\n%s", why);
     error_reset();
     buf_puts(&error_message, b.s);
-    free(b.s);
+    xfree(b.s);
     stackless = 1;
     raise_error();
 }
@@ -14954,7 +15004,7 @@ static Value **state_values(int s) {
 
 /* None decoded: each check after the search decodes the states it needs again. */
 static void decoded_reset(void) {
-    free(decoded);
+    xfree(decoded);
     decoded = xcalloc((size_t)nstates, sizeof(Value **));
     arena_reset(&decoded_arena);
     if (decoded_ids) memset(decoded_ids, 0, sizeof(Value *) * ndecoded_ids);
@@ -15208,7 +15258,7 @@ static Arena product_arena;
 
 static void product_reset(void) {
     npnodes = product_acts = 0;
-    free(pnodes_of);
+    xfree(pnodes_of);
     pnodes_of = xcalloc((size_t)nstates, sizeof(PRefs));
     arena_reset(&product_arena);
 }
@@ -15285,6 +15335,7 @@ static void tlc_fps_fill(void) {
     ntlc_fps = nstates;
 }
 
+static int *order_slot, order_cap, *order_used, *order_pend, order_ncap;   /* slot: all -1 between calls; used: the slots taken */
 /* The steps e of state s, edge n its stuttering one if stutter is set, in
    the order TLC's table of them holds the successors: by its fingerprint's
    slot, probing linearly, after the successors, the state itself. A node
@@ -15300,67 +15351,66 @@ static void succ_order(int p, const int *edges, int n, int stutter, int *order) 
         for (int e = 0; e < n; e++) if (e != self) order[k++] = e;
         return;
     }
-    static int *slot, cap, *used, *pend, ncap;   /* slot: all -1 between calls; used: the slots taken */
     if (ntlc_fps < nstates) tlc_fps_fill();
     int len = succ_table_size(s), count = 0;
-    if (n + 1 > ncap) {
-        ncap = n + 1;
-        used = xrealloc(used, sizeof(int) * (size_t)ncap);
-        pend = xrealloc(pend, sizeof(int) * (size_t)ncap);
+    if (n + 1 > order_ncap) {
+        order_ncap = n + 1;
+        order_used = xrealloc(order_used, sizeof(int) * (size_t)order_ncap);
+        order_pend = xrealloc(order_pend, sizeof(int) * (size_t)order_ncap);
     }
     for (int e = 0; e < n + stutter; e++) {
         int npend = 0;
         if (count >= len / 2) {   /* TLC's grow: the old slots in order, put again */
-            qsort(used, (size_t)count, sizeof(int), cmp_int);
-            for (int i = 0; i < count; i++) pend[npend++] = slot[used[i]], slot[used[i]] = -1;
+            qsort(order_used, (size_t)count, sizeof(int), cmp_int);
+            for (int i = 0; i < count; i++) order_pend[npend++] = order_slot[order_used[i]], order_slot[order_used[i]] = -1;
             len = 2 * len + 1;
             count = 0;
         }
-        pend[npend++] = e;
-        if (len > cap) {
-            slot = xrealloc(slot, sizeof(int) * (size_t)len);
-            for (int i = cap; i < len; i++) slot[i] = -1;
-            cap = len;
+        order_pend[npend++] = e;
+        if (len > order_cap) {
+            order_slot = xrealloc(order_slot, sizeof(int) * (size_t)len);
+            for (int i = order_cap; i < len; i++) order_slot[i] = -1;
+            order_cap = len;
         }
         for (int i = 0; i < npend; i++) {
-            int x = pend[i], at = (int)((uint32_t)tlc_fps[x < n ? edges[2 * x] : s] & 0x7fffffff) % len;
-            while (slot[at] >= 0) at = (at + 1) % len;
-            slot[at] = x;
-            used[count++] = at;
+            int x = order_pend[i], at = (int)((uint32_t)tlc_fps[x < n ? edges[2 * x] : s] & 0x7fffffff) % len;
+            while (order_slot[at] >= 0) at = (at + 1) % len;
+            order_slot[at] = x;
+            order_used[count++] = at;
         }
     }
-    qsort(used, (size_t)count, sizeof(int), cmp_int);
-    for (int i = 0; i < count; i++) order[i] = slot[used[i]], slot[used[i]] = -1;
+    qsort(order_used, (size_t)count, sizeof(int), cmp_int);
+    for (int i = 0; i < count; i++) order[i] = order_slot[order_used[i]], order_slot[order_used[i]] = -1;
 }
 
+static int *steps_found, steps_cap, *steps_order, steps_ncap;   /* (successor, action, step) triples */
 /* The successors of a product node by the n steps of its state in edges,
    (target, action) pairs, then the stuttering step if stutter is set, with
    each successor of the tableau node; edge is the step's index in the
    state graph, n for stuttering. */
 static void pnode_steps(int p, const int *edges, int n, int stutter) {
-    static int *found, cap, *order, ncap;   /* (successor, action, step) triples */
     int s = pnodes[p].state, t = pnodes[p].tnode, m = 0, graph = edges == state_edges[s].edges;
     tnode_expand(t);
-    if (n + 1 > ncap) order = xrealloc(order, sizeof(int) * (size_t)(ncap = n + 1));
-    succ_order(p, edges, n, stutter, order);
+    if (n + 1 > steps_ncap) steps_order = xrealloc(steps_order, sizeof(int) * (size_t)(steps_ncap = n + 1));
+    succ_order(p, edges, n, stutter, steps_order);
     for (int i = 0; i < n + stutter; i++) {
-        int e = order[i];
+        int e = steps_order[i];
         int target = e < n ? edges[2 * e] : s, action = e < n ? edges[2 * e + 1] : STUTTER;
         if (!tnode_step(t, s, graph ? e : -1, target)) continue;
         for (int k = tnodes[t].nsucc - 1; k >= 0; k--) {   /* in TLC's order */
             int u = tnodes[t].succ[k];
             if (!tnode_admits(u, target)) continue;
-            if (3 * m + 3 > cap) found = xrealloc(found, sizeof(int) * (size_t)(cap = 2 * cap + 18));
-            found[3 * m] = pnode_find(target, u, 1);
-            found[3 * m + 1] = action;
-            found[3 * m + 2] = e;
+            if (3 * m + 3 > steps_cap) steps_found = xrealloc(steps_found, sizeof(int) * (size_t)(steps_cap = 2 * steps_cap + 18));
+            steps_found[3 * m] = pnode_find(target, u, 1);
+            steps_found[3 * m + 1] = action;
+            steps_found[3 * m + 2] = e;
             m++;
         }
     }
     PNode *pn = &pnodes[p];
     pn->succ = product_raw(sizeof(int) * (size_t)(2 * m));
     pn->nsucc = m;
-    for (int i = 0; i < m; i++) pn->succ[i] = found[3 * i], pn->succ[m + i] = found[3 * i + 2];
+    for (int i = 0; i < m; i++) pn->succ[i] = steps_found[3 * i], pn->succ[m + i] = steps_found[3 * i + 2];
 }
 
 /* Each edge of the state graph, and the stuttering step unless an edge is
@@ -15709,9 +15759,9 @@ static int product_path(int *from, int nfrom, int to, int *allowed, int nallowed
         int k = n;
         for (int v = to; v >= 0; v = prev[v]) rev[--k] = v;
         for (int i = 0; i < n; i++) { list_add(path, mk_int(rev[i])); list_add(acts, mk_int(pact[rev[i]])); }
-        free(rev);
+        xfree(rev);
     }
-    free(prev); free(pact); free(queue);
+    xfree(prev); xfree(pact); xfree(queue);
     return found;
 }
 
@@ -15854,7 +15904,7 @@ static int live_walk(int entry, List *cyc, List *acts) {
     }
     for (int i = 1; i < stack.n; i++) { list_add(cyc, stack.v[i]); list_add(acts, sacts.v[i]); }
     if (stack.n) { list_add(cyc, mk_int(cur)); list_add(acts, mk_int(act)); }
-    free(where); free(met);
+    xfree(where); xfree(met);
     return cur;
 }
 
@@ -15891,7 +15941,7 @@ static void live_back(int from, int entry, List *cyc, List *acts) {
     }
     list_add(cyc, mk_int(entry));
     list_add(acts, mk_int(back));
-    free(first); free(next); free(prev); free(pact); free(queue);
+    xfree(first); xfree(next); xfree(prev); xfree(pact); xfree(queue);
 }
 
 /* Drops each of the first n nodes whose state is the one before it, prev
@@ -16029,8 +16079,8 @@ static void warn_stuttering(void) {
                "suitable fairness constraint to %s (compare Chapter 8, page 87ff of Specifying Systems at "
                "https://lamport.azurewebsites.net/tla/book.html).", name, at.s, name);
     warning(b.s);
-    free(at.s);
-    free(b.s);
+    xfree(at.s);
+    xfree(b.s);
 }
 
 /* The product nodes of the initial states, as TLC adds them. */
@@ -16078,8 +16128,8 @@ static void pem_search(int *roots, int nroots) {
         found = scc_search(all, nall, 0);
     }
     if (found < 0) accepted = was, naccepted = nwas;
-    else free(was);
-    free(pem_off); free(all);
+    else xfree(was);
+    xfree(pem_off); xfree(all);
     pem_off = NULL;
 }
 
@@ -16115,7 +16165,7 @@ static void sim_subcomponent(int node) {   /* checkSubcomponent */
     sn3 += 2;
     int all = 1;
     for (int e = 0; e < neventualities; e++) all &= met[e];
-    free(met);
+    xfree(met);
     if (all) sim_hit = node;
 }
 
@@ -16197,7 +16247,7 @@ static void sim_cycle(int node, Ints *cyc) {
             snum[cur] = sn3;
         }
     }
-    free(met);
+    xfree(met);
     snum[cur] = ++sn3;
     while (cur != node) {
         int found = 0, i;
@@ -16231,10 +16281,10 @@ static int sim_search(int *roots, int nroots) {
     int init = -1;
     for (int r = 0; r < nroots && sim_hit < 0; r++)
         if (snum[roots[r]] == 0) sim_sccs(init = roots[r], 0);
-    if (sim_hit < 0) { free(snum); return 0; }
+    if (sim_hit < 0) { xfree(snum); return 0; }
     Ints cyc = {0};
     sim_cycle(sim_hit, &cyc);
-    free(snum);
+    xfree(snum);
     /* The shortest path from the initial node to the root (BEGraph.getPath). */
     int *parent = xmalloc(sizeof(int) * (size_t)npnodes), *queue = xmalloc(sizeof(int) * (size_t)npnodes), head = 0, tail = 0;
     for (int p = 0; p < npnodes; p++) parent[p] = -2;
@@ -16260,8 +16310,8 @@ static int sim_search(int *roots, int nroots) {
     for (int i = 1; i < cyc.n; i++)
         if (pnodes[cyc.v[i]].state != pnodes[cyc.v[i - 1]].state)
             la[n] = edge_act(cyc.v[i - 1], cyc.v[i]), ls[n++] = pnodes[cyc.v[i]].state;
-    free(parent);
-    free(queue);
+    xfree(parent);
+    xfree(queue);
     if (ls[n - 1] == pnodes[sim_hit].state) print_lasso(ls, la, n, -1, -2, entry);   /* by no action, as TLC's simulator */
     else print_lasso(ls, la, n, entry, edge_act(cyc.v[cyc.n - 1], sim_hit), entry);
     return 1;
@@ -16306,6 +16356,7 @@ static int tf_cycle_free(TF *f) {
 
 static void regenerate(int s);
 
+static int *build_stack, nbuild_stack;
 /* The product's edges as TLC adds them once it has expanded s0; whether
    the path to a node with nothing left to do ends there (*at), if cut is
    set: TLC meets it on a new node's own state, and returns from that node
@@ -16314,15 +16365,14 @@ static void regenerate(int s);
    again, which prints again where the actions do; while the search
    follows the product, the step is so completed, as TLC completes it. */
 static int live_build_at(int s0, int cut, int *at) {
-    static int *stack, n;
     int found = 0, fresh = npnodes;   /* the nodes made from here are new */
     for (int i = 0; i < pnodes_of[s0].n && (following || !found); i++) {
         if (pnodes[pnodes_of[s0].v[i].node].succ) continue;
         live_step = s0;
-        n = 0;
-        PUSH(stack, n, pnodes_of[s0].v[i].node);
-        while (n && (following || !found)) {
-            int v = stack[--n];
+        nbuild_stack = 0;
+        PUSH(build_stack, nbuild_stack, pnodes_of[s0].v[i].node);
+        while (nbuild_stack && (following || !found)) {
+            int v = build_stack[--nbuild_stack];
             if (pnodes[v].succ) continue;
             pnode_successors(v);
             int end = 0;
@@ -16335,7 +16385,7 @@ static int live_build_at(int s0, int cut, int *at) {
             if (v >= fresh && following && printed[pnodes[v].state]) regenerate(pnodes[v].state);
             for (int k = pnodes[v].nsucc - 1; k >= 0; k--) {
                 int w = pnodes[v].succ[k];
-                if (!pnodes[w].succ && pnodes[w].state <= s0) PUSH(stack, n, w);
+                if (!pnodes[w].succ && pnodes[w].state <= s0) PUSH(build_stack, nbuild_stack, w);
             }
         }
     }
@@ -16459,15 +16509,15 @@ static void live_init(Value **st) {
    behavior to the state and the counts of that moment. */
 static int live_at;   /* the state live_eval is at; read after an error jumps back */
 
+static char *eval_on_state;   /* each atom: of a property without a tableau */
 static void live_eval(void) {
     natoms = 0;
     neventualities = 0;
-    static char *on_state;   /* each atom: of a property without a tableau */
     for (int p = 0; p < ntemporal_props; p++) {
         int from = natoms;
         int flat = !tf_tableau(to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1));
-        on_state = xrealloc(on_state, (size_t)natoms + 1);
-        memset(on_state + from, flat, (size_t)(natoms - from));
+        eval_on_state = xrealloc(eval_on_state, (size_t)natoms + 1);
+        memset(eval_on_state + from, flat, (size_t)(natoms - from));
     }
     for (live_at = 0; live_at < nstates; live_at++) {
         int s = live_at;
@@ -16485,11 +16535,11 @@ static void live_eval(void) {
             if (atoms[i]->atom->kind == K_ENABLED) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
         for (int i = 0; i < nfairs; i++) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
         for (int i = 0; i < natoms; i++)
-            if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && on_state[i])
+            if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && eval_on_state[i])
                 holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
         for (int e = 0; e <= r->nedges; e++)
             for (int i = 0; i < natoms; i++)
-                if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && !on_state[i])
+                if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && !eval_on_state[i])
                     holds_in(atoms[i]->atom, atoms[i]->c, state_values(e < r->nedges ? r->edges[2 * e] : s), NULL);
     }
 }
@@ -16521,18 +16571,18 @@ static void collect_fairnesses(void) {
 
 /* An empty cache for the natoms atoms on each state and step. */
 static void atom_cache_reset(void) {
-    for (int s = 0; s < nreal_succ; s++) free(real_succ[s].fp), free(real_succ[s].holds), free(real_succ[s].fair);
-    free(real_succ);
+    for (int s = 0; s < nreal_succ; s++) xfree(real_succ[s].fp), xfree(real_succ[s].holds), xfree(real_succ[s].fair);
+    xfree(real_succ);
     real_succ = xcalloc((size_t)nstates + 1, sizeof(Successors));
     nreal_succ = nstates;
     atom_slot = xrealloc(atom_slot, sizeof(int) * (size_t)(natoms + 1));
     nstate_slots = nstep_slots = 0;
     for (int i = 0; i < natoms; i++) if (atoms[i]->index == i) atom_slot[i] = atoms[i]->action ? nstep_slots++ : nstate_slots++;
     size_t n = (size_t)nstates * (size_t)nstate_slots;
-    free(step_atoms);
+    xfree(step_atoms);
     step_atoms = xmalloc(sizeof(size_t) * (size_t)(nstates + 1));
     for (int s = 0; s < nstates; s++) { step_atoms[s] = n; n += (size_t)(state_edges[s].nedges + 1) * (size_t)nstep_slots; }
-    if (atom_cache) munmap(atom_cache, atom_cache_size);
+    if (atom_cache) unmap(atom_cache);
     atom_cache = shared(atom_cache_size = n + 1);
 }
 
@@ -16758,7 +16808,7 @@ static int pem_accept(int *nodes, int n) {
    accepted component, its nodes marked in pem_in and in *com. */
 static int pem_sccs(int *roots, int nroots, Ints *com, int (*accept)(int *, int)) {
     int nq = nroots, *queue = xmalloc(sizeof(int) * (size_t)(nroots + 1)), qcap = nroots + 1;
-    memcpy(queue, roots, sizeof(int) * (size_t)nroots);
+    if (nroots) memcpy(queue, roots, sizeof(int) * (size_t)nroots);
     for (int p = 0; p < npnodes; p++) pnodes[p].index = -1, pnodes[p].onstack = 0;
     int *stack = xmalloc(sizeof(int) * (size_t)npnodes), *cstack = xmalloc(sizeof(int) * (size_t)npnodes);
     int *cedge = xmalloc(sizeof(int) * (size_t)npnodes), index = 0, sp = 0, found = -1;
@@ -16800,7 +16850,7 @@ static int pem_sccs(int *roots, int nroots, Ints *com, int (*accept)(int *, int)
             sp = start;
         }
     }
-    free(queue); free(stack); free(cstack); free(cedge);
+    xfree(queue); xfree(stack); xfree(cstack); xfree(cedge);
     return found;
 }
 
@@ -16994,7 +17044,7 @@ static int pem_walk(int root, Ints *walk) {
             seen[cur] = 1;
         }
     }
-    free(seen); free(met);
+    xfree(seen); xfree(met);
     return cur;
 }
 
@@ -17013,13 +17063,13 @@ static void pem_back(int from, int root, Ints *post) {
             if (w == v || !pem_step(v, k, NULL)) continue;
             if (w == root) {
                 for (int x = v; x >= 0; x = prev[x]) PUSH(post->v, post->n, x);
-                free(prev); free(queue);
+                xfree(prev); xfree(queue);
                 return;
             }
             if (pem_in[w] && prev[w] == -2) prev[w] = v, queue[qt++] = w;
         }
     }
-    free(prev); free(queue);
+    xfree(prev); xfree(queue);
 }
 
 /* TLC's printTrace: the shortest path to the root, then the cycle of the
@@ -17065,7 +17115,7 @@ static int pem_group(Pem *pems, int n, int i, int prune) {
     product_reset();
     int *roots, nroots = live_roots(tf, &roots);
     live_build(tf, 0, NULL);
-    free(pem_in);
+    xfree(pem_in);
     pem_in = xcalloc((size_t)npnodes + 1, 1);
     int njob = 0;
     pem_job = NEWN(int, n);
@@ -17114,7 +17164,7 @@ static int pem_group(Pem *pems, int n, int i, int prune) {
             if (!in_worker) pem_print(root, roots, nroots);
         }
     }
-    if (found) munmap(found, (size_t)njob);
+    if (found) unmap(found);
     return violated;
 }
 
@@ -17191,7 +17241,7 @@ static int pem_violated(void) {
     int violated = 0;
     for (int g = 0; g < ngroups && !violated; g++)
         if (!found || found[g] != 1) violated = pem_group(pems, d.n, first[g], prune);
-    if (found) munmap(found, (size_t)ngroups);
+    if (found) unmap(found);
     return violated;
 }
 
@@ -17544,10 +17594,10 @@ static int sat_redundant(int p, unsigned levels, int *stack, int *clear, int *nc
     return 1;
 }
 
+static int *analyze_stack, *analyze_clear, analyze_cap;
 /* The first-UIP clause of a conflict in sat.buf, its asserting literal
    first and one of the next level second: returns the level to go back to. */
 static int sat_analyze(Clause *c, int *nout) {
-    static int *stack, *clear, cap;
     sat_room(sat.nvars + 1);
     int *out = sat.buf, path = 0, p = -1, idx = sat.ntrail - 1, n = 1;
     do {
@@ -17568,18 +17618,18 @@ static int sat_analyze(Clause *c, int *nout) {
     } while (path > 0);
     out[0] = p ^ 1;
     /* Leave out the literals the others imply. */
-    if (cap < sat.nvars + 1) {
-        cap = sat.nvars + 1;
-        stack = xrealloc(stack, sizeof(int) * (size_t)cap);
-        clear = xrealloc(clear, sizeof(int) * (size_t)cap);
+    if (analyze_cap < sat.nvars + 1) {
+        analyze_cap = sat.nvars + 1;
+        analyze_stack = xrealloc(analyze_stack, sizeof(int) * (size_t)analyze_cap);
+        analyze_clear = xrealloc(analyze_clear, sizeof(int) * (size_t)analyze_cap);
     }
-    memcpy(clear, out, sizeof(int) * (size_t)n);
+    memcpy(analyze_clear, out, sizeof(int) * (size_t)n);
     int m = 1, nclear = n;
     unsigned levels = 0;
     for (int i = 1; i < n; i++) levels |= 1u << (sat.level[out[i] >> 1] & 31);
     for (int i = 1; i < n; i++)
-        if (!sat.reason[out[i] >> 1] || !sat_redundant(out[i], levels, stack, clear, &nclear)) out[m++] = out[i];
-    for (int i = 1; i < nclear; i++) sat.seen[clear[i] >> 1] = 0;
+        if (!sat.reason[out[i] >> 1] || !sat_redundant(out[i], levels, analyze_stack, analyze_clear, &nclear)) out[m++] = out[i];
+    for (int i = 1; i < nclear; i++) sat.seen[analyze_clear[i] >> 1] = 0;
     sat.glue = 0;
     for (int i = 0; i < m; i++) {
         int lv = sat.level[out[i] >> 1];
@@ -17630,8 +17680,8 @@ static void sat_reduce(void) {
     for (int i = 0; i < 2 * sat.nvars; i++) sat.watch[i].n = 0;
     for (int i = 0; i < sat.clauses.n; i++) sat_watch(sat.clauses.c[i]);
     for (int i = 0; i < l->n; i++) sat_watch(l->c[i]);
-    for (int i = 0; i < nd; i++) free(dead[i]);
-    free(dead);
+    for (int i = 0; i < nd; i++) xfree(dead[i]);
+    xfree(dead);
 }
 
 /* Counts a learned clause's glue among the recent ones; whether those
@@ -17753,7 +17803,7 @@ static int gate(int op, int a, int b, int c, int *fresh) {
         Gate *t = xcalloc((size_t)cap, sizeof(Gate));
         for (int i = 0; i < capgates; i++)
             if (gates[i].op) t[gate_slot(t, cap, gates[i].op, gates[i].a, gates[i].b, gates[i].c)] = gates[i];
-        free(gates);
+        xfree(gates);
         gates = t;
         capgates = cap;
     }
@@ -17929,7 +17979,7 @@ static SumSlot *sum_find(const Lin *l) {
             while (t[j].lin) j = (j + 1) & (cap - 1);
             t[j] = sum_slots[i];
         }
-        free(sum_slots);
+        xfree(sum_slots);
         sum_slots = t;
         capsum_slots = cap;
     }
@@ -17950,7 +18000,7 @@ static LinSlot *lin_find(const int *w) {
             while (t[j].word) j = (j + 1) & (cap - 1);
             t[j] = lin_slots[i];
         }
-        free(lin_slots);
+        xfree(lin_slots);
         lin_slots = t;
         caplin_slots = cap;
     }
@@ -18189,7 +18239,7 @@ static SVal *sv_inf(int inf, int n) {
 
 static SVal *sv_undef(void) {
     SVal *s = sv_new(SV_UNDEF);
-    s->u.err = strdup(error_message.s ? error_message.s : "an undefined value");
+    s->u.err = xstrdup(error_message.s ? error_message.s : "an undefined value");
     return s;
 }
 
@@ -18906,9 +18956,9 @@ static int sym_impure(Native f) {
 }
 
 static int max_sym_level(Expr **es, int n);
+static Def *level_busy[256];
+static int nlevel_busy;
 static int def_sym_level(Def *d) {
-    static Def *busy[256];
-    static int nbusy;
     if (d->replacement) d = d->replacement;
     if (d->kind == D_VAR || (d->native && sym_impure(d->native)) || is_gen(d)) return 1;
     if (d->kind == D_INST) {
@@ -18918,12 +18968,12 @@ static int def_sym_level(Def *d) {
     }
     if (d->kind == D_CONST) return sym_const_index(d) >= 0;   /* -cinit chooses it, as Init a variable */
     if (d->native || !d->body || d->kind == D_PARAM || d->kind == D_BOUND) return 0;
-    for (int i = 0; i < nbusy; i++) if (busy[i] == d) return 0;
-    if (nbusy == 256) return expr_level(d->body);
-    busy[nbusy++] = d;
+    for (int i = 0; i < nlevel_busy; i++) if (level_busy[i] == d) return 0;
+    if (nlevel_busy == 256) return expr_level(d->body);
+    level_busy[nlevel_busy++] = d;
     int l = expr_info(d->body)->level;
     for (int i = 0; i < d->nb; i++) if (d->bounds[i].set) { int b = expr_info(d->bounds[i].set)->level; if (b > l) l = b; }
-    nbusy--;
+    nlevel_busy--;
     return l;
 }
 
@@ -18978,7 +19028,7 @@ static ExprInfo *expr_info(Expr *e) {
         infos = xcalloc((size_t)size, sizeof(ExprInfo));
         capinfos = size;
         for (int i = 0; i < oldcap; i++) if (old[i].e) *info_slot(old[i].e) = old[i];
-        free(old);
+        xfree(old);
     }
     ExprInfo *slot = info_slot(e);
     if (!slot->e) { *slot = in; ninfos++; }
@@ -19415,20 +19465,20 @@ static SVal *seq_len(SVal *s);
 static SVal *sym_parts(Expr *e, SCtx sc, int pol);
 static SVal *sym_gen(Expr *e, SCtx sc);
 
+static struct { Expr *e; Ctx c; SVal *v; } *sym_failed;
+static int nsym_failed;
 /* Where the evaluator fails on e, only the part of e that fails is
    undefined, as Apalache has it, and e has one meaning in its context
    however often it is met: the first. */
 static SVal *sym(Expr *e, SCtx sc, int pol) {
-    static struct { Expr *e; Ctx c; SVal *v; } *failed;
-    static int nfailed;
     if (!sym_plain(e, sc)) return sym_parts(e, sc, pol);
     SVal *v = sym_plain_eval(e, sc.c);
     if (v->kind != SV_UNDEF) return v;
-    for (int i = 0; i < nfailed; i++)
-        if (failed[i].e == e && failed[i].c.env == sc.c.env && failed[i].c.inst == sc.c.inst) return failed[i].v;
+    for (int i = 0; i < nsym_failed; i++)
+        if (sym_failed[i].e == e && sym_failed[i].c.env == sc.c.env && sym_failed[i].c.inst == sc.c.inst) return sym_failed[i].v;
     v = sym_parts(e, sc, pol);
-    failed = xrealloc(failed, sizeof *failed * (size_t)(nfailed + 1));
-    failed[nfailed].e = e, failed[nfailed].c = sc.c, failed[nfailed++].v = v;
+    sym_failed = xrealloc(sym_failed, sizeof *sym_failed * (size_t)(nsym_failed + 1));
+    sym_failed[nsym_failed].e = e, sym_failed[nsym_failed].c = sc.c, sym_failed[nsym_failed++].v = v;
     return v;
 }
 
@@ -20542,7 +20592,7 @@ static int sym_lasso_violated(int p, Lasso ls, int kept) {
     sym_enabled_query = 1;
     int from = nsym_enableds, n = 0, l = g_and(g_and(kept, ls.back[ls.k - 1]), sym_lasso(sym_negated[p], ls.st, ls.k, ls.back, 0, &memo, &n));
     sym_enabled_query = 0;
-    free(memo);
+    xfree(memo);
     if (nfairness) l = g_and(l, sym_fair(ls));
     while (sat_solve(&l, 1)) if (sym_refine(ls) && sym_enabled_refine(from)) return 1;
     return 0;
@@ -21141,7 +21191,7 @@ static Type *ty_freshen(Type *t) {
     char *mark = xcalloc((size_t)ty_nvars + 1, 1);
     int *vars = NULL, n = 0;
     ty_vars(t, mark, &vars, &n);
-    free(mark);
+    xfree(mark);
     Type **to = NEWN(Type *, n ? n : 1);
     for (int i = 0; i < n; i++) to[i] = ty_fresh();
     Type *r = ty_rename(t, vars, to, n);
@@ -21261,8 +21311,8 @@ static void ty_print(Buf *b, Type *t) {
 static const char *ty_text(Type *t) {
     Buf b = {0};
     ty_print(&b, t);
-    char *s = strdup(b.s ? b.s : "");
-    free(b.s);
+    char *s = xstrdup(b.s ? b.s : "");
+    xfree(b.s);
     return s;
 }
 
@@ -21393,7 +21443,7 @@ static PR tp_ident(int i, int kind, const char *expected) {
         sprintf(name, "$%s", s);
         r.t = ty_new(TY_CONST, 0);
         r.t->var = intern(name);
-        free(name);
+        xfree(name);
     } else {
         r.t = ty_new(TY_CONST, 0);   /* a field's name */
         r.t->var = t->id;
@@ -21816,7 +21866,7 @@ static Type *tp_parse(const char *text, int alias, int *name, const char **error
                 char *n = xmalloc(strlen(s) + 2);
                 sprintf(n, "$%s", s);
                 *name = intern(n);
-                free(n);
+                xfree(n);
             } else r = pr_fail(0, "alias name expected");
         }
         if (r.st == 1) r = pr_then(r, tp_tok(r.next, TT_EQ));
@@ -21880,15 +21930,15 @@ static Note *read_notes(const char *text, int *count) {
         else if (in_note && now) { if (!(len == 2 && (s[0] == '\\' || s[0] == '(' || s[0] == '*'))) buf_add(&b, s, len); }
         else if (in_note && !now) {
             buf_add(&b, s, len);
-            Note k = {0, strndup(b.s, b.n)};
+            Note k = {0, xstrndup(b.s, b.n)};
             PUSH(notes, *count, k);
             b.n = 0;
         }
         parens = np, colon = nc, in_string = ns;
         i += len;
     }
-    if (b.n) { Note k = {0, strndup(b.s, b.n)}; PUSH(notes, *count, k); }
-    free(b.s);
+    if (b.n) { Note k = {0, xstrndup(b.s, b.n)}; PUSH(notes, *count, k); }
+    xfree(b.s);
     /* @name: text;  or  @name("text"); Apalache drops, with a warning, a
        text that does not end with ; or holds a character its
        AnnotationLexer does not take. */
@@ -21951,7 +22001,7 @@ static TEntry *tc_put(TInst *f, Def *d) {
         tc_entries = xcalloc((size_t)tc_capentries, sizeof *tc_entries);
         tc_nentries = 0;
         for (int i = 0; i < cap; i++) if (old[i].def) *tc_put(old[i].frame, old[i].def) = old[i];
-        free(old);
+        xfree(old);
     }
     unsigned h = tc_hash(f, d) & (unsigned)(tc_capentries - 1);
     while (tc_entries[h].def) h = (h + 1) & (unsigned)(tc_capentries - 1);
@@ -21997,20 +22047,20 @@ static int tc_nenv;
 
 static Type *tc(Expr *e);
 
+static char *tc_cached;
+static const char *tc_cached_path;
 static const char *tc_source(Expr *e) {
-    static char *cached;
-    static const char *cached_path;
     if (!e || !e->mod || !e->mod->path) return NULL;
-    if (cached_path != e->mod->path) {
-        free(cached);
-        cached = read_file(e->mod->path);
-        if (!cached) {
-            for (int i = 0; standard_modules[i].name; i++) if (!strcmp(standard_modules[i].name, S(e->mod->name))) cached = strdup(standard_modules[i].text);
+    if (tc_cached_path != e->mod->path) {
+        xfree(tc_cached);
+        tc_cached = read_file(e->mod->path);
+        if (!tc_cached) {
+            for (int i = 0; standard_modules[i].name; i++) if (!strcmp(standard_modules[i].name, S(e->mod->name))) tc_cached = xstrdup(standard_modules[i].text);
         }
-        cached_path = e->mod->path;
+        tc_cached_path = e->mod->path;
     }
-    if (!cached) return NULL;
-    const char *p = cached;
+    if (!tc_cached) return NULL;
+    const char *p = tc_cached;
     for (int l = 1; l < e->l1 && *p; l++) { p = strchr(p, '\n'); if (!p) return NULL; p++; }
     const char *q = p;
     int len = 0;
@@ -22020,7 +22070,7 @@ static const char *tc_source(Expr *e) {
         if (*q == '\n') l++, c = 1; else c++;
     }
     if (len <= 0) return NULL;
-    char *s = strndup(p, (size_t)len);
+    char *s = xstrndup(p, (size_t)len);
     for (char *x = s; *x; x++) if (*x == '\n' || *x == '\t') *x = ' ';
     return s;
 }
@@ -22057,8 +22107,8 @@ static void tc_eq(Type *var, Type *term, int why, Expr *at) { tc_add((TClause){v
 static const char *types_text(Type **ts, int n, const char *sep) {
     Buf b = {0};
     for (int i = 0; i < n; i++) { if (i) buf_puts(&b, sep); ty_print(&b, ts[i]); }
-    char *s = strdup(b.s ? b.s : "");
-    free(b.s);
+    char *s = xstrdup(b.s ? b.s : "");
+    xfree(b.s);
     return s;
 }
 
@@ -23068,7 +23118,7 @@ static Type *tc_letdef_in(Def *d) {
     char *mark = xcalloc((size_t)ty_nvars + 1, 1);
     int *q = NULL, nq = 0;
     ty_vars(scheme, mark, &q, &nq);
-    free(mark);
+    xfree(mark);
     TEntry *self = tc_put(tc_frame, d);
     self->kind = TE_OPER;
     self->t = scheme;
@@ -23118,7 +23168,7 @@ static Type *tc_letdef_in(Def *d) {
     for (int i = 0; i < tc_nenv; i++) ty_vars(ty_zonk(tc_env[i]), mark, &around, &naround);
     int *free_vars = NULL, nfree = 0;
     ty_vars(principal, mark, &free_vars, &nfree);
-    free(mark);
+    xfree(mark);
     if (annot) {   /* Apalache warns of an annotation more general than the type found */
         int mark2 = ty_ntrail;
         Type *u = ty_unify(ty_freshen(principal), ty_freshen(annot));
@@ -23128,7 +23178,7 @@ static Type *tc_letdef_in(Def *d) {
             ty_vars(ty_zonk(u), m1, &v1, &n1);
             ty_vars(annot, m2, &v2, &n2);
             if (n1 < n2) printf(" > %s: %s's type annotation %s is too general, inferred: %s\n", tc_where(d->where), S(d->name), ty_text(annot), ty_text(principal));
-            free(m1), free(m2);
+            xfree(m1), xfree(m2);
         }
         ty_undo(mark2);
     }
@@ -23178,7 +23228,7 @@ static int typecheck(Module *m) {
                 char *mark = xcalloc((size_t)ty_nvars + 1, 1);
                 int *q = NULL, nq = 0;
                 ty_vars(t->t, mark, &q, &nq);
-                free(mark);
+                xfree(mark);
                 if (nq) t->kind = TE_OPER, t->q = q, t->nq = nq;   /* a polymorphic constant: each use an instance */
                 if (d->arity) t->kind = TE_OPER;
                 continue;
@@ -23202,12 +23252,12 @@ static int typecheck(Module *m) {
 
 /* ---------------------------------------------------------------- Gen */
 
+static int atom_fresh;
 /* A string of sort (-1: Str) that Gen makes, as Apalache makes one: one
    the specification has made, or a fresh one, FRESHk or FRESHk_OF_SORT. */
 static SVal *gen_atom(int sort) {
-    static int fresh;
     char name[64];
-    snprintf(name, sizeof name, sort < 0 ? "FRESH%d" : "FRESH%d_OF_%s", ++fresh, sort < 0 ? "" : S(sort));
+    snprintf(name, sizeof name, sort < 0 ? "FRESH%d" : "FRESH%d_OF_%s", ++atom_fresh, sort < 0 ? "" : S(sort));
     mk_str(intern(name));
     SVal *r = NULL;
     for (int i = nstrs - 1; i >= 0; i--) {   /* the fresh one last */
@@ -23308,7 +23358,7 @@ static int mono_open(Expr *e) {
         char *mark = xcalloc((size_t)ty_nvars + 1, 1);
         int *q = NULL, nq = 0;
         ty_vars(ty_zonk(x->t), mark, &q, &nq);
-        free(mark);
+        xfree(mark);
         if (nq) return 1;
     }
     return 0;
@@ -23684,9 +23734,9 @@ static void itf_write(Value ***s, int n, int loop, int index) {
         if (!f) fail("Cannot write the counterexample to %s: %s.", path, strerror(errno));
         fwrite(b.s, 1, b.n, f);
         fclose(f);
-        free(path);
+        xfree(path);
     }
-    free(b.s);
+    xfree(b.s);
 }
 
 static SVal *sym_gen(Expr *e, SCtx sc) {
@@ -23717,7 +23767,7 @@ static int inv_name(const char *expr) {
     char *text = xmalloc(strlen(expr) + strlen(S(root->name)) + 128);
     sprintf(text, "---- MODULE %s ----\nEXTENDS %s\n\n__DebuggerExpr__%lld == %s\n====\n", name, S(root->name), n - 1, expr);
     breakpoint = expr;
-    Module *m = parse_text(text, strdup(name));
+    Module *m = parse_text(text, xstrdup(name));
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = m;
     load_references(m);
@@ -23728,6 +23778,113 @@ static int inv_name(const char *expr) {
     breakpoint = NULL;
     add_sym(root, s->name, s->def, NULL, 0, 0, NULL);
     return s->name;
+}
+
+/* Every global as the program starts, but for what manyan_define and
+   manyan_module registered: each check is the first. */
+static void reset_check(void) {
+    free_check();
+    if (user_file) fclose(user_file);
+    if (dump_file) fclose(dump_file);
+#define Z(x) memset(&(x), 0, sizeof(x))
+    Z(perm_arena); Z(scratch_arena); Z(scratch_resets); Z(regions); Z(nregions); Z(strs); Z(nstrs);
+    Z(capstrs); Z(str_table); Z(str_table_size); Z(in_worker); Z(exit_requested); Z(handler);
+    Z(error_message); Z(error_expr); Z(error_status); Z(error_module); Z(error_java); Z(stackless);
+    Z(java_frames); Z(java_depth); Z(fp_trace); Z(fp_depth); Z(fp_frames); Z(nframes); Z(tracking);
+    Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
+    Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
+    Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
+    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(lint); Z(level_probe); Z(every_argument);
+    Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
+    Z(primed); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
+    Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);
+    Z(keep_going); Z(te_spec); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
+    Z(nwitnesses); Z(gen_values); Z(ngen_values); Z(gen_step); Z(apalache_name); Z(folds_name); Z(gen_name);
+    Z(eval_tracking); Z(effects); Z(format_msg); Z(user_file); Z(reprinting); Z(expansion_printed);
+    Z(starting); Z(registers); Z(nregisters); Z(checking_posts); Z(sim_traces); Z(props); Z(nprops);
+    Z(draw_model); Z(draw_behaviors); Z(draw_seed); Z(draw_from); Z(draw_due); Z(init_draws); Z(tlc_primes);
+    Z(tlc_cache); Z(ntlc_cache); Z(sim_initial); Z(post_trace); Z(npicked_explored); Z(fp_poly);
+    Z(fp_bytes); Z(sim_defer); Z(rng); Z(rng_aril); Z(gen_emit); Z(generated); Z(initials); Z(found);
+    Z(generating); Z(slicing); Z(slice_counting); Z(slice_deeper); Z(slice_depth); Z(choice_depth);
+    Z(slice_seq); Z(slice_lo); Z(slice_hi); Z(enabled_names); Z(nenabled_names); Z(cdot_middle);
+    Z(cdot_from); Z(cdot_emit); Z(enabled_found); Z(enabled_seen); Z(actions); Z(nactions); Z(index_hash);
+    Z(memos); Z(nmemos); Z(capmemos); Z(unfingerprintable); Z(decoded_ids); Z(ndecoded_ids);
+    Z(decoding_ids); Z(states); Z(level_at); Z(nlevels); Z(caplevels); Z(state_edges); Z(capedges);
+    Z(nstates); Z(capstates); Z(store); Z(fp_table); Z(fp_size); Z(fp_mapped); Z(fp_region);
+    Z(fp_region_used); Z(fp_region_size); Z(init_expr); Z(next_expr); Z(init_name); Z(init_where);
+    Z(init_names); Z(ninits); Z(init_wheres); Z(root_ctx); Z(invariants); Z(implied_inits); Z(constraints);
+    Z(action_constraints); Z(action_props); Z(temporal_props); Z(ninvariants); Z(nimplied_inits);
+    Z(nconstraints); Z(naction_constraints); Z(naction_props); Z(ntemporal_props); Z(view_expr);
+    Z(periodic_expr); Z(symmetry); Z(nsymmetry); Z(fairness); Z(nfairness);
+    Z(sym_models); Z(nsym_models); Z(sym_elem); Z(sym_word); Z(sym_bufs); Z(nsym_bufs); Z(fp_fps); Z(fp_vh);
+    Z(fp_last); Z(fp_last_resets); Z(states_mapped); Z(store_mapped); Z(islots); Z(nislots); Z(capids);
+    Z(ioff); Z(own_interned); Z(intern_region); Z(intern_frozen); Z(intern_region_used);
+    Z(intern_region_size); Z(enc_tries); Z(enc_saved); Z(enc_whole); Z(enc_last); Z(enc_last_resets);
+    Z(enc_last_id); Z(add_one); Z(expanded); Z(view_trace); Z(cur_action); Z(replay_target); Z(replay_fp);
+    Z(replay_found); Z(replay_match); Z(replay_checks); Z(live_init_failed); Z(diff_trace); Z(alias_name);
+    Z(shown_record); Z(shown_state); Z(numbered_text); Z(trace_path); Z(ntrace_path); Z(trace_failure);
+    Z(trace_failure_java); Z(posts); Z(nposts); Z(possibles); Z(npossibles); Z(possible_counts);
+    Z(expanding_depth); Z(expanding_state); Z(succ); Z(succ_count); Z(violation); Z(error_check);
+    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions);
+    Z(dump_ranked); Z(dump_nranked); Z(picked_explored); Z(violation_fresh); Z(fingerprinting); Z(started);
+    Z(empty_counter_example); Z(gen_after); Z(ngen_after); Z(printed); Z(follow); Z(seen_after);
+    Z(nseen_after); Z(control); Z(batches); Z(claims); Z(results); Z(to_worker); Z(from_worker);
+    Z(worker_pids); Z(workers_running); Z(forked_strs); Z(max_claims); Z(results_size); Z(w_id); Z(w_n);
+    Z(w_at); Z(w_end); Z(w_budget); Z(w_clean); Z(w_found); Z(w_unit); Z(w_bytes); Z(w_slice); Z(w_head);
+    Z(nforked); Z(count_shallow); Z(sim_found); Z(sim_trace); Z(sim_checked); Z(sim_levels); Z(next_split);
+    Z(behavior_all); Z(behavior_b); Z(sim_failed); Z(sim_bad); Z(sim_defers); Z(sim_defers_cap);
+    Z(sim_printing); Z(sim_order); Z(sim_acts); Z(sim_n); Z(sim_init_states); Z(sim_fresh);
+    Z(sim_init_arena); Z(cfg); Z(ncfg); Z(cfg_text); Z(cfg_len); Z(cfg_str); Z(cfg_scanning); Z(cfg_num);
+    Z(spec_def); Z(sym_assumes); Z(nsym_assumes); Z(eventualities); Z(neventualities); Z(atoms); Z(natoms);
+    Z(tnodes); Z(ntnodes); Z(atom_cache); Z(atom_cache_size); Z(step_atoms); Z(atom_slot); Z(nstate_slots);
+    Z(nstep_slots); Z(decoded); Z(decoded_arena); Z(following); Z(no_atom); Z(live_step); Z(fairs);
+    Z(nfairs); Z(real_succ); Z(nreal_succ); Z(real_found); Z(product_acts); Z(pnodes); Z(npnodes);
+    Z(cappnodes); Z(pnodes_mapped); Z(pnodes_of); Z(product_arena); Z(live_cap); Z(nlive_cap); Z(tlc_fps);
+    Z(ntlc_fps); Z(order_slot); Z(order_cap); Z(order_used); Z(order_pend); Z(order_ncap); Z(steps_found);
+    Z(steps_cap); Z(steps_order); Z(steps_ncap); Z(sim_edges); Z(nsim_edges); Z(fair_rest); Z(fair_rest_c);
+    Z(nfair_rest); Z(search_arena); Z(pem_off); Z(pem_blocked); Z(npem_blocked); Z(accepted); Z(naccepted);
+    Z(live_negated); Z(snum); Z(sn1); Z(sn2); Z(sn3); Z(snfirst); Z(snsecond); Z(snstart2); Z(snstart3);
+    Z(scom); Z(build_stack); Z(nbuild_stack); Z(init_lits); Z(ninit_lits); Z(live_at); Z(eval_on_state);
+    Z(nfollowed); Z(ngrown); Z(pem); Z(promises); Z(pem_in); Z(pem_job); Z(pem_njob); Z(pem_nroots);
+    Z(pem_roots); Z(pem_models); Z(pem_found); Z(conds_s); Z(conds_e); Z(offers); Z(noffers); Z(pem_comp);
+    Z(comp_nodes); Z(comp_at); Z(npem_evals); Z(pem_filled); Z(group_pems); Z(group_first); Z(group_npems);
+    Z(group_prune); Z(group_found); Z(sat); Z(analyze_stack); Z(analyze_clear); Z(analyze_cap); Z(gates);
+    Z(ngates); Z(capgates); Z(lin_slots); Z(nlin_slots); Z(caplin_slots); Z(lin_atoms); Z(nlin_atoms);
+    Z(sum_slots); Z(nsum_slots); Z(capsum_slots); Z(sym_cur); Z(sym_next); Z(sym_primed); Z(sym_init);
+    Z(sym_gen_step); Z(sym_gens); Z(nsym_gens); Z(sym_at); Z(sym_consts); Z(sym_const_vals); Z(nsym_consts);
+    Z(sym_cinit); Z(at_mark); Z(infos); Z(ninfos); Z(capinfos); Z(level_busy); Z(nlevel_busy);
+    Z(sym_witnesses); Z(nsym_witnesses); Z(sym_failed); Z(nsym_failed); Z(asg_unknown); Z(asg_depth);
+    Z(asg_env); Z(nasg_env); Z(asg_env_cap); Z(sym_enableds); Z(nsym_enableds); Z(sym_enabled_query);
+    Z(sym_run_dir); Z(sym_negated); Z(sym_disabled); Z(ty_bind); Z(ty_nvars); Z(ty_trail); Z(ty_ntrail);
+    Z(tc_unwind); Z(tc_status); Z(tp_toks); Z(tp_n); Z(tp_memo); Z(tp_memoized); Z(tc_entries);
+    Z(tc_nentries); Z(tc_capentries); Z(tc_frames); Z(tc_nframes); Z(tc_solver); Z(tc_frame); Z(tc_env);
+    Z(tc_nenv); Z(tc_cached); Z(tc_cached_path); Z(tc_at); Z(tc_made); Z(gen_types); Z(ngen_types);
+    Z(call_insts); Z(ncall_insts); Z(tc_seen); Z(ntc_seen); Z(tc_quiet); Z(lib_parsed); Z(tc_decls);
+    Z(tc_ndecls); Z(tc_alias_names); Z(tc_alias_types); Z(tc_naliases); Z(tc_cur_decl); Z(atom_fresh);
+    Z(mono_repeat); Z(mono_fcnsets); Z(sym_open_gens); Z(typed_mark);
+#undef Z
+    arena = &perm_arena;
+    nfrozen = -1;
+    value_true = (Value){.kind = V_BOOL, .u.i = 1};
+    value_false = (Value){.kind = V_BOOL, .u.i = 0};
+    eval_fns = eval_kind;
+    drawing = &draw_model;
+    check_deadlock = 1;
+    nworkers = 1;
+    interned = &own_interned;
+    max_depth = 1;
+    expanding = -1;
+    sim_traces_max = -1, sim_depth = 100;
+    live_expanded = -1;
+    live_cut = -1;
+    live_step = -1;
+    follow = -1;
+    growth = 1;
+    live_mult = 1;
+    sim_hit = -1;
+    sym_length = 10;
+    sym_max_error = 1;
+    ty_int = (Type){.kind = TY_INT}, ty_bool = (Type){.kind = TY_BOOL}, ty_str = (Type){.kind = TY_STR}, ty_real = (Type){.kind = TY_REAL};
 }
 
 static int check_model(const ManyanOptions *o) {
@@ -23758,7 +23915,7 @@ static int check_model(const ManyanOptions *o) {
         strcpy(config_path, path);
         strcpy(config_path + strlen(config_path) - 4, ".cfg");
     }
-    config_text = o->typecheck ? strdup("") : read_file(config_path);
+    config_text = o->typecheck ? xstrdup("") : read_file(config_path);
     if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
     read_config(config_text, 1);
     char *text = read_file(path);
@@ -23790,10 +23947,8 @@ static int check_model(const ManyanOptions *o) {
         char *key = xmalloc((size_t)n + 3);
         sprintf(key, "-D%.*s", n, *p);
         *prop(key) = intern(*p + n + 1);
-        free(key);
+        xfree(key);
     }
-    if (user_file) fclose(user_file);   /* each write is flushed: a run may end anywhere */
-    user_file = NULL;
     if (o->user_file && !(user_file = fopen(o->user_file, "w"))) {
         fprintf(stderr, "manyan: cannot write %s\n", o->user_file);
         return MANYAN_ERROR;
@@ -23801,9 +23956,9 @@ static int check_model(const ManyanOptions *o) {
 
     root_text = text;
     root = parse_text(text, path);
-    char *base = strndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
+    char *base = xstrndup(path + strlen(spec_dir), strlen(path) - strlen(spec_dir) - 4);
     check_file_name(root, base);
-    free(base);
+    xfree(base);
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = root;
     /* TLC extends the root with the module of each -postCondition, and -dumpTrace json's */
@@ -23920,6 +24075,7 @@ static int check_model(const ManyanOptions *o) {
 }
 
 int manyan_check(const ManyanOptions *o) {
+    reset_check();
     sigjmp_buf here;
     int status = sigsetjmp(here, 0);
     if (status) {   /* stopped by an error: the workers may be anywhere */
@@ -24010,7 +24166,7 @@ static void write_result(void) {
     buf_puts(&b, "}\n");
     fwrite(b.s, 1, b.n, result_file);
     fclose(result_file);
-    free(b.s);
+    xfree(b.s);
 }
 
 int main(int argc, char **argv) {
@@ -24117,8 +24273,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "%s", usage);
         return MANYAN_ERROR;
     }
-    if (result_file) atexit(write_result);
     int status = manyan_check(&o);
+    if (result_file) write_result();
 #ifdef MANYAN_LEAK_CHECK
     __lsan_do_leak_check();   /* what manyan_check made and returned without is lost */
 #endif

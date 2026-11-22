@@ -28,6 +28,16 @@ run.result.loop               # 0: the behavior ends; else the state it steps ba
 run.result.distinct           # 14
 ```
 
+`manyan.check(spec, **options)` does the same in Python's own process,
+with the library the wheel installs beside it (not on Windows): its
+options are those of `manyan.h`'s `ManyanOptions`, by name, and it gives
+what `run` does, with no process started.
+
+```python
+run = manyan.check("examples/DieHard", workers=4)
+run = manyan.check("Spec", config="Small.cfg", check_deadlock=False, invariants=["x < 10"])
+```
+
 `states` holds the first counterexample the report prints whole, each a
 record of the variables; `actions` the step into each, as
 `TLCGet("action")` gives it, one more stepping back where there is a loop.

@@ -1,6 +1,7 @@
 # Pushing a tag vX.Y.Z builds manyan on each platform, runs the conformance
 # suite with each build, and publishes them as the release X.Y.Z, as wheels
-# of the same executables on PyPI, and as the WebAssembly build on npm.
+# of the same executables, and of the library manyan.check loads, on PyPI,
+# and as the WebAssembly build on npm.
 # Run by hand, it builds and tests without publishing.
 name: release
 
@@ -43,6 +44,10 @@ jobs:
           mkdir arm64 x86_64
           mv manyan arm64/manyan
           cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/manyan.profdata -arch x86_64 manyan.c manyan-std.c -lm -o x86_64/manyan
+          for arch in arm64 x86_64; do
+            cc -O2 -std=c11 -fprofile-instr-use=.obj/pgo/manyan.profdata -arch $arch -shared -fPIC -DMANYAN_NO_MAIN \
+              manyan.c manyan-std.c -lm -o $arch/libmanyan.dylib
+          done
       - run: |
           softwareupdate --install-rosetta --agree-to-license
           for arch in arm64 x86_64; do
@@ -56,10 +61,10 @@ jobs:
             tar -czf $dir.tar.gz $dir
           done
       - run: |
-          python3 python/wheel.py macosx_11_0_arm64 wheels arm64/manyan
-          python3 python/wheel.py macosx_11_0_x86_64 wheels x86_64/manyan
+          python3 python/wheel.py macosx_11_0_arm64 wheels arm64/manyan arm64/libmanyan.dylib
+          python3 python/wheel.py macosx_11_0_x86_64 wheels x86_64/manyan x86_64/libmanyan.dylib
           python3 -m venv venv && venv/bin/pip install -q wheels/*arm64.whl && venv/bin/manyan -version
-          venv/bin/python -c "import manyan; r = manyan.run(['DieHard'], cwd='examples'); assert r.status == 12 and len(r.result.states) == 7, r.output"
+          cd examples && ../venv/bin/python -c "import manyan; r = manyan.run(['DieHard']); assert r.status == 12 and len(r.result.states) == 7, r.output; assert manyan.check('DieHard') == r"
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
@@ -91,11 +96,18 @@ jobs:
           dir=manyan-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
           mkdir $dir && cp manyan README.md CHANGELOG.md LICENSE $dir
           tar -czf $dir.tar.gz $dir
-      # Linked statically, it runs on any Linux libc.
+      # The executable, linked statically, runs on any Linux libc; the
+      # library is built for each, in PyPA's image of it, a wheel each:
+      # gnu11, as glibc 2.17 knows no _DEFAULT_SOURCE.
       - run: |
-          python3 python/wheel.py manylinux_2_17_${{ matrix.wheel }}.musllinux_1_1_${{ matrix.wheel }} wheels manyan
-          python3 -m venv venv && venv/bin/pip install -q wheels/*.whl && venv/bin/manyan -version
-          venv/bin/python -c "import manyan; r = manyan.run(['DieHard'], cwd='examples'); assert r.status == 12 and len(r.result.states) == 7, r.output"
+          for libc in manylinux_2_17 musllinux_1_2; do
+            image=quay.io/pypa/$([ $libc = manylinux_2_17 ] && echo manylinux2014 || echo $libc)_${{ matrix.wheel }}
+            docker run --rm -e TAG=${libc}_${{ matrix.wheel }} -v "$PWD":/io -w /io $image sh -ec '
+              gcc -O2 -std=gnu11 -shared -fPIC -DMANYAN_NO_MAIN manyan.c manyan-std.c -lm -o libmanyan.so
+              python3.12 python/wheel.py $TAG wheels manyan libmanyan.so
+              python3.12 -m venv /tmp/venv && /tmp/venv/bin/pip install -q wheels/*-$TAG.whl && /tmp/venv/bin/manyan -version
+              cd examples && /tmp/venv/bin/python -c "import manyan; r = manyan.run([\"DieHard\"]); assert r.status == 12 and len(r.result.states) == 7, r.output; assert manyan.check(\"DieHard\") == r"'
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}

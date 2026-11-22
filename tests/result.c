@@ -67,7 +67,7 @@ static void check_states(const char *t, const ManyanResult *r) {
         const char *q = strstr(p, b.s ? b.s : "");
         if (!q || (end && q >= end)) mismatch("state %zu is not printed as\n%s", i + 1, b.s);
         else p = q + b.n;
-        free(b.s);
+        xfree(b.s);
     }
     char stutter[48];
     snprintf(stutter, sizeof stutter, "State %zu: Stuttering", r->length + 1);

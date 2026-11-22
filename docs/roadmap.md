@@ -69,6 +69,10 @@ s, `make test` 96 -> 37 s, and the oracle is TLC 1.8.0 at bc1b506, its
 1. **Python on the C API.** `manyan.run` runs the executable and reads
    back its `-result` file. Bind `manyan.h` instead: load a spec, check
    it, and walk the result in the same process, the output unchanged.
+   Done: `manyan_check` returns from an error where it exited, and each
+   check is as the first in a process, its memory freed by the next
+   (`make test-again` checks every test twice in one); `manyan.check`
+   calls it through the library each wheel but Windows' carries.
 2. **Liveness on every core.** A property of state atoms alone is
    checked on one process, where forking the workers costs more than
    they save ([optimizations](optimizations.md)). Make more workers

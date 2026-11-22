@@ -1018,7 +1018,7 @@ static ManyanValue *csv_read(ManyanCall *call, ManyanValue **a) {
 
 /* A number as Java's MessageFormat gives it: #,##0.### */
 static const char *java_number(double d) {
-    static char out[64];
+    char *out = manyan_alloc(64);
     char digits[48];
     snprintf(digits, sizeof digits, "%.3f", d);
     char *dot = strchr(digits, '.'), *e = digits + strlen(digits);
@@ -1184,6 +1184,8 @@ static const char apalache_internal[] =
 #define OVERRIDE(module, method) "public static " J_V " tlc2.overrides." module "." method
 
 int manyan_std_init(void) {
+    static int done;
+    if (done) return 0;
     static const struct { const char *module, *name; int arity; ManyanNative fn; const char *java; } natives[] = {
         {"IOUtils", "IOEnv", 0, io_env, OVERRIDE("IOUtils", "ioEnv()")},
         {"IOUtils", "atoi", 1, atoi_, OVERRIDE("IOUtils", "atoi(" J_V ")")},
@@ -1233,6 +1235,8 @@ int manyan_std_init(void) {
     };
     for (size_t i = 0; i < sizeof natives / sizeof *natives; i++)
         if (manyan_define(natives[i].module, natives[i].name, natives[i].arity, natives[i].fn, natives[i].java)) return -1;
-    if (manyan_module("__apalache_folds", apalache_folds) || manyan_module("__apalache_internal", apalache_internal)) return -1;
-    return manyan_module("Apalache", apalache);
+    if (manyan_module("__apalache_folds", apalache_folds) || manyan_module("__apalache_internal", apalache_internal) ||
+        manyan_module("Apalache", apalache)) return -1;
+    done = 1;
+    return 0;
 }

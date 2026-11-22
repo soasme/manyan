@@ -3,3 +3,4 @@
 *.dSYM/
 states/
 __pycache__/
+/libmanyan.*
