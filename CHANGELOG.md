@@ -1,3 +1,20 @@
+unreleased:
+
+- Python: `manyan.check(spec, **options)` checks in Python's own process,
+  through the library the wheel carries, its options `ManyanOptions`'
+  by name; it gives what `manyan.run` gives. Not on Windows, whose wheel
+  has no library
+- Linux: a wheel for glibc (manylinux_2_17) and one for musl
+  (musllinux_1_2, was 1_1), each with its library
+- C API: `manyan_check` may be called again; each check is as the first
+  in a process, and frees what the last made as it starts, so a result's
+  values live until the next check, not until the process ends. An error,
+  a parse error among them, returns its exit status where it exited
+- `make lib` builds `libmanyan.so` (`.dylib` on macOS); `make test-again`
+  checks every test twice in one process
+- fixed: two copies from a null pointer of 0 bytes, which UBSan on Linux
+  reports
+
 2026-11-20 0.16.0:
 
 - the oracle is TLC 1.8.0 at bc1b506, every test blessed by it
