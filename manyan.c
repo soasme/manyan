@@ -22,6 +22,7 @@
 #include <poll.h>
 #include <sched.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <inttypes.h>
 #include <stdint.h>
@@ -54,21 +55,30 @@ typedef struct { Chunk *head, *spare; } Arena;   /* spare: a chunk a region drop
 static Arena perm_arena, scratch_arena;
 static Arena *arena = &perm_arena;
 
+/* An error that ends a check returns its exit status from manyan_check,
+   by this; outside one, as in a worker, it exits. */
+static sigjmp_buf *quit;
+
+static _Noreturn void stop(int status) {
+    if (quit) siglongjmp(*quit, status);
+    exit(status);
+}
+
 static void *xmalloc(size_t n) {
     void *p = malloc(n ? n : 1);
-    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+    if (!p) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
     return p;
 }
 
 static void *xrealloc(void *p, size_t n) {
     p = realloc(p, n ? n : 1);
-    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+    if (!p) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
     return p;
 }
 
 static void *xcalloc(size_t n, size_t size) {
     void *p = calloc(n ? n : 1, size);
-    if (!p) { fputs("manyan: out of memory\n", stderr); exit(MANYAN_ERROR); }
+    if (!p) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
     return p;
 }
 
@@ -374,7 +384,7 @@ static _Noreturn void raise_error(void) {
     }
     if (!handler) {
         fputs(error_message.s ? error_message.s : "error", stdout);
-        exit(MANYAN_ERROR);
+        stop(MANYAN_ERROR);
     }
     siglongjmp(*handler, 1);
 }
@@ -2493,7 +2503,7 @@ static _Noreturn void breakpoint_error(int syntax, const char *why) {
     printf("Error: Parsing or semantic analysis failed.Parsing or semantic analysis failed.%s", syntax ? "" : "Unknown location\n\n");
     if (why) printf("%s\n", why);
     else printf("%s error while parsing breakpoint expression \"%s\"\n", syntax ? "Syntax" : "Semantic", breakpoint);
-    exit(MANYAN_ERROR_PARSE);
+    stop(MANYAN_ERROR_PARSE);
 }
 
 static _Noreturn void parse_error(const char *file, int line, int col, const char *fmt, ...) {
@@ -2505,7 +2515,7 @@ static _Noreturn void parse_error(const char *file, int line, int col, const cha
     va_end(ap);
     printf("***Parse Error***\n%s at line %d, column %d in %s\n\n", msg, line, col, file);
     printf("Error: Parsing or semantic analysis failed.\n");
-    exit(MANYAN_ERROR_PARSE);
+    stop(MANYAN_ERROR_PARSE);
 }
 
 static Tok eof_tok;
@@ -3298,7 +3308,7 @@ static Expr *parse_binary(int bound) {
     static int nesting;   /* every nesting of expressions passes here */
     if (++nesting > stack_limit && stack_limit) {
         printf("Error: %s\n", stack_overflow);
-        exit(MANYAN_ERROR);
+        stop(MANYAN_ERROR);
     }
     const OpInfo *last;   /* the operator before the next one, as on SANY's stack */
     Expr *left = parse_unary(&last);
@@ -4043,7 +4053,7 @@ static void check_file_name(Module *m, const char *name) {
     if (strcmp(S(m->name), name) == 0) return;
     printf("File name '%s' does not match the name '%s' of the top level module it contains.\n\n", name, S(m->name));
     printf("Error: Parsing or semantic analysis failed.\n");
-    exit(MANYAN_ERROR_PARSE);
+    stop(MANYAN_ERROR_PARSE);
 }
 
 static const char *root_text;   /* the root module's file */
@@ -4102,7 +4112,7 @@ static Module *load_module(int name, Module *from) {
     if (!text) {
         printf("Cannot find source file for module %s imported in module %s.\n\n", S(name), S(from->name));
         printf("Error: Parsing or semantic analysis failed.\n");
-        exit(MANYAN_ERROR_PARSE);
+        stop(MANYAN_ERROR_PARSE);
     }
     m = parse_text(text, path);
     free(file);
@@ -4153,7 +4163,7 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
     va_end(ap);
     printf("Semantic errors:\n\n*** Errors: 1\n\n%s\n\n%s\n\n", loc_str(where), msg);
     printf("Error: Parsing or semantic analysis failed.\n");
-    exit(MANYAN_ERROR_PARSE);
+    stop(MANYAN_ERROR_PARSE);
 }
 
 static Def *scope_lookup(Scope *sc, int name);
@@ -4880,7 +4890,7 @@ static void resolve_module(Module *m) {
     if (m->resolved == 1) {
         printf("Circular dependency among .tla files: module %s depends on itself.\n", S(m->name));
         printf("Error: Parsing or semantic analysis failed.\n");
-        exit(MANYAN_ERROR_PARSE);
+        stop(MANYAN_ERROR_PARSE);
     }
     if (m->resolved) return;
     m->resolved = 1;
@@ -10060,13 +10070,13 @@ static size_t fp_region_used, fp_region_size;
 
 static void fp_insert(int idx) {
     if ((nstates + 1) * 2 >= fp_size) {
-        if (fp_size >= 1 << 30) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
+        if (fp_size >= 1 << 30) { fputs("manyan: too many states\n", stderr); stop(MANYAN_ERROR); }
         int size = fp_size ? fp_size * 2 : 1 << 16;
         size_t bytes = sizeof(FpSlot) * (size_t)size;
         FpSlot *table;
         int was_mapped = fp_mapped;
         if (fp_region) {
-            if (fp_region_used + bytes > fp_region_size) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
+            if (fp_region_used + bytes > fp_region_size) { fputs("manyan: too many states\n", stderr); stop(MANYAN_ERROR); }
             table = (FpSlot *)(fp_region + fp_region_used);
             fp_region_used += bytes;
             fp_mapped = 0;
@@ -10386,7 +10396,7 @@ static int store_mapped;   /* and so is the store */
 /* A new state, encoded at off in the store. */
 static int add_record(size_t off, uint64_t fp, int parent, int action, int depth) {
     if (nstates == capstates) {
-        if (nworkers > 1 || states_mapped) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
+        if (nworkers > 1 || states_mapped) { fputs("manyan: too many states\n", stderr); stop(MANYAN_ERROR); }
         capstates = capstates ? capstates * 2 : 1024;
         states = xrealloc(states, sizeof(StateRec) * (size_t)capstates);
     }
@@ -11234,7 +11244,7 @@ static void edges_room(Edges *r) {
     }
     int last = r->edges && r->edges + 2 * r->capedges == edge_pool + edge_pool_used;
     size_t need = last ? 2 : 2 * ((size_t)r->nedges + 1);
-    if (edge_pool_used + need > edge_pool_size) { fputs("manyan: too many steps\n", stderr); exit(MANYAN_ERROR); }
+    if (edge_pool_used + need > edge_pool_size) { fputs("manyan: too many steps\n", stderr); stop(MANYAN_ERROR); }
     int *at = edge_pool + edge_pool_used;
     if (!last && r->nedges) memcpy(at, r->edges, sizeof(int) * 2 * (size_t)r->nedges);
     if (!last) r->edges = at;
@@ -11927,7 +11937,7 @@ static size_t w_at, w_end;     /* its chunk of the store */
 static size_t store_put(const char *b, size_t n) {
     if (!in_worker) {
         size_t off = store.n;
-        if (store_mapped && off + n + 1 > store.cap) { fputs("manyan: too many states\n", stderr); exit(MANYAN_ERROR); }
+        if (store_mapped && off + n + 1 > store.cap) { fputs("manyan: too many states\n", stderr); stop(MANYAN_ERROR); }
         buf_add(&store, b, n);
         return off;
     }
@@ -11948,7 +11958,7 @@ static Buf w_bytes;
 
 static void *shared(size_t bytes) {
     void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) { fputs("manyan: cannot reserve shared memory for workers\n", stderr); exit(MANYAN_ERROR); }
+    if (p == MAP_FAILED) { fputs("manyan: cannot reserve shared memory for workers\n", stderr); stop(MANYAN_ERROR); }
     return p;
 }
 
@@ -12195,6 +12205,7 @@ static int expand_batch(void) {
 
 static _Noreturn void worker_main(int id) {
     in_worker = 1;
+    quit = NULL;
     gen_emit = worker_emit;
     w_id = id;
     w_at = w_end = 0;   /* the search's chunk is its own */
@@ -12221,9 +12232,9 @@ static void start_workers(int n) {
     from_worker = xmalloc(sizeof *from_worker * (size_t)nworkers);
     worker_pids = xmalloc(sizeof(pid_t) * (size_t)nworkers);
     for (int i = 0; i < n; i++) {
-        if (pipe(to_worker[i]) || pipe(from_worker[i])) { fputs("manyan: cannot start workers\n", stderr); exit(MANYAN_ERROR); }
+        if (pipe(to_worker[i]) || pipe(from_worker[i])) { fputs("manyan: cannot start workers\n", stderr); stop(MANYAN_ERROR); }
         pid_t pid = fork();
-        if (pid < 0) { fputs("manyan: cannot start workers\n", stderr); exit(MANYAN_ERROR); }
+        if (pid < 0) { fputs("manyan: cannot start workers\n", stderr); stop(MANYAN_ERROR); }
         if (pid == 0) {
             for (int j = 0; j < i; j++) { close(to_worker[j][1]); close(from_worker[j][0]); }
             close(to_worker[i][1]);
@@ -12319,7 +12330,7 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
     for (int b = 0; b < control->nbatches; b++) atomic_store(&batches[b].done, 0);
     fflush(stdout);
     for (int i = 0; i < nforked; i++)
-        if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
+        if (write(to_worker[i][1], "x", 1) != 1) { fputs("manyan: a worker stopped\n", stderr); stop(MANYAN_ERROR); }
     w_id = nworkers - 1;
     w_n = w_budget = 0;
     intern_frozen = 1;
@@ -12327,7 +12338,7 @@ static int run_level(int lo, int hi, int per, size_t n, int job) {
     atomic_store(&control->next, control->nbatches);   /* after an error, the workers stop */
     char c;
     for (int i = 0; i < nforked; i++)
-        if (read(from_worker[i][0], &c, 1) != 1) { fputs("manyan: a worker stopped\n", stderr); exit(MANYAN_ERROR); }
+        if (read(from_worker[i][0], &c, 1) != 1) { fputs("manyan: a worker stopped\n", stderr); stop(MANYAN_ERROR); }
     intern_frozen = 0;
     control->job = EXPAND;
     return r;
@@ -13314,7 +13325,7 @@ static _Noreturn void config_error(const char *fmt, ...) {
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     printf("Error: %s\n", msg);
-    exit(MANYAN_ERROR_CONFIG);
+    stop(MANYAN_ERROR_CONFIG);
 }
 
 /* line: where the lexer is; tline: the line of the token last read. */
@@ -13328,7 +13339,7 @@ static _Noreturn void cfg_fail(CfgLexer *L, const char *fmt, ...) {
     vprintf(fmt, ap);
     va_end(ap);
     printf("\n");
-    exit(MANYAN_ERROR_CONFIG);
+    stop(MANYAN_ERROR_CONFIG);
 }
 
 static void cfg_space(CfgLexer *L) {
@@ -13393,7 +13404,7 @@ static _Noreturn void cfg_string_error(CfgLexer *L, int n) {
         printf("Error: TLC found an error in the configuration file:\nLexical error at line %d, column 0.  "
                "Encountered: <EOF> after : \"%s\"\n", L->line + 1, b.s);
     }
-    exit(MANYAN_ERROR_CONFIG);
+    stop(MANYAN_ERROR_CONFIG);
 }
 
 static int cfg_token(CfgLexer *L) {
@@ -13720,7 +13731,7 @@ typedef struct Args { Def *d; Expr **args; struct Args *up; } Args;
 static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, char *in, int depth) {
     if (depth > 1000) {   /* a cycle through substitutions: TLC's stack overflows */
         printf("Error: %s\n", stack_overflow);
-        exit(MANYAN_ERROR);
+        stop(MANYAN_ERROR);
     }
     switch (e->kind) {
     case K_DECL:
@@ -13827,7 +13838,7 @@ static void use_specification(Expr *spec) {
                    e->args[0]->kind != X_STR && e->args[0]->kind != X_LET) {
             /* []S, S an operator applied with no action: SANY's OpApplNode */
             printf("Error: TLC cannot handle the temporal formula %s\n", loc_str(e->args[0]));
-            exit(MANYAN_ERROR);
+            stop(MANYAN_ERROR);
         } else {
             fairness = xrealloc(fairness, sizeof(Expr *) * (size_t)(nfairness + 1));
             fairness[nfairness++] = in_instance(call, e);
@@ -14390,7 +14401,7 @@ static void sym_overrides(void) {
                 Buf b = {0};
                 for (m = 0; m < n; m++) buf_printf(&b, "%s%s", m ? ", " : "", S(reached[m]->name));
                 printf("Configuration error (see the manual): Found a cyclic dependency among operators: %s\n", b.s);
-                exit(MANYAN_ERROR_CONFIG);
+                stop(MANYAN_ERROR_CONFIG);
             }
         }
     }
@@ -14530,7 +14541,7 @@ static int setup_model(void) {
                     printf("Note that a bug can cause TLC to incorrectly report this error.\n"
                            "If you believe your TLA+ or PlusCal specification to be correct,\n"
                            "please check if this bug described in LevelNode.java starting at line 590ff affects you.\n");
-                exit(MANYAN_FAILURE_SAFETY_EVAL);
+                stop(MANYAN_FAILURE_SAFETY_EVAL);
             }
             if (config_check(e, "invariant")) add_check(&invariants, &ninvariants, e->def, e, root_ctx, e->def->name);
         } else if (strncmp(k, "PROPERT", 7) == 0) {
@@ -14566,10 +14577,10 @@ static int setup_model(void) {
             handler = &here;
             if (sigsetjmp(here, 0)) {
                 handler = NULL;
-                if (error_status == MANYAN_ERROR_CONFIG) { print_error_message(); exit(MANYAN_ERROR_CONFIG); }
+                if (error_status == MANYAN_ERROR_CONFIG) { print_error_message(); stop(MANYAN_ERROR_CONFIG); }
                 print_exception("java.lang.RuntimeException", ": ");
                 printf("The symmetry operator must specify a set of functions.\n");
-                exit(MANYAN_ERROR);
+                stop(MANYAN_ERROR);
             }
             Value *g = enumerate(eval(config_call(it->name, "symmetry function", 0), root_ctx));
             handler = NULL;
@@ -14577,7 +14588,7 @@ static int setup_model(void) {
                 if (!is_fcn(realize(g->u.set.elems[j]))) {
                     print_exception("java.lang.RuntimeException", ": ");
                     printf("The symmetry values must be function records.\n");
-                    exit(MANYAN_ERROR);
+                    stop(MANYAN_ERROR);
                 }
             if (!nowarning) warn_symmetry_sets(root_sym(it->name)->def->body, g);
             Value *s = permutation_group(g);
@@ -14609,7 +14620,7 @@ static int setup_model(void) {
             possible_counts[npossibles - 1] = -1;
         } else if (k[0] == '_') {
             fprintf(stderr, "manyan: %s is not supported\n", k);
-            exit(MANYAN_ERROR);
+            stop(MANYAN_ERROR);
         }
     }
     }
@@ -15221,7 +15232,7 @@ static int pnode_find(int s, int t, int create) {
     PUSH(l->v, l->n, ((PRef){t, npnodes}));
     arena = saved;
     if (npnodes == cappnodes) {   /* mapped once, as many as a product can hold, or grown */
-        if (pnodes_mapped) { fputs("manyan: too many nodes in the behavior graph\n", stderr); exit(MANYAN_ERROR); }
+        if (pnodes_mapped) { fputs("manyan: too many nodes in the behavior graph\n", stderr); stop(MANYAN_ERROR); }
         if (!pnodes && (pnodes = mapped(sizeof(PNode) << 28))) cappnodes = 1 << 28, pnodes_mapped = 1;
         else pnodes = xrealloc(pnodes, sizeof(PNode) * (size_t)(cappnodes = cappnodes ? cappnodes * 2 : 1024));
     }
@@ -23719,7 +23730,7 @@ static int inv_name(const char *expr) {
     return s->name;
 }
 
-int manyan_check(const ManyanOptions *o) {
+static int check_model(const ManyanOptions *o) {
     static const char *none[] = {NULL};
     if ((found = o->result)) *found = (ManyanResult){.violated = none, .generated = -1, .distinct = -1, .left = -1, .depth = -1};
     if (o->fp < 0 || o->fp >= (int)(sizeof fp_polys / sizeof *fp_polys)) {
@@ -23905,6 +23916,21 @@ int manyan_check(const ManyanOptions *o) {
     handler = NULL;
     if (dump_file) dump_close();
     stop_workers();
+    return status;
+}
+
+int manyan_check(const ManyanOptions *o) {
+    sigjmp_buf here;
+    int status = sigsetjmp(here, 0);
+    if (status) {   /* stopped by an error: the workers may be anywhere */
+        for (int i = 0; workers_running && i < nforked; i++) kill(worker_pids[i], SIGKILL);
+        stop_workers();
+    } else {
+        quit = &here;
+        status = check_model(o);
+    }
+    quit = NULL;
+    fflush(stdout);
     return status;
 }
 
