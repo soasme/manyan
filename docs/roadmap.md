@@ -77,6 +77,10 @@ s, `make test` 96 -> 37 s, and the oracle is TLC 1.8.0 at bc1b506, its
    checked on one process, where forking the workers costs more than
    they save ([optimizations](optimizations.md)). Make more workers
    check it faster, its output unchanged.
+3. **Format.** `manyan fmt` prints a module's TLA⁺ code in one layout,
+   its meaning unchanged, fast enough to run on save.
+4. **Lint.** `manyan lint` checks that a module is syntactically right,
+   as SANY does, without checking a model, and reports SANY's errors.
 
 ## What stays
 
