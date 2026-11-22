@@ -56,35 +56,23 @@ from TLC.
 - A browser playground, where anyone can paste a spec and check it with
   nothing installed. Done in 0.14.0.
 
-## Next: 0.16.0
+## Next: 0.17.0
 
-0.15.0 gave the result to walk: `ManyanOptions.result` in the C API,
-`-result FILE` in JSON, `manyan.run` in Python and `run().result` in npm,
-and the playground's counterexample state by state. A browser holds a
-recursion 1,647 levels deep where it held 939, and the full bench covers
-every model of tlaplus/Examples: 173 of 197 print what TLC prints, 27.6x
-as fast.
+0.16.0 held states in less memory: a state's record 32 -> 20 bytes, a
+value many states share stored once, ElevatorSafetyLarge 65.6 -> 26.1
+bytes a state. Four of the six full-bench models past 4 GB print what TLC
+prints, 177 of 197 in all; the two left TLC itself does not finish. The
+bench's liveness went 0.18 -> 0.14 s, symbolic Paxos at length 7 81 -> 38
+s, `make test` 96 -> 37 s, and the oracle is TLC 1.8.0 at bc1b506, its
+`TLCGet` and `TLCSet` keys all taken.
 
-1. **Large state spaces in less memory.** Six of the full bench's models
-   held more than its 4 GB in Manyan, where TLC keeps its fingerprints and
-   behavior graph on disk. Four now print what TLC prints,
-   ElevatorSafetyLarge's 59 million states under the 4 GB guard; the
-   other two TLC itself does not finish ([fullbench](fullbench.md#gaps)).
-2. **Faster.** Profile the bench's models and the full bench's slowest
-   that print what TLC prints, and cut where the time goes;
-   `docs/benchmark.md` shows each gain and no regression. So far: the
-   bench's liveness 0.18 -> 0.14 s, the rest as 0.15.0 once interning's
-   cost was cut; symbolic Paxos at length 7 halved.
-3. **A faster test suite.** `make test` runs tests/spec four times, with
-   one and four workers, natively and for the result. Run it in less time
-   without testing less. 96 s became 37: symbolic checking proves the
-   sums of tests/symbolic's slowest equal by their terms, not by their
-   adders' bits.
-4. **TLC re-pinned.** 1.8.0's jar is rebuilt under its tag; the oracle is
-   now commit bc1b506 (TLCSet and TLCGet with several workers), every test
-   blessed by it. `TLCGet` and `TLCSet` take every key 1.8.0's do: named
-   registers, `"all"`, `"all:named"`, `"spec"`, and a search's `"stats"`;
-   TLC's own `test-model/TLCSet.tla` is a test.
+1. **Python on the C API.** `manyan.run` runs the executable and reads
+   back its `-result` file. Bind `manyan.h` instead: load a spec, check
+   it, and walk the result in the same process, the output unchanged.
+2. **Liveness on every core.** A property of state atoms alone is
+   checked on one process, where forking the workers costs more than
+   they save ([optimizations](optimizations.md)). Make more workers
+   check it faster, its output unchanged.
 
 ## What stays
 
