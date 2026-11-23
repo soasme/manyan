@@ -5833,7 +5833,7 @@ static Def **vars;              /* the state variables, in TLC's order */
 static Value **cur_state;       /* the state being read */
 static Value **next_state;      /* the next state an action assigns; NULL entries unassigned */
 static Value **gen_target;      /* the state being assigned */
-static int primed;              /* reading the next state */
+static int shifted;             /* cur_state is not the outer state: under ', in cdot, or in made_in */
 static int gen_init;            /* assigning unprimed variables: an initial predicate */
 static unsigned long state_reads;        /* incremented by each read of a variable */
 static unsigned long moving_reads;       /* by each read of one that may change: primed, or of the initial state being found */
@@ -5985,7 +5985,9 @@ static Value *lambda_apply(Value *f, Value *a) {
     Value **cur = cur_state, **next = next_state;
     cur_state = f->u.l.made_in[0];
     next_state = f->u.l.made_in[1];
+    shifted++;
     Value *v = lambda_body(f, a);
+    shifted--;
     cur_state = cur;
     next_state = next;
     return v;
@@ -6076,6 +6078,7 @@ static int applied_level(Expr *op, Ctx oc, Expr **args, int n, Ctx c) {
 /* e's level in c, where a parameter has its argument's level: TLC levels
    a temporal formula in the context it expands it in (§10.5). */
 static int level_in(Expr *e, Ctx c) {
+    if (e->kind == K_ENABLED) return 1;
     int l = expr_level(e);
     if (l >= 3 || !c.env) return l;
     if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && env_find(c.env, e->def)) {
@@ -6101,7 +6104,7 @@ static Env *mk_arg(Def *d, Expr *e, Ctx c, Env *next) {
    from no state at all, or from the current state by a binding that lives
    no longer than one state's expansion, as the scratch arena does. */
 static Value *force(Env *b) {
-    if (b->v && !(primed && b->stateful)) return b->v;
+    if (b->v && !(shifted && b->stateful)) return b->v;
     unsigned long reads = state_reads, moving = moving_reads;
     Ctx c = {b->ctx_env, b->ctx_inst};
     Arena *saved = keeping(b->perm);
@@ -6109,7 +6112,7 @@ static Value *force(Env *b) {
     if (b->perm == (arena == &perm_arena)) {
         held_by(b);
         if (reads == state_reads) { b->v = v; b->stateful = 0; }
-        else if (!b->perm && moving == moving_reads && !primed) { b->v = v; b->stateful = 1; }
+        else if (!b->perm && moving == moving_reads && !shifted) { b->v = v; b->stateful = 1; }
     }
     arena = saved;
     return v;
@@ -6230,7 +6233,7 @@ static __attribute__((noinline)) Value *substitution_value(Inst *in, int i) {
     Def *id = in->def;
     Expr *x = id->subst_expr[i];
     Ctx outer = {in->env, in->parent};
-    if (primed || gen_init || !cur_state || arena != &scratch_arena) return eval(x, outer);
+    if (shifted || gen_init || !cur_state || arena != &scratch_arena) return eval(x, outer);
     if (!id->subst_kept) id->subst_kept = xcalloc((size_t)id->nsubst, 1);
     if (!id->subst_kept[i]) id->subst_kept[i] = x->kind != K_DECL && expr_level(x) == 1 ? 1 : 2;
     if (id->subst_kept[i] == 2) return eval(x, outer);
@@ -6253,11 +6256,11 @@ static Value *decl_value(Def *d, Ctx c, Expr *where);
 static __attribute__((noinline)) Value *substituted_value(Def *d, Ctx c, Expr *where) {
     for (Inst *in = c.inst; in; in = in->parent) {
         if (in->def == &enabled_mark) {   /* before a substitution: by name, as ENABLED assigns it (§6.9) */
-            if (!primed || d->kind != D_VAR || d->var_index >= 0) continue;
+            if (cur_state != in->state || d->kind != D_VAR || d->var_index >= 0) continue;
             int slot = enabled_slot(d);
-            if (slot < 0 || !next_state[slot])
+            if (slot < 0 || !cur_state[slot])
                 fail_runtime(where, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
-            return next_state[slot];
+            return cur_state[slot];
         }
         int i = subst_index(in->def, d);
         if (i >= 0) {
@@ -6278,12 +6281,7 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
     if (d->kind == D_VAR) {
         if (d->var_index < 0) fail_at(where, "The variable %s is not a variable of the specification.", S(d->name));
         state_reads++;
-        if (primed || (gen_init && cur_state == gen_target)) moving_reads++;
-        if (primed) {
-            if (!next_state || !next_state[d->var_index])
-                fail_runtime(where, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
-            return next_state[d->var_index];
-        }
+        if (shifted || (gen_init && cur_state == gen_target)) moving_reads++;
         if (!cur_state || !cur_state[d->var_index])
             fail_runtime(where, MANYAN_ERROR_CONFIG, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
         return cur_state[d->var_index];
@@ -6448,12 +6446,13 @@ static Value *filter_member_test(Value *s, Value *v) {
     }
     Ctx c = {env, s->u.l.inst};
     Value **cur = cur_state, **next = next_state;
-    if (s->u.l.made_in) cur_state = s->u.l.made_in[0], next_state = s->u.l.made_in[1];
+    if (s->u.l.made_in) cur_state = s->u.l.made_in[0], next_state = s->u.l.made_in[1], shifted++;
     Region *r = region_open();
     Value *holds = eval(e->args[0], c);
     if (holds->kind != V_BOOL)
         fail_at(e->args[0], "Attempted to evaluate an expression of form {x \\in S : P(x)} when P was %s.", kind_string(holds));
     region_close(r);
+    if (s->u.l.made_in) shifted--;
     cur_state = cur;
     next_state = next;
     return holds;
@@ -6849,22 +6848,29 @@ static __attribute__((noinline)) Value *ev_domain(Expr *e, Ctx c) {
     return fcn_domain(f);
 }
 
-static __attribute__((noinline)) Value *ev_prime(Expr *e, Ctx c) {
-    if (primed) return eval(e->args[0], c);
-    primed = 1;
-    Value *v = eval(e->args[0], c);
-    primed = 0;
+/* Evaluates e in the next state, moving it into the current state as TLC
+   does so that (ENABLED A)' evaluates ENABLED A there. */
+static __attribute__((noinline)) Value *eval_primed(Expr *e, Ctx c) {
+    Value **saved_cur = cur_state, **saved_next = next_state;
+    int64_t saved_level = cur_level;
+    cur_state = next_state;
+    next_state = NULL;
+    cur_level++;
+    shifted++;
+    Value *v = eval(e, c);
+    shifted--;
+    cur_level = saved_level;
+    cur_state = saved_cur;
+    next_state = saved_next;
     return v;
 }
+
+static __attribute__((noinline)) Value *ev_prime(Expr *e, Ctx c) { return eval_primed(e->args[0], c); }
 
 /* Whether e' = e. */
 static int kept(Expr *e, Ctx c) {
     Value *now = eval(e, c);
-    int saved = primed;
-    primed = 1;
-    Value *then = eval(e, c);
-    primed = saved;
-    return veq(now, then);
+    return veq(now, eval_primed(e, c));
 }
 
 static __attribute__((noinline)) Value *ev_unchanged(Expr *e, Ctx c) { return BOOLV(kept(e->args[0], c)); }
@@ -7231,11 +7237,7 @@ static __attribute__((noinline)) Value *ev_sqact(Expr *e, Ctx c) {
     if (a->kind != V_BOOL) fail_at(e, "Attempted to evaluate an expression of form %s, but A was not a boolean.", sq ? "[A]_e" : "<A>_e");
     if (a->u.i == sq) return a;
     Value *now = eval(e->args[1], c);
-    int saved = primed;
-    primed = 1;
-    Value *then = eval(e->args[1], c);
-    primed = saved;
-    return BOOLV(veq(now, then) == sq);
+    return BOOLV(veq(now, eval_primed(e->args[1], c)) == sq);
 }
 
 #define EVAL(name) static Value *name(Expr *e, Ctx c)
@@ -8124,11 +8126,11 @@ NATIVE(n_tlcget) {
         const char *key = S(k->u.i);
         int *p = prop(key);
         if (p) return mk_str(*p);
-        if (!strcmp(key, "level")) return mk_int(cur_level + primed);   /* primed, the next state's */
+        if (!strcmp(key, "level")) return mk_int(cur_level);
         if (!strcmp(key, "config") && !starting) return search_config();
         if (!strcmp(key, "revision")) return tlc_revision();
         if (!strcmp(key, "stats") && !starting) return simulating ? sim_stats() : search_stats();
-        if (!strcmp(key, "action")) return action_record(primed ? next_state : cur_state);
+        if (!strcmp(key, "action")) return action_record(cur_state);
         if (!strcmp(key, "spec") && !starting) return spec_value();
         if (!strcmp(key, "diameter") && simulating) return mk_int(sim_traces);   /* TLC's count of behaviors */
         if (!starting && (!strcmp(key, "all") || !strcmp(key, "all:named"))) return registers_all(key[3] == ':');
@@ -8731,7 +8733,7 @@ NATIVE(n_tlccache) {
     uint64_t key = elem_hash(eval(call->args[1], c));
     Value **st = level ? cur_state : NULL;
     if (st && !simulating) eval(x, c);
-    if (st && (!simulating || gen_init)) return eval(x, c);
+    if (st && (!simulating || gen_init || shifted)) return eval(x, c);
     for (int i = 0; i < ntlc_cache; i++)
         if (tlc_cache[i].e == x && tlc_cache[i].st == st && tlc_cache[i].key == key) return tlc_cache[i].value;
     if (in_worker) worker_cannot();
@@ -9213,26 +9215,33 @@ static int enabled_slot(Def *d) {
     return nvars + nenabled_names++;
 }
 
+typedef struct { int found; Value **seen; } EnabledOut;
+static EnabledOut *enabled_out;
+static Value **enabled_seen;   /* if set, where the successor found is put */
+
 /* The evaluation globals, which a caller that goes on after an error
    restores. */
 typedef struct {
     sigjmp_buf *handler;
     Arena *arena;
-    Value **cur_state, **next_state, **gen_target, *at_value;
+    Value **cur_state, **next_state, **gen_target, **enabled_seen, *at_value;
+    EnabledOut *enabled_out;
     int (*gen_emit)(void);
-    int primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes;
+    int64_t cur_level;
+    int shifted, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes;
 } EvalState;
 
 static EvalState eval_save(void) {
-    return (EvalState){handler, arena, cur_state, next_state, gen_target, at_value, gen_emit,
-                       primed, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes};
+    return (EvalState){handler, arena, cur_state, next_state, gen_target, enabled_seen, at_value, enabled_out, gen_emit, cur_level,
+                       shifted, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes};
 }
 
 static void eval_restore(EvalState s) {
     handler = s.handler; arena = s.arena;
-    cur_state = s.cur_state; next_state = s.next_state; gen_target = s.gen_target; at_value = s.at_value;
-    gen_emit = s.gen_emit;
-    primed = s.primed; gen_init = s.gen_init; nenabled_names = s.nenabled_names;
+    cur_state = s.cur_state; next_state = s.next_state; gen_target = s.gen_target; enabled_seen = s.enabled_seen; at_value = s.at_value;
+    enabled_out = s.enabled_out;
+    gen_emit = s.gen_emit; cur_level = s.cur_level;
+    shifted = s.shifted; gen_init = s.gen_init; nenabled_names = s.nenabled_names;
     java_depth = s.java_depth; eval_depth = s.eval_depth; keep_lazy = s.keep_lazy; fp_depth = s.fp_depth;
     nregions = s.nregions; nframes = s.nframes;
 }
@@ -9512,11 +9521,7 @@ static int unchanged_now(Expr *e, Ctx c) {
         if (var >= 0 && gen_target[var]) return veq(eval(e, c), gen_target[var]);
     }
     Value *now = eval(e, c);
-    int saved = primed;
-    primed = 1;
-    Value *then = eval(e, c);
-    primed = saved;
-    return veq(now, then);
+    return veq(now, eval_primed(e, c));
 }
 
 static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
@@ -9653,10 +9658,12 @@ static int gen_cdot(Expr *e, Ctx c, Cont *k) {
         gen_emit = last_emit;
     }
     int found = 0;
+    shifted++;
     for (int i = 0; i < m.n && !found; i++) {
         cur_state = m.v[i];
         found = gen(e->args[1], c, k);
     }
+    shifted--;
     cur_state = s;
     gen_emit = saved_emit;
     cdot_emit = saved_cdot;
@@ -9668,17 +9675,18 @@ static int gen_cdot(Expr *e, Ctx c, Cont *k) {
    state, starting from no values, goes to the next state by B. */
 static Value *eval_cdot(Expr *e, Ctx c) {
     cdot_enabled();
-    int saved_init = gen_init, saved_primed = primed;
-    gen_init = primed = 0;
+    int saved_init = gen_init;
+    gen_init = 0;
     Middles m = cdot_first(e->args[0], c, NEWN(Value *, nvars), NULL);
     gen_init = saved_init;
-    primed = saved_primed;
     Value **s = cur_state, *v = FALSEV;
+    shifted++;
     for (int i = 0; i < m.n && v != TRUEV; i++) {
         cur_state = m.v[i];
         v = eval(e->args[1], c);
         if (v->kind != V_BOOL) not_boolean(e->args[1], v);
     }
+    shifted--;
     cur_state = s;
     return v;
 }
@@ -9924,41 +9932,39 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
 }
 
 /* Whether action a has a successor from the current state. */
-static int enabled_found;
-static Value **enabled_seen;   /* if set, where the successor found is put */
 static int enabled_emit(void) {
-    enabled_found = 1;
-    if (enabled_seen) memcpy(enabled_seen, gen_target, sizeof *gen_target * (size_t)nvars);
+    enabled_out->found = 1;
+    if (enabled_out->seen) memcpy(enabled_out->seen, gen_target, sizeof *gen_target * (size_t)nvars);
     return 1;
 }
 
 static int enabled(Expr *a, Ctx c) {
-    Value **saved_target = gen_target, **saved_next = next_state;
-    int saved_init = gen_init, saved_primed = primed;
+    Value **saved_target = gen_target, **saved_next = next_state, **saved_seen = enabled_seen;
+    int saved_init = gen_init, saved_names = nenabled_names, saved_slicing = slicing;
     int (*saved_emit)(void) = gen_emit;
-    int saved_names = nenabled_names;
+    EnabledOut out = {0, enabled_seen}, *saved_out = enabled_out;
     Value **fresh = NEWN(Value *, nvars + 16);
     gen_target = next_state = fresh;
     gen_init = 0;
-    primed = 0;
     gen_emit = enabled_emit;
-    enabled_found = 0;
+    enabled_out = &out;
+    enabled_seen = NULL;
     Inst *mark = NEW(Inst);
     mark->def = &enabled_mark;
+    mark->state = fresh;
     mark->parent = c.inst;
     c.inst = mark;
-    int saved_slicing = slicing;
     slicing = 0;
     gen(a, c, NULL);
     slicing = saved_slicing;
     nenabled_names = saved_names;
-    int found = enabled_found;
+    enabled_out = saved_out;
+    enabled_seen = saved_seen;
     gen_target = saved_target;
     next_state = saved_next;
     gen_init = saved_init;
-    primed = saved_primed;
     gen_emit = saved_emit;
-    return found;
+    return out.found;
 }
 
 /* ---------------------------------------------------------------- actions */
@@ -10183,7 +10189,7 @@ static int arg_pure(Expr *e, Env *env) {
     if (e->kind == K_BOUND || (e->kind == K_CALL && e->def->local == 2 && !e->def->nparams)) {   /* a LET definition's too */
         Env *b = env_find(env, e->def);
         if (!b) return 0;
-        if (b->v && !(primed && b->stateful)) return 1;
+        if (b->v && !(shifted && b->stateful)) return 1;
         if (!b->pure) b->pure = b->e && arg_pure(b->e, b->ctx_env) ? 1 : 2;
         return b->pure == 1;
     }
@@ -10270,7 +10276,7 @@ static Value *memo_call(Def *d, Expr *e, Ctx c) {
     for (int i = 0; i < e->n; i++) {
         Expr *x = e->args[i];
         Env *b = x->kind == K_BOUND ? env_find(c.env, x->def) : NULL;
-        a[i] = b && b->v && !(primed && b->stateful) ? b->v : x->kind == X_NUM || x->kind == X_STR || x->kind == X_BOOL ? eval(x, c) : NULL;
+        a[i] = b && b->v && !(shifted && b->stateful) ? b->v : x->kind == X_NUM || x->kind == X_STR || x->kind == X_BOOL ? eval(x, c) : NULL;
         if (a[i] && a[i]->kind > V_MODEL) {   /* not kept: after enough such calls, none is */
             if (++d->unkept == 64) d->memo = 2;
             return call_def(d, e->args, e->n, c, e);
@@ -15491,22 +15497,21 @@ static int atom_holds_on(TF *t, int s, Value **next);
 static int stutters(Expr *e, Ctx c) {
     if (e->kind != X_SQACT && e->kind != X_ANGLEACT) return 0;
     Value *now = eval(e->args[1], c);
-    int saved = primed;
-    primed = 1;
-    Value *then = eval(e->args[1], c);
-    primed = saved;
-    return veq(now, then);
+    return veq(now, eval_primed(e->args[1], c));
 }
 
 static int holds_in(Expr *e, Ctx c, Value **cur, Value **next) {
     Value **saved_cur = cur_state, **saved_next = next_state;
+    int saved_shifted = shifted;
     Arena *saved_arena = arena;
     cur_state = cur;
     next_state = next;
+    shifted = 0;
     arena = &scratch_arena;
     int v = next && stutters(e, c) ? e->kind == X_SQACT : eval_bool(e, c);
     cur_state = saved_cur;
     next_state = saved_next;
+    shifted = saved_shifted;
     arena = saved_arena;
     if (arena != &scratch_arena) arena_reset(&scratch_arena);
     return v;
@@ -19350,11 +19355,12 @@ struct SEnv {
 
 /* A call of a polymorphic operator a Gen depends on: a mark in the
    context of its body, back to the caller's (sym_typed). */
+static Def typed_mark;
 static SEnv *sym_typed(Expr *call, SCtx caller, SEnv *s);
 
 static SVal **sym_cur;     /* the state being read */
 static SVal **sym_next;    /* the next state as far as assigned */
-static int sym_primed;     /* reading the next state */
+static int sym_shifted;    /* sym_cur is not the outer state: under ' */
 static int sym_init;       /* an initial predicate: assigning unprimed variables */
 static int sym_gen_step;   /* what makes the values of Gen: 0 Init, N the Nth step, -1 another */
 static struct { Expr *e; int step; SVal *v; } *sym_gens;   /* those values, for the evaluator to replay */
@@ -19529,7 +19535,7 @@ static SVal *sym_plain_eval(Expr *e, Ctx c) {
     handler = &here;
     if (sigsetjmp(here, 0)) { eval_restore(es); return sv_undef(); }
     cur_state = next_state = NULL;
-    primed = gen_init = 0;
+    shifted = gen_init = 0;
     if (sym_at) at_value = sv_known(sym_at);
     Value *v = eval(e, c);
     eval_restore(es);
@@ -19538,11 +19544,25 @@ static SVal *sym_plain_eval(Expr *e, Ctx c) {
 
 static SVal *sym(Expr *e, SCtx sc, int pol);
 static SVal *sym_enabled(Expr *e, SCtx sc);
+static int act_level(Expr *e, SCtx sc);
 static int sym_bool(Expr *e, SCtx sc, int pol) { return sv_lit(sym(e, sc, pol), e); }
 
+static SVal *sym_primed_eval(Expr *e, SCtx sc, int pol) {
+    if (sym_init) return sym(e, sc, pol);   /* in the initial predicate, as Apalache, x' is x */
+    SVal **saved_cur = sym_cur, **saved_next = sym_next;
+    sym_cur = sym_next;
+    sym_next = NULL;
+    sym_shifted++;
+    SVal *r = sym(e, sc, pol);
+    sym_shifted--;
+    sym_cur = saved_cur;
+    sym_next = saved_next;
+    return r;
+}
+
 static SVal *senv_force(SEnv *b) {
-    if (b->v) return b->v;
-    int keep = !sym_primed && !sym_init && expr_info(b->e)->level < 2;
+    if (b->v && !(sym_shifted && b->e)) return b->v;
+    int keep = !sym_shifted && !sym_init && act_level(b->e, b->ctx) < 2;
     SVal *v = sym(b->e, b->ctx, P_BOTH);
     if (keep) b->v = v;
     return v;
@@ -19687,7 +19707,8 @@ static SVal *sym_decl(Def *d, SCtx sc, Expr *where) {
         return v;
     }
     if (d->kind == D_VAR && d->var_index >= 0) {
-        SVal *v = sym_primed ? sym_next[d->var_index] : sym_cur[d->var_index];
+        SVal **st = sym_init ? sym_next : sym_cur;
+        SVal *v = st ? st[d->var_index] : NULL;
         if (!v) fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
         return v;
     }
@@ -19992,29 +20013,16 @@ static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
     case K_SUBSET: r = sv_inf(INF_SUBSET, 1); r->u.inf.parts[0] = sym(e->args[0], sc, P_BOTH); return r;
     case K_UNION: return sym_union(sym(e->args[0], sc, P_BOTH));
     case K_DOMAIN: return sv_domain(sym(e->args[0], sc, P_BOTH));
-    case K_PRIME: {
-        int saved = sym_primed;   /* in the initial predicate, as Apalache, x' is x */
-        sym_primed = 1;
-        r = sym(e->args[0], sc, pol);
-        sym_primed = saved;
-        return r;
-    }
-    case K_UNCHANGED: {
+    case K_PRIME: return sym_primed_eval(e->args[0], sc, pol);
+    case K_UNCHANGED:
         a = sym(e->args[0], sc, P_BOTH);
-        int saved = sym_primed;
-        sym_primed = 1;
-        b = sym(e->args[0], sc, P_BOTH);
-        sym_primed = saved;
+        b = sym_primed_eval(e->args[0], sc, P_BOTH);
         return sv_bool(sv_eq(a, b));
-    }
     case X_SQACT: case X_ANGLEACT: {
         int sq = e->kind == X_SQACT;
         l = sym_bool(e->args[0], sc, pol);
         a = sym(e->args[1], sc, P_BOTH);
-        int saved = sym_primed;
-        sym_primed = 1;
-        b = sym(e->args[1], sc, P_BOTH);
-        sym_primed = saved;
+        b = sym_primed_eval(e->args[1], sc, P_BOTH);
         int same = sv_eq(a, b);
         return sv_bool(sq ? g_or(l, same) : g_and(l, same ^ 1));
     }
@@ -20386,6 +20394,7 @@ static Expr *sym_arg(Expr *e, SCtx *sc) {
 
 /* The level of e where its parameters stand for their arguments. */
 static int act_level(Expr *e, SCtx sc) {
+    if (e->kind == K_ENABLED) return 1;
     ExprInfo *in = expr_info(e);
     int l = in->level;
     for (int i = 0; i < in->n && l < 2; i++) {
@@ -20418,9 +20427,7 @@ static Branch act_unchanged(Expr *e, SCtx sc, Branch b) {
     }
     sym_next = b.next;
     SVal *now = sym(e, sc, P_BOTH);
-    sym_primed = 1;
-    SVal *then = sym(e, sc, P_BOTH);
-    sym_primed = 0;
+    SVal *then = sym_primed_eval(e, sc, P_BOTH);
     return branch_and(b, sv_eq(now, then));
 }
 
@@ -20506,10 +20513,7 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
     case K_EQ: case K_IN: case K_SUBSETEQ: {
         int v = assign_target(e->args[0], sc);
         if (v < 0 || in.next[v]) break;
-        int saved = sym_primed;
-        sym_primed = sym_init;
         SVal *x = sym(e->args[1], sc, P_BOTH);
-        sym_primed = saved;
         if (e->kind == K_EQ) { branches_add(out, branch_set(in, v, x)); return; }
         if (e->kind == K_SUBSETEQ) { SVal *all = sv_inf(INF_SUBSET, 1); all->u.inf.parts[0] = x; x = all; }
         int g;
@@ -20535,9 +20539,7 @@ static void act(Expr *e, SCtx sc, Branch in, Branches *out) {
         for (int k = 0; k < done.n; k++) {
             sym_next = done.v[k].next;
             SVal *now = sym(e->args[1], sc, P_BOTH);
-            sym_primed = 1;
-            SVal *then = sym(e->args[1], sc, P_BOTH);
-            sym_primed = 0;
+            SVal *then = sym_primed_eval(e->args[1], sc, P_BOTH);
             branches_add(&tmp, branch_and(done.v[k], sv_eq(now, then) ^ 1));
         }
         merge_into(&tmp, out, 0);
@@ -20704,10 +20706,13 @@ static SymEnabled *sym_enableds;
 static int nsym_enableds, sym_enabled_query;
 
 static int sym_enabled_lit(Expr *a, SCtx sc) {
-    SVal **next = sym_next;
+    SVal **cur = sym_cur, **next = sym_next;
+    int saved_init = sym_init;
+    if (sym_init) sym_cur = sym_next, sym_init = 0;
+    SVal **at = sym_cur;
     Branches out = {0};
     act(a, sc, (Branch){L_TRUE, NEWN(SVal *, nvars)}, &out);
-    sym_next = next;
+    sym_cur = cur, sym_next = next, sym_init = saved_init;
     int some = L_FALSE;
     for (int k = 0; k < out.n; k++) some = g_or(some, out.v[k].guard);
     if (some == L_FALSE) return L_FALSE;
@@ -20718,7 +20723,7 @@ static int sym_enabled_lit(Expr *a, SCtx sc) {
         if (nsym_enableds) memcpy(grown, sym_enableds, sizeof *grown * (size_t)nsym_enableds);
         sym_enableds = grown;
     }
-    sym_enableds[nsym_enableds++] = (SymEnabled){l, sym_enabled_query, a, sc, sym_cur, out};
+    sym_enableds[nsym_enableds++] = (SymEnabled){l, sym_enabled_query, a, sc, at, out};
     return l;
 }
 
@@ -20742,6 +20747,21 @@ static int sym_dead(SVal ***st, int depth, int kept) {
    step of A from the model's state, with its bindings and constants,
    ENABLED A is tied to every state that step leaves from, and 0 is
    returned. The model is kept. */
+/* Pins every bound value reachable from s to its model value, without
+   cycling through recursive LET closures. */
+static int sym_pin_env(SEnv *s, int pin, SEnv **seen, int *nseen) {
+    for (SEnv *b = s; b; b = b->next) {
+        if (b->def == &typed_mark) continue;
+        int dup = 0;
+        for (int i = 0; i < *nseen && !dup; i++) dup = seen[i] == b;
+        if (dup) continue;
+        if (*nseen < 64) seen[(*nseen)++] = b;
+        if (!b->e && b->v) pin = g_and(pin, sv_eq(b->v, sv_const(sv_model(b->v))));
+        else if (b->e) pin = sym_pin_env(b->ctx.s, pin, seen, nseen);
+    }
+    return pin;
+}
+
 static int sym_enabled_refine(int from) {
     int n = 0, m = nsym_enableds, *pins = NEWN(int, m + 1);   /* -1 where the model has it true */
     for (int i = 0; i < m; i++) {
@@ -20749,8 +20769,11 @@ static int sym_enabled_refine(int from) {
         pins[i] = -1;
         if ((i < from && x->query) || lit_true(x->lit)) continue;
         int pin = L_TRUE;
-        for (int v = 0; v < nvars; v++) pin = g_and(pin, sv_eq(x->at[v], sv_const(sv_model(x->at[v]))));
-        for (SEnv *b = x->sc.s; b; b = b->next) if (b->v) pin = g_and(pin, sv_eq(b->v, sv_const(sv_model(b->v))));
+        for (int v = 0; v < nvars; v++)
+            if (x->at && x->at[v]) pin = g_and(pin, sv_eq(x->at[v], sv_const(sv_model(x->at[v]))));
+        SEnv *seen[64];
+        int nseen = 0;
+        pin = sym_pin_env(x->sc.s, pin, seen, &nseen);
         for (int c = 0; c < nsym_consts; c++) pin = g_and(pin, sv_eq(sym_const_vals[c], sv_const(sv_model(sym_const_vals[c]))));
         pins[i] = pin, n++;
     }
@@ -20758,6 +20781,8 @@ static int sym_enabled_refine(int from) {
     int kept = sat.nvars, fine = 1;
     unsigned char *model = NEWN(unsigned char, kept + 1);
     memcpy(model, sat.model, (size_t)kept);
+    SVal **saved_cur = sym_cur, **saved_next = sym_next;
+    int saved_shifted = sym_shifted;
     for (int i = 0; i < m; i++) {
         SymEnabled *x = &sym_enableds[i];
         if (pins[i] < 0) continue;
@@ -20765,14 +20790,17 @@ static int sym_enabled_refine(int from) {
             int q[2] = {pins[i], x->out.v[k].guard};
             if (!sat_solve(q, 2)) continue;
             SVal **t = NEWN(SVal *, nvars);
-            for (int v = 0; v < nvars; v++) t[v] = sv_const(sv_model(x->out.v[k].next[v] ? x->out.v[k].next[v] : x->at[v]));
-            sym_cur = x->at, sym_next = t;
+            for (int v = 0; v < nvars; v++) {
+                SVal *u = x->out.v[k].next[v] ? x->out.v[k].next[v] : (x->at ? x->at[v] : NULL);
+                t[v] = u ? sv_const(sv_model(u)) : NULL;
+            }
+            sym_cur = x->at, sym_next = t, sym_shifted = 1;
             sat_add2(x->lit, sym_bool(x->a, x->sc, P_BOTH) ^ 1);
-            sym_next = NULL;
             fine = 0;
             break;
         }
     }
+    sym_cur = saved_cur, sym_next = saved_next, sym_shifted = saved_shifted;
     memcpy(sat.model, model, (size_t)kept);
     return fine;
 }
@@ -21063,7 +21091,7 @@ static int sym_lasso_violated(int p, Lasso ls, int kept) {
     sym_enabled_query = 0;
     xfree(memo);
     if (nfairness) l = g_and(l, sym_fair(ls));
-    while (sat_solve(&l, 1)) if (sym_refine(ls) && sym_enabled_refine(from)) return 1;
+    while (sat_solve(&l, 1)) if (sym_enabled_refine(from) && sym_refine(ls)) return 1;
     return 0;
 }
 
@@ -21161,10 +21189,10 @@ static int symbolic(void) {
     }
     asg_check(init_expr, 1);
     if (next_expr) asg_check(next_expr, 0);
-    sym_init = sym_primed = 1;
+    sym_init = 1;
     Branch *init = sym_cinit_name ? sym_constants() : &(Branch){L_TRUE, NULL};
     if (init) sat_unit(init->guard);
-    sym_init = sym_primed = 0;
+    sym_init = 0;
     for (int i = 0; init && i < nsym_assumes; i++) {   /* of the constants chosen, as Apalache assumes them */
         Unit *u = sym_assumes[i];
         SVal *v = sym(u->expr, (SCtx){root_ctx, NULL}, P_POS);
@@ -21173,9 +21201,9 @@ static int symbolic(void) {
         if (l == L_FALSE) { printf("Error: Assumption %s is false.\n", loc_str(u->expr)); return MANYAN_VIOLATION_ASSUMPTION; }
         sat_unit(l);
     }
-    sym_init = sym_primed = 1;
+    sym_init = 1;
     if (init) init = act_step(init_expr, root_ctx, "The initial predicate");
-    sym_init = sym_primed = 0;
+    sym_init = 0;
     sym_gen_step = -1;
     if (init) {
         sat_unit(init->guard);
@@ -23930,7 +23958,6 @@ static Def *sym_misvalued(void) {
 /* The types of the specification, for symbolic checking: as -typecheck
    checks them, printing only what is wrong. */
 static int sym_open_gens;   /* whether a Gen's type is generic, for sym_typed */
-static Def typed_mark;
 
 static int ty_open(Type *t) {
     if (t->kind == TY_VAR) return 1;
@@ -25294,7 +25321,7 @@ static void reset_check(void) {
     Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
     Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(in_def_body); Z(label_bounds); Z(lint); Z(level_probe); Z(every_argument);
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
-    Z(primed); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
+    Z(shifted); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);
     Z(keep_going); Z(te_spec); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
     Z(nwitnesses); Z(gen_values); Z(ngen_values); Z(gen_step); Z(apalache_name); Z(folds_name); Z(gen_name);
@@ -25305,7 +25332,7 @@ static void reset_check(void) {
     Z(fp_bytes); Z(sim_defer); Z(rng); Z(rng_aril); Z(gen_emit); Z(generated); Z(initials); Z(found);
     Z(generating); Z(slicing); Z(slice_counting); Z(slice_deeper); Z(slice_depth); Z(choice_depth);
     Z(slice_seq); Z(slice_lo); Z(slice_hi); Z(enabled_names); Z(nenabled_names); Z(cdot_middle);
-    Z(cdot_from); Z(cdot_emit); Z(enabled_found); Z(enabled_seen); Z(actions); Z(nactions); Z(index_hash);
+    Z(cdot_from); Z(cdot_emit); Z(enabled_out); Z(enabled_seen); Z(actions); Z(nactions); Z(index_hash);
     Z(memos); Z(nmemos); Z(capmemos); Z(unfingerprintable); Z(decoded_ids); Z(ndecoded_ids);
     Z(decoding_ids); Z(states); Z(level_at); Z(nlevels); Z(caplevels); Z(state_edges); Z(capedges);
     Z(nstates); Z(capstates); Z(store); Z(fp_table); Z(fp_size); Z(fp_mapped); Z(fp_region);
@@ -25348,7 +25375,7 @@ static void reset_check(void) {
     Z(comp_nodes); Z(comp_at); Z(npem_evals); Z(pem_filled); Z(group_pems); Z(group_first); Z(group_npems);
     Z(group_prune); Z(group_found); Z(sat); Z(analyze_stack); Z(analyze_clear); Z(analyze_cap); Z(gates);
     Z(ngates); Z(capgates); Z(lin_slots); Z(nlin_slots); Z(caplin_slots); Z(lin_atoms); Z(nlin_atoms);
-    Z(sum_slots); Z(nsum_slots); Z(capsum_slots); Z(sym_cur); Z(sym_next); Z(sym_primed); Z(sym_init);
+    Z(sum_slots); Z(nsum_slots); Z(capsum_slots); Z(sym_cur); Z(sym_next); Z(sym_shifted); Z(sym_init);
     Z(sym_gen_step); Z(sym_gens); Z(nsym_gens); Z(sym_at); Z(sym_consts); Z(sym_const_vals); Z(nsym_consts);
     Z(sym_cinit); Z(at_mark); Z(infos); Z(ninfos); Z(capinfos); Z(level_busy); Z(nlevel_busy);
     Z(sym_witnesses); Z(nsym_witnesses); Z(sym_failed); Z(nsym_failed); Z(asg_unknown); Z(asg_depth);

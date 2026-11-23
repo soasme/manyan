@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Eventually3 was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 9, col 9 to line 9, col 27 of module enabled_param_prop>
+x = 1
+
+State 3: <Next line 9, col 9 to line 9, col 27 of module enabled_param_prop>
+x = 2
+
+State 4: Stuttering
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+exit 13

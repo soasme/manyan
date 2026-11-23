@@ -6,7 +6,7 @@ VARIABLE x
 Init == x = 0
 Next == x < 2 /\ x' = x + 1
 Done(A) == ~(ENABLED A)'
-Prop == [][Done(Next) => x' = 2]_x
+Prop == [][Done(Next) <=> x' = 2]_x
 ====
 INIT Init
 NEXT Next
