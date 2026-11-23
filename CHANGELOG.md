@@ -1,3 +1,31 @@
+2026-11-24 0.17.0:
+
+- `-lint` (`ManyanOptions.lint`): runs SANY's parsing, module resolution,
+  semantic analysis, level checking, warnings and record-field lint without
+  a `.cfg` file or model checking (exits 0 on success, 150 on error; 72
+  tests verified against SANY and all 433 tlaplus/Examples modules,
+  ~3.7 ms median)
+- `-fmt` (`ManyanOptions.fmt`): formats a TLA⁺ module to standard output in
+  one canonical 80-column layout without needing a `.cfg` file or imported
+  modules, preserving preamble/postscript text, all `\*` and `(* ... *)`
+  comments (including PlusCal and `@type` annotations), nested modules and
+  TLAPS proofs (idempotent and SANY-valid across `tests/fmt` and all 433
+  tlaplus/Examples modules, ~3.1 ms median)
+- SANY semantic & level checking: full modular higher-order and `INSTANCE`
+  level constraint checking, `LOCAL` placement, `RECURSIVE` definition
+  sections and arity/primed-parameter rules, label scoping and parameter
+  rules, `EXTENDS` symbol unification, `INSTANCE WITH` checks, function
+  application arity, `@` outside `EXCEPT`, and built-in redefinition checks
+- TLA⁺ models & fuzzing: added `tests/tla/LevelCheck.tla` (32,000 states)
+  and `tests/tla/Fmt.tla` (3,926 states), both checked against TLC; added
+  `make fuzz-lint` and `make fuzz-fmt` under sanitizers
+- fixed: `(ENABLED A)'` evaluated `ENABLED A` in the current state instead
+  of the next state in both explicit and `-symbolic` checking (#10); moving
+  the next state into the current state on `'` also fixes nested `ENABLED`
+  isolation, stateful thunk caching across `'`, `ENABLED` of action
+  parameters in temporal formulas, and `-symbolic` refinement of partial
+  next states and fair actions guarded by `(ENABLED A)'`
+
 2026-11-23 0.16.1:
 
 - Python: `manyan.check(spec, **options)` checks in Python's own process,

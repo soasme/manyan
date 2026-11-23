@@ -56,7 +56,7 @@ Try it out:
 
 ```sh
 $ manyan examples/DieHard
-manyan version 0.16.1
+manyan version 0.17.0
 Finished computing initial states: 1 distinct state generated.
 Error: Invariant NotSolved is violated.
 Error: The behavior up to this point is:
@@ -107,16 +107,16 @@ report as TLC with one worker.
 
 | spec | distinct states | TLC | Manyan | speedup | TLC (8) | Manyan (8) | speedup |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| closure | 65536 | 2.19 | 0.48 | 4.6x | 0.95 | 0.12 | 7.8x |
-| counters | 823543 | 3.54 | 0.68 | 5.2x | 2.94 | 0.19 | 15.2x |
-| liveness | 38880 | 4.32 | 0.14 | 30.1x | 2.93 | 0.07 | 40.2x |
-| log | 31501 | 0.66 | 0.05 | 12.4x | 0.58 | 0.02 | 26.3x |
-| mutex | 11365 | 0.48 | 0.03 | 16.1x | 0.43 | 0.02 | 24.0x |
-| partition | 21147 | 0.93 | 0.17 | 5.5x | 0.68 | 0.05 | 13.1x |
-| queue | 183680 | 0.95 | 0.16 | 5.8x | 0.95 | 0.06 | 15.8x |
-| recursion | 78125 | 1.23 | 0.22 | 5.5x | 0.87 | 0.06 | 14.4x |
-| refinement | 30618 | 0.65 | 0.07 | 9.6x | 0.55 | 0.02 | 22.8x |
-| symmetry | 21123 | 1.23 | 0.18 | 6.8x | 0.68 | 0.05 | 13.5x |
+| closure | 65536 | 2.24 | 0.48 | 4.7x | 0.98 | 0.13 | 7.3x |
+| counters | 823543 | 3.75 | 0.68 | 5.5x | 2.86 | 0.18 | 15.5x |
+| liveness | 38880 | 4.53 | 0.15 | 30.8x | 3.06 | 0.08 | 39.2x |
+| log | 31501 | 0.68 | 0.05 | 12.6x | 0.59 | 0.02 | 25.5x |
+| mutex | 11365 | 0.49 | 0.03 | 17.2x | 0.44 | 0.02 | 24.4x |
+| partition | 21147 | 0.91 | 0.18 | 5.1x | 0.69 | 0.07 | 10.3x |
+| queue | 183680 | 1.03 | 0.16 | 6.6x | 0.92 | 0.06 | 15.4x |
+| recursion | 78125 | 1.28 | 0.24 | 5.4x | 0.93 | 0.07 | 13.2x |
+| refinement | 30618 | 0.70 | 0.07 | 9.6x | 0.61 | 0.03 | 21.2x |
+| symmetry | 21123 | 1.29 | 0.19 | 6.8x | 0.75 | 0.06 | 12.8x |
 
 `make bench` reproduces these numbers in [docs/benchmark.md](docs/benchmark.md);
 [docs/optimizations.md](docs/optimizations.md) records how they were reached.

@@ -57,40 +57,18 @@ from TLC.
 - A browser playground, where anyone can paste a spec and check it with
   nothing installed. Done in 0.14.0.
 
-## Next: 0.17.0
+## Next: 0.18.0
 
-0.16.0 held states in less memory: a state's record 32 -> 20 bytes, a
-value many states share stored once, ElevatorSafetyLarge 65.6 -> 26.1
-bytes a state. Four of the six full-bench models past 4 GB print what TLC
-prints, 177 of 197 in all; the two left TLC itself does not finish. The
-bench's liveness went 0.18 -> 0.14 s, symbolic Paxos at length 7 81 -> 38
-s, `make test` 96 -> 37 s, and the oracle is TLC 1.8.0 at bc1b506, its
-`TLCGet` and `TLCSet` keys all taken.
+0.17.0 added `-lint` and `-fmt` (`ManyanOptions.lint` / `fmt`), both fast
+enough to run on save (~3–4 ms median across all 433 tlaplus/Examples
+modules), verified against SANY and modeled in `tests/tla/LevelCheck.tla`
+and `tests/tla/Fmt.tla`, closed SANY semantic gaps, and fixed `(ENABLED A)'`
+in explicit and symbolic checking (#10).
 
-1. **Python on the C API.** `manyan.run` runs the executable and reads
-   back its `-result` file. Bind `manyan.h` instead: load a spec, check
-   it, and walk the result in the same process, the output unchanged.
-   Done: `manyan_check` returns from an error where it exited, and each
-   check is as the first in a process, its memory freed by the next
-   (`make test-again` checks every test twice in one); `manyan.check`
-   calls it through the library each wheel but Windows' carries.
-2. **Liveness on every core.** A property of state atoms alone is
+1. **Liveness on every core.** A property of state atoms alone is
    checked on one process, where forking the workers costs more than
    they save ([optimizations](optimizations.md)). Make more workers
    check it faster, its output unchanged.
-3. **Format.** `manyan -fmt` prints a module's TLA⁺ code in one layout,
-   its meaning unchanged, fast enough to run on save.
-   Done: modeled in `tests/tla/Fmt.tla` (checked against TLC), idempotent,
-   comment- and proof-preserving, verified against SANY on all 433
-   tlaplus/Examples modules and `make test-fmt`, fuzzed under sanitizers
-   (`make fuzz-fmt`).
-4. **Lint.** `manyan -lint` checks that a module is syntactically and
-   semantically right, as SANY does, without checking a model, and reports
-   SANY's errors and warnings.
-   Done: level checking modeled in `tests/tla/LevelCheck.tla` (checked
-   against TLC), verified against SANY on `make test-lint` (72 cases
-   covering SANY's semantic, level, warning and linter checks) and all 433
-   tlaplus/Examples modules, fuzzed under sanitizers (`make fuzz-lint`).
 
 ## What stays
 
