@@ -121,6 +121,18 @@ Inv == m # M""", "CONSTANT M = M\nINIT Init\nNEXT Next\nINVARIANT Inv\n")).resul
         self.assertIsNone(run.result)
         self.assertTrue(run.output.startswith("manyan version "))
 
+    def test_lint(self):
+        ok = check(["-lint", "M"], {"M.tla": "---- MODULE M ----\nEXTENDS Naturals\nA == 1 + 2\n====\n"}, lint=1)
+        self.assertEqual(ok.status, 0)
+        bad = check(["-lint", "M"], {"M.tla": "---- MODULE M ----\nA == Missing\n====\n"}, lint=1)
+        self.assertEqual(bad.status, 150)
+        self.assertIn("Unknown operator", bad.output)
+
+    def test_fmt(self):
+        run = check(["-fmt", "M"], {"M.tla": "-------- MODULE M --------\nVARIABLE  x,y\nInit==x=0/\\y=1\n========\n"}, fmt=1)
+        self.assertEqual(run.status, 0)
+        self.assertEqual(run.output, "---- MODULE M ----\nVARIABLES x, y\nInit == x = 0 /\\ y = 1\n====\n")
+
 
 if __name__ == "__main__":
     unittest.main()

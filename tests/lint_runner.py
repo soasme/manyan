@@ -51,7 +51,7 @@ def run(command, path, oracle, memory):
             args = command + ["-error-codes", path.name]
         else:
             args = command + ["-lint", path.stem]
-        _, output, code, killed = guarded(args, directory, 300, memory)
+        _, output, code, killed = guarded(args, directory, 300, memory, b"")
         if killed:
             return f"{killed}\n", output
         if not oracle and code not in (0, 150):

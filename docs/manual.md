@@ -60,6 +60,8 @@ for it; [std.md](std.md) lists them.
 | `-max-error N` | symbolic checking: the invariant violations to find (1), as Apalache's `--max-error`: those the configuration's `VIEW` tells apart |
 | `-run-dir DIR` | symbolic checking: write each counterexample to `DIR` in ITF, as Apalache's `--run-dir` |
 | `-typecheck` | experimental: check the module's types as Apalache's `apalache-mc typecheck` does, without a configuration (see [Type checking](#type-checking-experimental)) |
+| `-lint` | check syntax, semantics, levels and warnings as SANY does, without a configuration or model checking (exits 0 on success, 150 on error) |
+| `-fmt` | format the module to standard output in one canonical layout, preserving comments, proofs and meaning (exits 0 on success, 150 on parse error) |
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
 | `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
@@ -378,6 +380,11 @@ make full-bench-symbolic  # tlaplus/Examples' Apalache models; writes docs/symbo
 make test-typecheck    # tests/typecheck with -typecheck
 make test-typecheck-oracle  # also runs Apalache 0.63.0 on every test
 make bless-typecheck ONLY=name  # writes a test's expected outcome from Apalache
+make test-lint         # tests/lint with -lint
+make test-lint-oracle  # also runs SANY on every test
+make bless-lint ONLY=name  # writes a test's expected outcome from SANY
+make test-fmt          # tests/fmt with -fmt (layout and idempotence)
+make test-fmt-oracle   # also validates formatted modules with SANY
 ```
 
 A test in `tests/symbolic` is a module and its configuration, as in

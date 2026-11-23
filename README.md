@@ -142,6 +142,9 @@ report as TLC with one worker.
   `-inv`, `-invlevel`, `-postCondition` and `-dumpTrace json`.
 - TLC's error messages and exit statuses for evaluation errors, parse
   errors and configuration errors.
+- Formatting and linting: `-fmt` formats a TLA⁺ module in one canonical
+  layout while preserving comments, proofs and meaning; `-lint` runs
+  SANY's syntax, semantic, level and warning checks without a model.
 - Experimental: `-symbolic` checks invariants, temporal properties and
   deadlock on behaviors of up to `-length` steps with a SAT solver, as
   Apalache does, with its `--cinit` (`-cinit`), `--max-error`

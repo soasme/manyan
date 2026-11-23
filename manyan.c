@@ -2150,6 +2150,7 @@ typedef struct {
     const char *text;    /* a string literal's contents, unescaped */
     int len;
     int line, col, eline, ecol;
+    int pos, end;        /* byte offsets in source (for -fmt) */
     const char *notes;   /* the comments before it, if they may hold annotations: @type */
 } Tok;
 
@@ -2180,6 +2181,7 @@ typedef struct {
     int tuple;      /* <<a, b>> \in S */
     Expr *set;      /* NULL for an unbounded binding */
     int line, col;  /* of its first name */
+    int pos;        /* byte offset of its start (for -fmt) */
 } Bound;
 
 /* A segment of A!B(x)!C, or a subexpression selector (§5.7): !2, !<<, !>>,
@@ -2196,6 +2198,7 @@ struct Expr {
     short kind;
     unsigned char fixed;  /* fixed_expr: 0 not yet known, 1 yes, 2 no */
     unsigned char made;   /* made by manyan, not written: no frame of TLC's call stack */
+    unsigned char bullet; /* parsed as a bullet list (/\ or \/) */
     int op;               /* operator or name; field of X_DOT */
     int n;
     int field;            /* X_DOT: where the field was in the last record */
@@ -2215,6 +2218,7 @@ struct Expr {
     Module *mod;
     int l1, c1, l2, c2;
     int pl1, pc1, pl2, pc2;   /* with the parentheses around it, if any */
+    int pos, end, ppos, pend; /* byte offsets in source (for -fmt) */
     Value *value;         /* X_SETENUM of literals of one kind, or a fixed product: its value, once computed */
     Inst *inst;           /* K_INSTCALL from the root module through instances without parameters: its chain */
 };
@@ -2277,12 +2281,16 @@ static Value *call_native(Def *d, Expr *call, Value **args, Ctx c);
 typedef struct { int name; Def *def; Def **path; int npath; int local; } Sym;
 
 typedef struct {
-    int kind;             /* 0 definition, 1 instance, 2 assume, 3 nested module, 4 name only */
+    int kind;             /* 0 definition, 1 instance, 2 assume, 3 nested module, 4 name only, 5 separator, 6 raw */
     Def *def;
     Expr *expr;
     Module *module;
     int local;
     Expr *where;          /* an assumption's, from its keyword */
+    int pos, end;         /* byte offsets in source (for -fmt) */
+    int line, eline;      /* 1-based line span (for -fmt) */
+    int kw;               /* statement keyword id (for -fmt) */
+    int group;            /* declarations from one statement share a group > 0 (for -fmt) */
 } Unit;
 
 struct Module {
@@ -2310,6 +2318,7 @@ struct Module {
     int standard;         /* read from the text of a standard module */
     int instantiated;     /* the target of an INSTANCE */
     Expr *odd[3];         /* its first decimal or too big integer: in a definition, an assumption, a theorem */
+    int pos, end, end_pos, hdr_end, line, hdr_eline, eline, ext_pos, ext_line, ext_eline;   /* source positions (for -fmt) */
 };
 
 static Module *root;
@@ -2362,23 +2371,33 @@ static int starts_module(Lexer *L) {
     return strncmp(s + i, "MODULE", 6) == 0 && !id_char(s[i + 6]);
 }
 
-/* Skips white space and comments. */
-static void lex_space(Lexer *L) {
+/* Comments collected during lexing in -fmt mode. */
+typedef struct { int start, end, line, eline, block, inline_after; } FmtComment;
+static FmtComment *fmt_comments;
+static int nfmt_comments, fmt_mode, fmt_group;
+
+/* Skips white space and comments; records comments when fmt_mode is set. */
+static void lex_space(Lexer *L, int prev_line) {
     for (;;) {
         char c = L->src[L->pos];
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') { lex_advance(L, 1); continue; }
         if (c == '\\' && L->src[L->pos + 1] == '*') {
+            int start = L->pos, line = L->line;
             while (L->src[L->pos] && L->src[L->pos] != '\n') lex_advance(L, 1);
+            if (fmt_mode)
+                PUSH(fmt_comments, nfmt_comments, ((FmtComment){start, L->pos, line, L->line, 0, prev_line && line == prev_line}));
             continue;
         }
         if (c == '(' && L->src[L->pos + 1] == '*') {
-            int depth = 0;
+            int start = L->pos, line = L->line, depth = 0;
             do {
                 if (!L->src[L->pos]) parse_error(L->file, L->line, L->col, "Unterminated comment");
                 if (L->src[L->pos] == '(' && L->src[L->pos + 1] == '*') { depth++; lex_advance(L, 2); }
                 else if (L->src[L->pos] == '*' && L->src[L->pos + 1] == ')') { depth--; lex_advance(L, 2); }
                 else lex_advance(L, 1);
             } while (depth > 0);
+            if (fmt_mode)
+                PUSH(fmt_comments, nfmt_comments, ((FmtComment){start, L->pos, line, L->line, 1, prev_line && line == prev_line}));
             continue;
         }
         return;
@@ -2414,16 +2433,17 @@ static Tok *lex(const char *src, const char *file, int *count) {
         if ((L.pos == 0 || src[L.pos - 1] == '\n' || 1) && src[L.pos] == '-' && starts_module(&L)) break;
         lex_advance(&L, 1);
     }
+    int prev_line = 0;
     for (;;) {
         int gap = L.pos;
-        lex_space(&L);
+        lex_space(&L, prev_line);
         if (n + 2 >= cap) { cap = cap ? cap * 2 : 1024; toks = xrealloc(toks, sizeof(Tok) * (size_t)cap); }
         Tok *t = &toks[n];
         memset(t, 0, sizeof *t);
-        t->line = L.line; t->col = L.col;
+        t->line = L.line; t->col = L.col; t->pos = L.pos;
         if (memchr(src + gap, '@', (size_t)(L.pos - gap))) t->notes = xstrndup(src + gap, (size_t)(L.pos - gap));
         const char *s = src + L.pos;
-        if (!*s) { t->kind = T_EOF; n++; break; }
+        if (!*s) { t->kind = T_EOF; t->end = L.pos; n++; break; }
         int len = 0;
         if (s[0] == '-' && s[1] == '-' && s[2] == '-' && s[3] == '-') {
             while (s[len] == '-') len++;
@@ -2514,9 +2534,11 @@ static Tok *lex(const char *src, const char *file, int *count) {
         lex_advance(&L, len - 1);
         t->eline = L.line; t->ecol = L.col;
         lex_advance(&L, 1);
+        t->end = L.pos;
+        prev_line = t->eline;
         n++;
         if (t->kind == T_END && depth == 0) {
-            toks[n].kind = T_EOF; toks[n].line = L.line; toks[n].col = L.col; n++;
+            toks[n].kind = T_EOF; toks[n].line = L.line; toks[n].col = L.col; toks[n].pos = toks[n].end = L.pos; n++;
             break;
         }
     }
@@ -2622,21 +2644,25 @@ static Expr *mk_expr(int kind, Tok *start) {
     e->mod = P->mod;
     e->l1 = start->line; e->c1 = start->col;
     e->l2 = start->eline; e->c2 = start->ecol;
+    e->pos = start->pos; e->end = start->end;
     return e;
 }
 
 static void finish(Expr *e) {
     Tok *t = prev_tok();
     e->l2 = t->eline; e->c2 = t->ecol;
+    e->end = t->end;
 }
 
 /* e starts where a does, or at the parenthesis before it. */
 static void span_from(Expr *e, Expr *a) {
-    if (a->pl1) { e->l1 = a->pl1; e->c1 = a->pc1; } else { e->l1 = a->l1; e->c1 = a->c1; }
+    if (a->pl1) { e->l1 = a->pl1; e->c1 = a->pc1; e->pos = a->ppos; }
+    else { e->l1 = a->l1; e->c1 = a->c1; e->pos = a->pos; }
 }
 
 static void span_to(Expr *e, Expr *a) {
-    if (a->pl1) { e->l2 = a->pl2; e->c2 = a->pc2; } else { e->l2 = a->l2; e->c2 = a->c2; }
+    if (a->pl1) { e->l2 = a->pl2; e->c2 = a->pc2; e->end = a->pend; }
+    else { e->l2 = a->l2; e->c2 = a->c2; e->end = a->end; }
 }
 
 static Expr **args_array(Expr **a, int n) {
@@ -2817,7 +2843,7 @@ static Expr *parse_name(void) {
 /* `x, y \in S, <<a, b>> \in T` or, unbounded, `x, y`. */
 static void parse_bounds(Expr *e, int allow_unbounded) {
     for (;;) {
-        Bound b = {.tuple = is_op(peek(), "<<")};
+        Bound b = {.tuple = is_op(peek(), "<<"), .pos = peek()->pos};
         if (b.tuple) next();
         b.line = peek()->line;
         b.col = peek()->col;
@@ -2872,6 +2898,7 @@ static Expr *parse_junction(Tok *bullet) {
         P->limit = saved;
     }
     list->op = op;
+    list->bullet = 1;
     finish(list);
     return list;
 }
@@ -3043,6 +3070,7 @@ static Expr *parse_primary(void) {
             /* A parenthesized expression keeps its location; what encloses it spans the parentheses. */
             Tok *close = prev_tok();
             e->pl1 = t->line; e->pc1 = t->col; e->pl2 = close->eline; e->pc2 = close->ecol;
+            e->ppos = t->pos; e->pend = close->end;
             return e;
         }
         if (is_op(t, "@")) {
@@ -3320,6 +3348,7 @@ static Expr *parse_unary(const OpInfo **prefix) {
         expect_op("::");
         Expr *e = parse_expr();
         e->label = l;
+        e->pos = t->pos;
         return e;
     }
     const OpInfo *info = op_info(t, PREFIX), *named = op_info(t, INFIX);
@@ -3569,13 +3598,21 @@ static Def *parse_instance(Tok *start, int name) {
     return d;
 }
 
-static void add_unit(Module *m, int kind, Def *d, Expr *e, Module *nested, int local) {
+static Unit *add_unit(Module *m, int kind, Def *d, Expr *e, Module *nested, int local) {
     if (m->nunits == m->capunits) {
         m->capunits = m->capunits ? m->capunits * 2 : 64;
         m->units = xrealloc(m->units, sizeof(Unit) * (size_t)m->capunits);
     }
     Unit *u = &m->units[m->nunits++];
+    memset(u, 0, sizeof *u);
     u->kind = kind; u->def = d; u->expr = e; u->module = nested; u->local = local;
+    return u;
+}
+
+static void unit_span(Unit *u, Tok *first, Tok *last, int kw, int group) {
+    u->pos = first->pos; u->end = last->end;
+    u->line = first->line; u->eline = last->eline;
+    u->kw = kw; u->group = group;
 }
 
 /* A name SANY records where it appears: a RECURSIVE operator's, a theorem's or an assumption's. */
@@ -3619,27 +3656,34 @@ static Module *parse_module(Module *outer) {
     m->outer = outer;
     Module *saved_mod = P->mod;
     P->mod = m;
-    if (peek()->kind != T_SEP) syntax_error("expected ---- MODULE");
+    Tok *mstart = peek();
+    if (mstart->kind != T_SEP) syntax_error("expected ---- MODULE");
+    m->pos = mstart->pos; m->line = mstart->line;
     next();
     expect_kw("MODULE");
     m->name = expect_ident();
     if (peek()->kind != T_SEP) syntax_error("expected ----");
-    next();
+    Tok *mhdr = next();
+    m->hdr_end = mhdr->end; m->hdr_eline = mhdr->eline;
     if (is_kw(peek(), "EXTENDS")) {
-        next();
+        Tok *ext = next();
+        m->ext_pos = ext->pos; m->ext_line = ext->line;
         do PUSH(m->extends, m->nextends, expect_ident()); while (is_op(peek(), ",") && next());
+        m->ext_eline = prev_tok()->eline;
     }
     for (;;) {
         Tok *t = peek();
         unit_section = 0;
-        if (t->kind == T_END) { next(); break; }
+        if (t->kind == T_END) { m->end_pos = t->pos; m->end = t->end; m->eline = t->eline; next(); break; }
         if (t->kind == T_EOF) syntax_error("missing ==== at the end of the module");
         if (t->kind == T_SEP) {
             if (is_kw(peek_at(1), "MODULE")) {
                 Module *inner = parse_module(m);
-                add_unit(m, 3, NULL, NULL, inner, 0);
+                Unit *u = add_unit(m, 3, NULL, NULL, inner, 0);
+                u->pos = inner->pos; u->end = inner->end; u->line = inner->line; u->eline = inner->eline;
             } else {
                 next();
+                if (fmt_mode) unit_span(add_unit(m, 5, NULL, NULL, NULL, 0), t, t, 0, 0);
             }
             continue;
         }
@@ -3655,12 +3699,15 @@ static Module *parse_module(Module *outer) {
             parse_error(P->file, first->line, first->col, "Encountered \"LOCAL %s\"", t->kind == T_EOF ? "end of module" : S(t->id));
         if (is_kw(t, "CONSTANT") || is_kw(t, "CONSTANTS") || is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES")) {
             int var = is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES");
+            int g = ++fmt_group;
             next();
             do {
-                const char *notes = peek()->notes;
+                Tok *item_start = peek();
+                const char *notes = item_start->notes;
                 Def *d = parse_param(var ? D_VAR : D_CONST);
                 d->notes = notes;
-                add_unit(m, 0, d, NULL, NULL, 0);
+                if (d->where) { d->where->pos = item_start->pos; d->where->end = prev_tok()->end; }
+                unit_span(add_unit(m, 0, d, NULL, NULL, 0), first, prev_tok(), t->id, g);
             } while (is_op(peek(), ",") && next());
             continue;
         }
@@ -3671,8 +3718,9 @@ static Module *parse_module(Module *outer) {
             if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); }
             Expr *e = parse_expr();
             if (d) { d->body = e; add_name(m, d); }
-            add_unit(m, 2, d, e, NULL, 0);
-            Expr *where = m->units[m->nunits - 1].where = mk_expr(e->kind, t);
+            Unit *u = add_unit(m, 2, d, e, NULL, 0);
+            unit_span(u, first, prev_tok(), t->id, 0);
+            Expr *where = u->where = mk_expr(e->kind, t);
             where->l2 = e->l2, where->c2 = e->c2;
             continue;
         }
@@ -3682,11 +3730,14 @@ static Module *parse_module(Module *outer) {
             Def *d = NULL;
             if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); add_name(m, d); }
             /* A theorem's statement is kept for its subexpressions; ASSUME ... PROVE is not. */
+            Expr *body = NULL;
             if (!is_kw(peek(), "ASSUME")) {
-                Expr *body = parse_expr();
+                body = parse_expr();
                 if (d) d->body = body;
             }
+            int after = P->pos;
             skip_proof();
+            if (fmt_mode) unit_span(add_unit(m, 6, d, P->pos == after ? body : NULL, NULL, 0), first, prev_tok(), t->id, 0);
             continue;
         }
         if (is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") ||
@@ -3694,23 +3745,30 @@ static Module *parse_module(Module *outer) {
             next();
             if (is_kw(t, "HIDE")) hide_facts();
             skip_proof();
+            if (fmt_mode) unit_span(add_unit(m, 6, NULL, NULL, NULL, 0), first, prev_tok(), t->id, 0);
             continue;
         }
         if (is_kw(t, "RECURSIVE")) {
+            int g = ++fmt_group;
             next();
-            do add_name(m, parse_param(D_RECURSIVE)); while (is_op(peek(), ",") && next());
+            do {
+                Tok *item_start = peek();
+                Def *d = parse_param(D_RECURSIVE);
+                if (d->where) { d->where->pos = item_start->pos; d->where->end = prev_tok()->end; }
+                unit_span(add_unit(m, 4, d, NULL, NULL, 0), first, prev_tok(), t->id, g);
+            } while (is_op(peek(), ",") && next());
             continue;
         }
         if (is_kw(t, "INSTANCE")) {
             next();
             Def *d = parse_instance(first, 0);
             d->local = local;
-            add_unit(m, 1, d, NULL, NULL, local);
+            unit_span(add_unit(m, 1, d, NULL, NULL, local), first, prev_tok(), 0, 0);
             continue;
         }
         Def *d = parse_definition(local);
         if (local && !d->notes) d->notes = first->notes;
-        add_unit(m, 0, d, NULL, NULL, local);
+        unit_span(add_unit(m, 0, d, NULL, NULL, local), first, prev_tok(), 0, 0);
     }
     P->mod = saved_mod;
     return m;
@@ -23982,6 +24040,1031 @@ static int inv_name(const char *expr) {
     return s->name;
 }
 
+/* ---------------------------------------------------------------- formatter */
+
+enum { FMT_WIDTH = 80, FMT_INDENT = 4 };
+
+typedef struct {
+    Buf out;
+    const char *src;
+    int col;
+    int ci;
+    int last_line;
+    int measure;
+    int line_commented;   /* 1 if current line ends in a \* comment */
+} Fmt;
+
+static void fmt_putn(Fmt *f, const char *s, size_t n) {
+    if (f->measure) {
+        for (size_t i = 0; i < n; i++)
+            if (s[i] == '\n') { f->col = 9999; return; }
+        f->col += (int)n;
+        return;
+    }
+    buf_add(&f->out, s, n);
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == '\n') { f->col = 0; f->line_commented = 0; }
+        else f->col++;
+    }
+}
+
+static void fmt_puts(Fmt *f, const char *s) { fmt_putn(f, s, strlen(s)); }
+
+static void fmt_spaces(Fmt *f, int n) {
+    if (n <= 0) return;
+    if (f->measure) { f->col += n; return; }
+    static const char sp[64] = "                                                                ";
+    while (n > 0) {
+        int k = n > 64 ? 64 : n;
+        buf_add(&f->out, sp, (size_t)k);
+        f->col += k;
+        n -= k;
+    }
+}
+
+static void fmt_nl(Fmt *f, int indent) {
+    if (f->measure) { f->col = 9999; return; }
+    while (f->out.n > 0 && f->out.s[f->out.n - 1] == ' ') f->out.n--;
+    buf_add(&f->out, "\n", 1);
+    f->col = 0;
+    f->line_commented = 0;
+    fmt_spaces(f, indent);
+}
+
+static void fmt_close_line(Fmt *f, int indent) {
+    if (!f->measure && f->line_commented) fmt_nl(f, indent);
+}
+
+static void fmt_blank(Fmt *f) {
+    if (f->measure || !f->out.n) return;
+    if (f->out.n >= 2 && f->out.s[f->out.n - 1] == '\n' && f->out.s[f->out.n - 2] == '\n') return;
+    if (f->out.s[f->out.n - 1] != '\n') buf_add(&f->out, "\n", 1);
+    buf_add(&f->out, "\n", 1);
+    f->col = 0;
+}
+
+/* Emit a comment or raw slice, trimming trailing whitespace on each line. */
+static void fmt_slice(Fmt *f, int start, int end) {
+    const char *p = f->src + start, *e = f->src + end;
+    while (p < e) {
+        const char *nl = memchr(p, '\n', (size_t)(e - p));
+        const char *le = nl ? nl : e;
+        while (le > p && (le[-1] == ' ' || le[-1] == '\t' || le[-1] == '\r')) le--;
+        fmt_putn(f, p, (size_t)(le - p));
+        if (nl) { fmt_putn(f, "\n", 1); p = nl + 1; }
+        else break;
+    }
+}
+
+static int fmt_has_comment(Fmt *f, int start, int end) {
+    for (int i = f->ci; i < nfmt_comments && fmt_comments[i].start < end; i++)
+        if (fmt_comments[i].start >= start) return 1;
+    return 0;
+}
+
+static int expr_pos(Expr *e) { return e->ppos && e->ppos < e->pos ? e->ppos : e->pos; }
+static int expr_end(Expr *e) { return e->pend > e->end ? e->pend : e->end; }
+
+static void fmt_comments_before(Fmt *f, int pos, int indent, int top) {
+    if (f->measure) return;
+    while (f->ci < nfmt_comments && fmt_comments[f->ci].start < pos) {
+        FmtComment *c = &fmt_comments[f->ci++];
+        if (top) {
+            if (f->last_line && c->line > f->last_line + 1) fmt_blank(f);
+            if (f->col == 0) fmt_spaces(f, indent);
+            fmt_slice(f, c->start, c->end);
+            fmt_nl(f, 0);
+            f->last_line = c->eline;
+        } else if (!c->block || c->eline > c->line || !c->inline_after || f->col <= indent) {
+            if (f->col > indent) fmt_nl(f, indent);
+            fmt_slice(f, c->start, c->end);
+            fmt_nl(f, indent);
+        } else {
+            fmt_slice(f, c->start, c->end);
+            fmt_puts(f, " ");
+        }
+    }
+}
+
+static void fmt_trailing(Fmt *f, int line) {
+    if (f->measure) return;
+    while (f->ci < nfmt_comments && fmt_comments[f->ci].line == line && fmt_comments[f->ci].inline_after) {
+        FmtComment *c = &fmt_comments[f->ci++];
+        fmt_puts(f, "  ");
+        fmt_slice(f, c->start, c->end);
+        f->last_line = c->eline;
+        if (!c->block) { f->line_commented = 1; break; }
+    }
+}
+
+static const OpInfo *fmt_op_info(int op_id, int fix) {
+    const char *name = S(op_id);
+    for (int i = 0; op_table[i].name; i++)
+        if (op_table[i].fix == fix && strcmp(op_table[i].name, name) == 0) return &op_table[i];
+    return NULL;
+}
+
+static const OpInfo *expr_op_info(Expr *e) {
+    if (e->kind != X_OP || e->n == 0) return NULL;
+    if (e->n == 1 && !e->bullet) {
+        const OpInfo *p = fmt_op_info(e->op, PREFIX);
+        return p ? p : fmt_op_info(e->op, POSTFIX);
+    }
+    return fmt_op_info(e->op, INFIX);
+}
+
+static int is_junction_op(Expr *e) {
+    return e->kind == X_OP && e->n >= 1 && (strcmp(S(e->op), "/\\") == 0 || strcmp(S(e->op), "\\/") == 0);
+}
+
+static int is_open_ended(Expr *e) {
+    if (e->label) return 1;
+    switch (e->kind) {
+    case X_IF: case X_CASE: case X_LET: case X_FORALL: case X_EXISTS:
+    case X_TFORALL: case X_TEXISTS: case X_CHOOSE:
+        return 1;
+    }
+    return 0;
+}
+
+static int is_bullet_list(Expr *e) {
+    return is_junction_op(e) && e->bullet && e->n >= 2;
+}
+
+static int is_atomic_for_postfix(Expr *e) {
+    if (e->label) return 0;
+    switch (e->kind) {
+    case X_NUM: case X_STR: case X_BOOL: case X_AT: case X_NAME:
+    case X_SETENUM: case X_TUPLE: case X_RECORD: case X_RCDSET: case X_FCNSET:
+    case X_FCN: case X_EXCEPT: case X_FILTER: case X_MAP: case X_APPLY: case X_DOT:
+        return 1;
+    case X_OP:
+        return e->n == 0;
+    }
+    return 0;
+}
+
+static int subscript_needs_parens(Expr *v) {
+    if (v->label) return 1;
+    if (v->kind == X_NAME) {
+        for (int i = 0; i < v->nseg; i++) if (v->segs[i].n || v->segs[i].sel) return 1;
+        return 0;
+    }
+    return v->kind != X_TUPLE && v->kind != X_SETENUM && v->kind != X_FILTER && v->kind != X_MAP &&
+           v->kind != X_RECORD && v->kind != X_RCDSET && v->kind != X_FCNSET && v->kind != X_FCN &&
+           v->kind != X_EXCEPT;
+}
+
+static int expr_fits(Fmt *f, Expr *e, int limit, int open_ok);
+
+static int will_be_bullet(Fmt *f, Expr *e, int flat, int open_ok) {
+    if (flat || !is_junction_op(e) || (e->bullet && e->n == 1)) return 0;
+    return e->bullet || !expr_fits(f, e, FMT_WIDTH, open_ok);
+}
+
+static int needs_parens(Fmt *f, Expr *c, const OpInfo *p, int is_right, int flat, int open_ok) {
+    if (c->label) return 1;
+    if (is_bullet_list(c) || will_be_bullet(f, c, flat, open_ok)) {
+        if (p->fix == INFIX && is_right && open_ok &&
+            (!strcmp(p->name, "=>") || !strcmp(p->name, "~>") || !strcmp(p->name, "<=>") || !strcmp(p->name, "-+->")))
+            return 0;
+        return 1;
+    }
+    if (is_open_ended(c)) {
+        if (p->fix == INFIX && is_right && open_ok) return 0;
+        return 1;
+    }
+    const OpInfo *ci = expr_op_info(c);
+    if (!ci) return 0;
+    if (p->fix == POSTFIX) return 1;
+    if (p->fix == PREFIX) {
+        if (ci->fix == INFIX) {
+            if (strcmp(p->name, "~") == 0) return 1;
+            return !(ci->lo > p->hi);
+        }
+        if (ci->fix == PREFIX) {
+            if (strcmp(p->name, "-.") == 0 && strcmp(ci->name, "-.") == 0) return 1;
+            if (strcmp(p->name, "ENABLED") == 0 || strcmp(p->name, "UNCHANGED") == 0) return !(ci->lo > p->hi);
+            if (ci->lo > p->hi) return 0;
+            if (ci == p && (!strcmp(p->name, "~") || !strcmp(p->name, "[]") || !strcmp(p->name, "<>") ||
+                            !strcmp(p->name, "SUBSET") || !strcmp(p->name, "UNION"))) return 0;
+            if ((!strcmp(p->name, "[]") && !strcmp(ci->name, "<>")) || (!strcmp(p->name, "<>") && !strcmp(ci->name, "[]"))) return 0;
+            return 1;
+        }
+        return 0;
+    }
+    /* INFIX parent */
+    if (!is_right) {
+        if (ci->fix == INFIX) {
+            if (ci->lo > p->hi) return 0;
+            if (ci == p && p->left && strcmp(p->name, "\\X") != 0) return 0;
+            return 1;
+        }
+        if (ci->fix == PREFIX) return !(p->hi < ci->lo);
+        return 0;
+    }
+    if (ci->fix == INFIX) return !(ci->lo > p->hi);
+    if (ci->fix == PREFIX) {
+        if (strcmp(ci->name, "-.") == 0 && p->hi >= 12) return 1;
+        if (p->left && p->hi >= ci->lo) return 1;
+        return 0;
+    }
+    return 0;
+}
+
+static void fmt_expr(Fmt *f, Expr *e, int indent, int flat, int open_ok);
+static void fmt_def(Fmt *f, Def *d, int local, int indent);
+
+static int expr_fits(Fmt *f, Expr *e, int limit, int open_ok) {
+    if (f->measure) return 1;
+    if (is_bullet_list(e) || fmt_has_comment(f, expr_pos(e), expr_end(e))) return 0;
+    Fmt m = {.src = f->src, .col = f->col, .ci = f->ci, .measure = 1};
+    fmt_expr(&m, e, 0, 1, open_ok);
+    return m.col <= limit;
+}
+
+static void fmt_str_lit(Fmt *f, const char *s, int len) {
+    fmt_puts(f, "\"");
+    for (int i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '"') fmt_puts(f, "\\\"");
+        else if (c == '\\') fmt_puts(f, "\\\\");
+        else if (c == '\n') fmt_puts(f, "\\n");
+        else if (c == '\t') fmt_puts(f, "\\t");
+        else if (c == '\r') fmt_puts(f, "\\r");
+        else if (c == '\f') fmt_puts(f, "\\f");
+        else fmt_putn(f, &c, 1);
+    }
+    fmt_puts(f, "\"");
+}
+
+static void fmt_bounds(Fmt *f, Bound *bounds, int nb, int indent, int flat) {
+    for (int i = 0; i < nb; i++) {
+        if (i) fmt_puts(f, ", ");
+        Bound *b = &bounds[i];
+        if (b->tuple) fmt_puts(f, "<<");
+        for (int j = 0; j < b->n; j++) {
+            if (j) fmt_puts(f, ", ");
+            fmt_puts(f, S(b->names[j]));
+        }
+        if (b->tuple) fmt_puts(f, ">>");
+        if (b->set) {
+            fmt_puts(f, " \\in ");
+            fmt_expr(f, b->set, indent, flat, 1);
+        }
+    }
+}
+
+static void fmt_param(Fmt *f, Def *d) {
+    const char *name = S(d->name);
+    if (d->arity == 0) { fmt_puts(f, name); return; }
+    if (d->arity == 2 && fmt_op_info(d->name, INFIX)) { fmt_puts(f, "_ "); fmt_puts(f, name); fmt_puts(f, " _"); return; }
+    if (d->arity == 1 && fmt_op_info(d->name, PREFIX)) { fmt_puts(f, name); fmt_puts(f, " _"); return; }
+    if (d->arity == 1 && fmt_op_info(d->name, POSTFIX)) { fmt_puts(f, "_ "); fmt_puts(f, name); return; }
+    fmt_puts(f, name);
+    fmt_puts(f, "(");
+    for (int i = 0; i < d->arity; i++) { if (i) fmt_puts(f, ", "); fmt_puts(f, "_"); }
+    fmt_puts(f, ")");
+}
+
+static void fmt_arg_list(Fmt *f, Expr **args, int n, int indent, int flat) {
+    int pad_l = n > 0 && args[0]->kind == X_OPREF;
+    int pad_r = n > 0 && args[n - 1]->kind == X_OPREF;
+    fmt_puts(f, pad_l ? "( " : "(");
+    int fits = flat;
+    if (!fits) {
+        Fmt m = {.src = f->src, .col = f->col, .ci = f->ci, .measure = 1};
+        fits = 1;
+        for (int i = 0; i < n && fits; i++) {
+            if (i) fmt_puts(&m, ", ");
+            if (is_bullet_list(args[i]) || fmt_has_comment(f, expr_pos(args[i]), expr_end(args[i]))) fits = 0;
+            else fmt_expr(&m, args[i], 0, 1, 1);
+            if (m.col > FMT_WIDTH) fits = 0;
+        }
+        if (m.col + (pad_r ? 2 : 1) > FMT_WIDTH) fits = 0;
+    }
+    if (fits) {
+        for (int i = 0; i < n; i++) {
+            if (i) fmt_puts(f, ", ");
+            fmt_expr(f, args[i], indent, 1, 1);
+        }
+        fmt_close_line(f, indent);
+        fmt_puts(f, pad_r ? " )" : ")");
+    } else {
+        int inner = indent + FMT_INDENT;
+        for (int i = 0; i < n; i++) {
+            fmt_nl(f, inner);
+            fmt_comments_before(f, expr_pos(args[i]), inner, 0);
+            fmt_expr(f, args[i], inner, 0, 1);
+            if (i + 1 < n) { fmt_close_line(f, inner); fmt_puts(f, ","); }
+            fmt_trailing(f, args[i]->l2);
+        }
+        fmt_nl(f, indent);
+        fmt_puts(f, ")");
+    }
+}
+
+/* Flatten left-leaning chain of the same junction operator (/\ or \/). */
+static void collect_junction(Expr *e, int op, Expr ***out, int *n) {
+    if (e->kind == X_OP && e->op == op && !e->label && !e->pl1 && !e->bullet && e->n == 2) {
+        collect_junction(e->args[0], op, out, n);
+        PUSH(*out, *n, e->args[1]);
+        return;
+    }
+    if (e->kind == X_OP && e->op == op && !e->label && !e->pl1 && e->bullet && e->n >= 2) {
+        for (int i = 0; i < e->n; i++) PUSH(*out, *n, e->args[i]);
+        return;
+    }
+    PUSH(*out, *n, e);
+}
+
+static void fmt_child(Fmt *f, Expr *c, const OpInfo *p, int is_right, int indent, int flat, int open_ok) {
+    int child_open = is_right ? open_ok : 0;
+    int par = needs_parens(f, c, p, is_right, flat, child_open);
+    if (par) fmt_puts(f, "(");
+    fmt_expr(f, c, par ? f->col : indent, flat, par ? 1 : child_open);
+    if (par) { fmt_close_line(f, indent); fmt_puts(f, ")"); }
+}
+
+static void fmt_delim_list(Fmt *f, const char *open, const char *close, Expr **items, int n, int end_pos, int indent, int flat) {
+    fmt_puts(f, open);
+    if (n == 0) { fmt_puts(f, close); return; }
+    int fits = flat;
+    if (!fits && !fmt_has_comment(f, expr_pos(items[0]), end_pos)) {
+        Fmt m = {.src = f->src, .col = f->col, .ci = f->ci, .measure = 1};
+        fits = 1;
+        for (int i = 0; i < n && fits; i++) {
+            if (i) fmt_puts(&m, ", ");
+            if (is_bullet_list(items[i])) fits = 0;
+            else fmt_expr(&m, items[i], 0, 1, 1);
+            if (m.col > FMT_WIDTH) fits = 0;
+        }
+        if (m.col + (int)strlen(close) > FMT_WIDTH) fits = 0;
+    }
+    if (fits) {
+        for (int i = 0; i < n; i++) {
+            if (i) fmt_puts(f, ", ");
+            fmt_expr(f, items[i], indent, 1, 1);
+        }
+        fmt_close_line(f, indent);
+        fmt_puts(f, close);
+    } else {
+        int inner = indent + FMT_INDENT;
+        for (int i = 0; i < n; i++) {
+            fmt_nl(f, inner);
+            fmt_comments_before(f, expr_pos(items[i]), inner, 0);
+            fmt_expr(f, items[i], inner, 0, 1);
+            if (i + 1 < n) { fmt_close_line(f, inner); fmt_puts(f, ","); }
+            fmt_trailing(f, items[i]->l2);
+        }
+        fmt_comments_before(f, end_pos, inner, 0);
+        fmt_nl(f, indent);
+        fmt_puts(f, close);
+    }
+}
+
+static int def_start_pos(Def *d) {
+    int p = d->where ? d->where->pos : 0;
+    if (d->nparams > 0 && d->params[0]->where && (!p || d->params[0]->where->pos < p)) p = d->params[0]->where->pos;
+    return p;
+}
+
+static void fmt_expr_body(Fmt *f, Expr *e, int indent, int flat, int open_ok) {
+    if (f->measure && f->col > FMT_WIDTH) return;
+    switch (e->kind) {
+    case X_NUM:
+        fmt_puts(f, S(e->op));
+        return;
+    case X_STR:
+        fmt_str_lit(f, e->text, e->len);
+        return;
+    case X_BOOL:
+        fmt_puts(f, e->num ? "TRUE" : "FALSE");
+        return;
+    case X_AT:
+        fmt_puts(f, "@");
+        return;
+    case X_OPREF:
+        fmt_puts(f, S(e->op));
+        return;
+    case X_NAME:
+        for (int i = 0; i < e->nseg; i++) {
+            Seg *s = &e->segs[i];
+            if (i) fmt_puts(f, s->sel == 0 && S(s->name)[0] == '!' ? "! " : "!");
+            if (s->sel > 0) { char buf[32]; sprintf(buf, "%d", s->sel); fmt_puts(f, buf); }
+            else if (s->sel == SEL_LL) fmt_puts(f, "<<");
+            else if (s->sel == SEL_GG) fmt_puts(f, ">>");
+            else if (s->sel == SEL_COLON) fmt_puts(f, ":");
+            else if (s->sel == SEL_AT) fmt_puts(f, "@");
+            else if (s->sel == SEL_NULL) fmt_arg_list(f, s->args, s->n, indent, flat);
+            else {
+                fmt_puts(f, S(s->name));
+                if (s->n) fmt_arg_list(f, s->args, s->n, indent, flat);
+            }
+        }
+        return;
+    case X_LAMBDA:
+        fmt_puts(f, "LAMBDA ");
+        for (int i = 0; i < e->def->nparams; i++) {
+            if (i) fmt_puts(f, ", ");
+            fmt_puts(f, S(e->def->params[i]->name));
+        }
+        fmt_puts(f, " : ");
+        fmt_expr(f, e->def->body, indent, flat, 1);
+        return;
+    case X_OP: {
+        if (e->n == 0) { fmt_puts(f, S(e->op)); return; }
+        if (is_junction_op(e)) {
+            if (e->bullet && e->n == 1) {
+                fmt_puts(f, S(e->op));
+                fmt_puts(f, " ");
+                fmt_expr(f, e->args[0], f->col, flat, 1);
+                return;
+            }
+            if (f->measure && e->bullet) { f->col = 9999; return; }
+            Expr **items = NULL;
+            int ni = 0;
+            if (e->bullet) { items = e->args; ni = e->n; }
+            else {
+                collect_junction(e->args[0], e->op, &items, &ni);
+                PUSH(items, ni, e->args[1]);
+            }
+            int bullet = !flat && (e->bullet || !expr_fits(f, e, FMT_WIDTH, open_ok));
+            if (bullet) {
+                int bcol = f->col;
+                int item_ind = bcol + 3;
+                for (int i = 0; i < ni; i++) {
+                    if (i) {
+                        fmt_nl(f, bcol);
+                        fmt_comments_before(f, expr_pos(items[i]), bcol, 0);
+                    }
+                    fmt_puts(f, S(e->op));
+                    fmt_puts(f, " ");
+                    if (!i) fmt_comments_before(f, expr_pos(items[0]), item_ind, 0);
+                    fmt_expr(f, items[i], item_ind, 0, 1);
+                    fmt_trailing(f, items[i]->l2);
+                }
+            } else {
+                const OpInfo *pi = expr_op_info(e);
+                for (int i = 0; i < ni; i++) {
+                    if (i) { fmt_puts(f, " "); fmt_puts(f, S(e->op)); fmt_puts(f, " "); }
+                    fmt_child(f, items[i], pi, i > 0, indent, 1, i + 1 == ni ? open_ok : 0);
+                }
+            }
+            return;
+        }
+        if (strcmp(S(e->op), "\\X") == 0) {
+            const OpInfo *pi = expr_op_info(e);
+            for (int i = 0; i < e->n; i++) {
+                if (i) fmt_puts(f, " \\X ");
+                fmt_child(f, e->args[i], pi, i > 0, indent, flat, i + 1 == e->n ? open_ok : 0);
+            }
+            return;
+        }
+        const OpInfo *pi = expr_op_info(e);
+        if (pi->fix == PREFIX) {
+            if (strcmp(pi->name, "-.") == 0) fmt_puts(f, "-");
+            else {
+                fmt_puts(f, pi->name);
+                if (isalpha((unsigned char)pi->name[0])) fmt_puts(f, " ");
+            }
+            fmt_child(f, e->args[0], pi, 1, indent, flat, open_ok);
+            return;
+        }
+        if (pi->fix == POSTFIX) {
+            int par = !is_atomic_for_postfix(e->args[0]);
+            if (par) fmt_puts(f, "(");
+            fmt_expr(f, e->args[0], par ? f->col : indent, flat, par ? 1 : 0);
+            if (par) { fmt_close_line(f, indent); fmt_puts(f, ")"); }
+            fmt_puts(f, pi->name);
+            return;
+        }
+        /* Binary INFIX */
+        if (strcmp(pi->name, "..") == 0) {
+            fmt_child(f, e->args[0], pi, 0, indent, flat, 0);
+            fmt_puts(f, "..");
+            fmt_child(f, e->args[1], pi, 1, indent, flat, open_ok);
+            return;
+        }
+        int fits = flat || expr_fits(f, e, FMT_WIDTH, open_ok);
+        fmt_child(f, e->args[0], pi, 0, indent, fits, 0);
+        fmt_close_line(f, indent);
+        fmt_puts(f, " ");
+        fmt_puts(f, pi->name);
+        if (fits || (!will_be_bullet(f, e->args[1], 0, open_ok) && !fmt_has_comment(f, expr_end(e->args[0]), expr_pos(e->args[1])) &&
+                     f->col + 1 < FMT_WIDTH && expr_fits(f, e->args[1], FMT_WIDTH, open_ok))) {
+            fmt_puts(f, " ");
+            fmt_child(f, e->args[1], pi, 1, indent, fits, open_ok);
+        } else {
+            fmt_nl(f, indent + FMT_INDENT);
+            fmt_comments_before(f, expr_pos(e->args[1]), indent + FMT_INDENT, 0);
+            fmt_child(f, e->args[1], pi, 1, indent + FMT_INDENT, 0, open_ok);
+        }
+        return;
+    }
+    case X_SETENUM:
+        fmt_delim_list(f, "{", "}", e->args, e->n, expr_end(e), indent, flat);
+        return;
+    case X_TUPLE:
+        fmt_delim_list(f, "<<", ">>", e->args, e->n, expr_end(e), indent, flat);
+        return;
+    case X_RECORD:
+    case X_RCDSET: {
+        const char *sep = e->kind == X_RECORD ? " |-> " : " : ";
+        int fits = flat || expr_fits(f, e, FMT_WIDTH, 1);
+        fmt_puts(f, "[");
+        if (fits) {
+            for (int i = 0; i < e->n; i++) {
+                if (i) fmt_puts(f, ", ");
+                fmt_puts(f, S(e->segs[i].name));
+                fmt_puts(f, sep);
+                fmt_expr(f, e->args[i], indent, 1, 1);
+            }
+            fmt_close_line(f, indent);
+            fmt_puts(f, "]");
+        } else {
+            int inner = indent + FMT_INDENT;
+            for (int i = 0; i < e->n; i++) {
+                fmt_nl(f, inner);
+                fmt_comments_before(f, expr_pos(e->args[i]), inner, 0);
+                fmt_puts(f, S(e->segs[i].name));
+                fmt_puts(f, sep);
+                fmt_expr(f, e->args[i], is_bullet_list(e->args[i]) ? f->col : inner, 0, 1);
+                if (i + 1 < e->n) { fmt_close_line(f, inner); fmt_puts(f, ","); }
+                fmt_trailing(f, e->args[i]->l2);
+            }
+            fmt_comments_before(f, expr_end(e), inner, 0);
+            fmt_nl(f, indent);
+            fmt_puts(f, "]");
+        }
+        return;
+    }
+    case X_FCNSET:
+        fmt_puts(f, "[");
+        fmt_expr(f, e->args[0], indent, flat, 1);
+        fmt_puts(f, " -> ");
+        fmt_expr(f, e->args[1], indent, flat, 1);
+        fmt_close_line(f, indent);
+        fmt_puts(f, "]");
+        return;
+    case X_FCN: {
+        int fits = flat || expr_fits(f, e, FMT_WIDTH, 1);
+        fmt_puts(f, "[");
+        fmt_bounds(f, e->bounds, e->nb, indent, fits);
+        if (fits) {
+            fmt_puts(f, " |-> ");
+            fmt_expr(f, e->args[0], indent, 1, 1);
+            fmt_close_line(f, indent);
+            fmt_puts(f, "]");
+        } else {
+            fmt_puts(f, " |->");
+            fmt_nl(f, indent + FMT_INDENT);
+            fmt_comments_before(f, expr_pos(e->args[0]), indent + FMT_INDENT, 0);
+            fmt_expr(f, e->args[0], indent + FMT_INDENT, 0, 1);
+            fmt_close_line(f, indent);
+            fmt_puts(f, "]");
+        }
+        return;
+    }
+    case X_APPLY: {
+        int par = !is_atomic_for_postfix(e->args[0]);
+        if (par) fmt_puts(f, "(");
+        fmt_expr(f, e->args[0], par ? f->col : indent, flat, par ? 1 : 0);
+        if (par) { fmt_close_line(f, indent); fmt_puts(f, ")"); }
+        fmt_puts(f, "[");
+        for (int i = 1; i < e->n; i++) {
+            if (i > 1) fmt_puts(f, ", ");
+            fmt_expr(f, e->args[i], indent, flat, 1);
+        }
+        fmt_close_line(f, indent);
+        fmt_puts(f, "]");
+        return;
+    }
+    case X_DOT: {
+        int par = !is_atomic_for_postfix(e->args[0]);
+        if (par) fmt_puts(f, "(");
+        fmt_expr(f, e->args[0], par ? f->col : indent, flat, par ? 1 : 0);
+        if (par) { fmt_close_line(f, indent); fmt_puts(f, ")"); }
+        fmt_puts(f, ".");
+        fmt_puts(f, S(e->op));
+        return;
+    }
+    case X_EXCEPT: {
+        int fits = flat || expr_fits(f, e, FMT_WIDTH, 1);
+        fmt_puts(f, "[");
+        fmt_expr(f, e->args[0], indent, fits, 1);
+        fmt_puts(f, " EXCEPT");
+        int inner = indent + FMT_INDENT;
+        for (int i = 0; i < e->n - 1; i++) {
+            if (fits) fmt_puts(f, i ? ", " : " ");
+            else {
+                fmt_nl(f, inner);
+                fmt_comments_before(f, expr_pos(e->args[i + 1]), inner, 0);
+            }
+            fmt_puts(f, "!");
+            Path *p = &e->paths[i];
+            for (int k = 0; k < p->n; k++) {
+                if (p->fields[k] >= 0) { fmt_puts(f, "."); fmt_puts(f, S(p->fields[k])); }
+                else { fmt_puts(f, "["); fmt_expr(f, p->keys[k], inner, fits, 1); fmt_puts(f, "]"); }
+            }
+            fmt_puts(f, " = ");
+            fmt_expr(f, e->args[i + 1], fits ? indent : inner, fits, 1);
+            if (!fits && i + 2 < e->n) { fmt_close_line(f, inner); fmt_puts(f, ","); }
+            if (!fits) fmt_trailing(f, e->args[i + 1]->l2);
+        }
+        if (!fits) fmt_nl(f, indent);
+        else fmt_close_line(f, indent);
+        fmt_puts(f, "]");
+        return;
+    }
+    case X_FILTER:
+        fmt_puts(f, "{");
+        fmt_bounds(f, e->bounds, e->nb, indent, flat);
+        fmt_puts(f, " : ");
+        fmt_expr(f, e->args[0], indent, flat, 1);
+        fmt_close_line(f, indent);
+        fmt_puts(f, "}");
+        return;
+    case X_MAP:
+        fmt_puts(f, "{");
+        fmt_expr(f, e->args[0], indent, flat, 1);
+        fmt_puts(f, " : ");
+        fmt_bounds(f, e->bounds, e->nb, indent, flat);
+        fmt_close_line(f, indent);
+        fmt_puts(f, "}");
+        return;
+    case X_FORALL: case X_EXISTS: case X_TFORALL: case X_TEXISTS: case X_CHOOSE: {
+        const char *q = e->kind == X_FORALL ? "\\A " : e->kind == X_EXISTS ? "\\E " :
+                        e->kind == X_TFORALL ? "\\AA " : e->kind == X_TEXISTS ? "\\EE " : "CHOOSE ";
+        int fits = flat || expr_fits(f, e, FMT_WIDTH, 1);
+        fmt_puts(f, q);
+        fmt_bounds(f, e->bounds, e->nb, indent, fits);
+        if (fits) {
+            fmt_puts(f, " : ");
+            fmt_expr(f, e->args[0], indent, 1, 1);
+        } else {
+            fmt_puts(f, " :");
+            fmt_nl(f, indent + FMT_INDENT);
+            fmt_comments_before(f, expr_pos(e->args[0]), indent + FMT_INDENT, 0);
+            fmt_expr(f, e->args[0], indent + FMT_INDENT, 0, 1);
+        }
+        return;
+    }
+    case X_IF: {
+        int fits = flat || expr_fits(f, e, FMT_WIDTH, 1);
+        if (fits) {
+            fmt_puts(f, "IF ");
+            fmt_expr(f, e->args[0], indent, 1, 1);
+            fmt_puts(f, " THEN ");
+            fmt_expr(f, e->args[1], indent, 1, 1);
+            fmt_puts(f, " ELSE ");
+            fmt_expr(f, e->args[2], indent, 1, 1);
+        } else {
+            int c0 = f->col;
+            fmt_puts(f, "IF ");
+            fmt_expr(f, e->args[0], c0 + 3, 0, 1);
+            fmt_nl(f, c0);
+            fmt_comments_before(f, expr_pos(e->args[1]), c0, 0);
+            fmt_puts(f, "THEN ");
+            fmt_expr(f, e->args[1], c0 + 5, 0, 1);
+            fmt_nl(f, c0);
+            fmt_comments_before(f, expr_pos(e->args[2]), c0, 0);
+            fmt_puts(f, "ELSE ");
+            fmt_expr(f, e->args[2], c0 + 5, 0, 1);
+        }
+        return;
+    }
+    case X_CASE: {
+        if (f->measure && e->n > 2) { f->col = 9999; return; }
+        int fits = flat || (e->n == 2 && expr_fits(f, e, FMT_WIDTH, 1));
+        int c0 = f->col;
+        for (int i = 0; i < e->n; i += 2) {
+            if (i == 0) fmt_puts(f, "CASE ");
+            else if (fits) fmt_puts(f, " [] ");
+            else { fmt_nl(f, c0 + 2); fmt_puts(f, "[] "); }
+            if (e->args[i]) {
+                fmt_comments_before(f, expr_pos(e->args[i]), c0 + 5, 0);
+                fmt_expr(f, e->args[i], c0 + 5, fits, 1);
+            } else {
+                fmt_puts(f, "OTHER");
+            }
+            fmt_close_line(f, c0 + 5);
+            fmt_puts(f, " -> ");
+            int par = e->args[i + 1]->kind == X_CASE && i + 2 < e->n;
+            if (par) fmt_puts(f, "(");
+            fmt_expr(f, e->args[i + 1], is_bullet_list(e->args[i + 1]) ? f->col : c0 + 5, fits, 1);
+            if (par) { fmt_close_line(f, c0 + 5); fmt_puts(f, ")"); }
+            if (!fits) fmt_trailing(f, e->args[i + 1]->l2);
+        }
+        return;
+    }
+    case X_LET: {
+        int single = e->ndefs == 1 && e->defs[0]->kind != D_RECURSIVE && e->defs[0]->kind != D_INST;
+        if (f->measure && !single) { f->col = 9999; return; }
+        int fits = single && (flat || expr_fits(f, e, FMT_WIDTH, 1));
+        int c0 = f->col;
+        if (fits) {
+            fmt_puts(f, "LET ");
+            fmt_def(f, e->defs[0], e->defs[0]->local, c0 + 4);
+            fmt_close_line(f, c0);
+            fmt_puts(f, " IN ");
+            fmt_expr(f, e->args[0], indent, 1, 1);
+        } else {
+            fmt_puts(f, "LET ");
+            for (int i = 0; i < e->ndefs; i++) {
+                Def *d = e->defs[i];
+                if (i) fmt_nl(f, c0 + 4);
+                fmt_comments_before(f, def_start_pos(d), c0 + 4, 0);
+                if (d->kind == D_RECURSIVE) {
+                    fmt_puts(f, "RECURSIVE ");
+                    fmt_param(f, d);
+                } else {
+                    fmt_def(f, d, d->local, c0 + 4);
+                }
+                if (d->body) fmt_trailing(f, d->body->l2);
+            }
+            fmt_nl(f, c0);
+            fmt_comments_before(f, e->args[0]->pos, c0, 0);
+            fmt_puts(f, "IN  ");
+            fmt_expr(f, e->args[0], c0 + 4, 0, 1);
+        }
+        return;
+    }
+    case X_SQACT:
+    case X_ANGLEACT: {
+        fmt_puts(f, e->kind == X_SQACT ? "[" : "<<");
+        fmt_expr(f, e->args[0], indent, flat, 1);
+        fmt_close_line(f, indent);
+        fmt_puts(f, e->kind == X_SQACT ? "]_" : ">>_");
+        int par = subscript_needs_parens(e->args[1]);
+        if (par) fmt_puts(f, "(");
+        fmt_expr(f, e->args[1], indent, flat, 1);
+        if (par) { fmt_close_line(f, indent); fmt_puts(f, ")"); }
+        return;
+    }
+    case X_WF:
+    case X_SF: {
+        fmt_puts(f, e->kind == X_WF ? "WF_" : "SF_");
+        int par = subscript_needs_parens(e->args[0]);
+        if (par) fmt_puts(f, "(");
+        fmt_expr(f, e->args[0], indent, flat, 1);
+        if (par) { fmt_close_line(f, indent); fmt_puts(f, ")"); }
+        fmt_puts(f, "(");
+        fmt_expr(f, e->args[1], indent, flat, 1);
+        fmt_close_line(f, indent);
+        fmt_puts(f, ")");
+        return;
+    }
+    }
+}
+
+static void fmt_expr(Fmt *f, Expr *e, int indent, int flat, int open_ok) {
+    if (f->measure && f->col > FMT_WIDTH) return;
+    if (e->label) {
+        fmt_puts(f, S(e->label->name));
+        if (e->label->n) {
+            fmt_puts(f, "(");
+            for (int i = 0; i < e->label->n; i++) {
+                if (i) fmt_puts(f, ", ");
+                fmt_puts(f, S(e->label->names[i]));
+            }
+            fmt_puts(f, ")");
+        }
+        fmt_puts(f, " :: ");
+    }
+    fmt_expr_body(f, e, indent, flat, open_ok);
+}
+
+static void fmt_instance(Fmt *f, Def *d, int indent) {
+    fmt_puts(f, "INSTANCE ");
+    fmt_puts(f, S((int)(intptr_t)d->target));
+    if (!d->nsubst) return;
+    int fits = f->measure;
+    if (!fits) {
+        Fmt m = {.src = f->src, .col = f->col, .ci = f->ci, .measure = 1};
+        fmt_puts(&m, " WITH ");
+        fits = 1;
+        for (int i = 0; i < d->nsubst && fits; i++) {
+            if (i) fmt_puts(&m, ", ");
+            fmt_puts(&m, S(d->subst_decl[i]->name));
+            fmt_puts(&m, " <- ");
+            if (is_bullet_list(d->subst_expr[i]) || fmt_has_comment(f, expr_pos(d->subst_expr[i]), expr_end(d->subst_expr[i]))) fits = 0;
+            else fmt_expr(&m, d->subst_expr[i], 0, 1, 1);
+            if (m.col > FMT_WIDTH) fits = 0;
+        }
+    }
+    if (fits) {
+        fmt_puts(f, " WITH ");
+        for (int i = 0; i < d->nsubst; i++) {
+            if (i) fmt_puts(f, ", ");
+            fmt_puts(f, S(d->subst_decl[i]->name));
+            fmt_puts(f, " <- ");
+            fmt_expr(f, d->subst_expr[i], indent, 1, 1);
+        }
+    } else {
+        int inner = indent + FMT_INDENT;
+        fmt_puts(f, " WITH");
+        for (int i = 0; i < d->nsubst; i++) {
+            fmt_nl(f, inner);
+            fmt_comments_before(f, expr_pos(d->subst_expr[i]), inner, 0);
+            fmt_puts(f, S(d->subst_decl[i]->name));
+            fmt_puts(f, " <- ");
+            fmt_expr(f, d->subst_expr[i], inner, 0, 1);
+            if (i + 1 < d->nsubst) { fmt_close_line(f, inner); fmt_puts(f, ","); }
+            fmt_trailing(f, d->subst_expr[i]->l2);
+        }
+    }
+}
+
+static void fmt_def(Fmt *f, Def *d, int local, int indent) {
+    if (local) fmt_puts(f, "LOCAL ");
+    if (d->kind == D_FCN) {
+        fmt_puts(f, S(d->name));
+        fmt_puts(f, "[");
+        fmt_bounds(f, d->bounds, d->nb, indent, 1);
+        fmt_puts(f, "]");
+    } else if (d->nparams == 2 && fmt_op_info(d->name, INFIX)) {
+        fmt_param(f, d->params[0]);
+        fmt_puts(f, " ");
+        fmt_puts(f, S(d->name));
+        fmt_puts(f, " ");
+        fmt_param(f, d->params[1]);
+    } else if (d->nparams == 1 && fmt_op_info(d->name, PREFIX)) {
+        fmt_puts(f, S(d->name));
+        fmt_puts(f, " ");
+        fmt_param(f, d->params[0]);
+    } else if (d->nparams == 1 && fmt_op_info(d->name, POSTFIX)) {
+        fmt_param(f, d->params[0]);
+        fmt_puts(f, S(d->name));
+    } else {
+        fmt_puts(f, S(d->name));
+        if (d->nparams) {
+            fmt_puts(f, "(");
+            for (int i = 0; i < d->nparams; i++) {
+                if (i) fmt_puts(f, ", ");
+                fmt_param(f, d->params[i]);
+            }
+            fmt_puts(f, ")");
+        }
+    }
+    fmt_puts(f, " ==");
+    if (d->kind == D_INST) {
+        fmt_puts(f, " ");
+        fmt_instance(f, d, indent);
+        return;
+    }
+    if (f->measure || (!is_bullet_list(d->body) && !fmt_has_comment(f, d->where ? d->where->end : 0, expr_end(d->body)) &&
+                       f->col + 1 < FMT_WIDTH && expr_fits(f, d->body, FMT_WIDTH - 1, 1))) {
+        fmt_puts(f, " ");
+        fmt_expr(f, d->body, indent, 1, 1);
+    } else {
+        fmt_nl(f, indent + FMT_INDENT);
+        fmt_comments_before(f, expr_pos(d->body), indent + FMT_INDENT, 0);
+        fmt_expr(f, d->body, indent + FMT_INDENT, 0, 1);
+    }
+}
+
+static void fmt_module(Fmt *f, Module *m) {
+    fmt_comments_before(f, m->pos, 0, 1);
+    if (f->last_line && m->line > f->last_line + 1) fmt_blank(f);
+    fmt_puts(f, "---- MODULE ");
+    fmt_puts(f, S(m->name));
+    fmt_puts(f, " ----");
+    fmt_trailing(f, m->hdr_eline);
+    fmt_nl(f, 0);
+    f->last_line = m->hdr_eline;
+    if (m->nextends) {
+        fmt_comments_before(f, m->ext_pos, 0, 1);
+        if (f->last_line && m->ext_line > f->last_line + 1) fmt_blank(f);
+        fmt_puts(f, "EXTENDS ");
+        for (int i = 0; i < m->nextends; i++) {
+            if (i) fmt_puts(f, ", ");
+            if (i && f->col + (int)strlen(S(m->extends[i])) > FMT_WIDTH) fmt_nl(f, FMT_INDENT);
+            fmt_puts(f, S(m->extends[i]));
+        }
+        fmt_trailing(f, m->ext_eline);
+        fmt_nl(f, 0);
+        f->last_line = m->ext_eline;
+    }
+    for (int i = 0; i < m->nunits; i++) {
+        Unit *u = &m->units[i];
+        if (u->kind == 4 && u->def->kind != D_RECURSIVE) continue;   /* D_THM is emitted by kind 2 or 6 */
+        fmt_comments_before(f, u->pos, 0, 1);
+        if (f->last_line && u->line > f->last_line + 1) fmt_blank(f);
+        if ((u->kind == 0 && (u->def->kind == D_CONST || u->def->kind == D_VAR)) ||
+            (u->kind == 4 && u->def->kind == D_RECURSIVE)) {
+            int j = i;
+            while (j + 1 < m->nunits && m->units[j + 1].group == u->group) j++;
+            int count = j - i + 1;
+            const char *kw = u->def->kind == D_CONST ? (count > 1 ? "CONSTANTS" : "CONSTANT") :
+                             u->def->kind == D_VAR ? (count > 1 ? "VARIABLES" : "VARIABLE") : "RECURSIVE";
+            int multi = 0;
+            Fmt tmp = {.src = f->src, .col = (int)strlen(kw) + 1, .ci = f->ci, .measure = 1};
+            for (int k = i; k <= j; k++) {
+                if (k > i) fmt_puts(&tmp, ", ");
+                fmt_param(&tmp, m->units[k].def);
+                if (m->units[k].def->where && fmt_has_comment(f, u->pos, m->units[k].def->where->pos)) multi = 1;
+            }
+            if (tmp.col > FMT_WIDTH) multi = 1;
+            fmt_puts(f, kw);
+            if (!multi) {
+                fmt_puts(f, " ");
+                for (int k = i; k <= j; k++) {
+                    if (k > i) fmt_puts(f, ", ");
+                    fmt_param(f, m->units[k].def);
+                }
+                fmt_trailing(f, m->units[j].eline);
+                fmt_nl(f, 0);
+            } else {
+                for (int k = i; k <= j; k++) {
+                    fmt_nl(f, FMT_INDENT);
+                    if (m->units[k].def->where) fmt_comments_before(f, m->units[k].def->where->pos, FMT_INDENT, 0);
+                    fmt_param(f, m->units[k].def);
+                    if (k < j) fmt_puts(f, ",");
+                    fmt_trailing(f, m->units[k].eline);
+                }
+                fmt_nl(f, 0);
+            }
+            f->last_line = m->units[j].eline;
+            i = j;
+            continue;
+        }
+        if (u->kind == 0) {
+            fmt_def(f, u->def, u->local, 0);
+            fmt_trailing(f, u->eline);
+            fmt_nl(f, 0);
+            f->last_line = u->eline;
+        } else if (u->kind == 1) {
+            if (u->local) fmt_puts(f, "LOCAL ");
+            fmt_instance(f, u->def, 0);
+            fmt_trailing(f, u->eline);
+            fmt_nl(f, 0);
+            f->last_line = u->eline;
+        } else if (u->kind == 2 || (u->kind == 6 && u->expr)) {
+            fmt_puts(f, S(u->kw));
+            if (u->def) { fmt_puts(f, " "); fmt_puts(f, S(u->def->name)); fmt_puts(f, " =="); }
+            if (!is_bullet_list(u->expr) && !fmt_has_comment(f, u->pos, expr_end(u->expr)) &&
+                f->col + 1 < FMT_WIDTH && expr_fits(f, u->expr, FMT_WIDTH - 1, 1)) {
+                fmt_puts(f, " ");
+                fmt_expr(f, u->expr, 0, 1, 1);
+            } else {
+                fmt_nl(f, FMT_INDENT);
+                fmt_comments_before(f, expr_pos(u->expr), FMT_INDENT, 0);
+                fmt_expr(f, u->expr, FMT_INDENT, 0, 1);
+            }
+            fmt_trailing(f, u->eline);
+            fmt_nl(f, 0);
+            f->last_line = u->eline;
+        } else if (u->kind == 3) {
+            fmt_module(f, u->module);
+        } else if (u->kind == 5) {
+            fmt_puts(f, "-----------------------------------------------------------------------------");
+            fmt_trailing(f, u->eline);
+            fmt_nl(f, 0);
+            f->last_line = u->eline;
+        } else if (u->kind == 6) {
+            fmt_slice(f, u->pos, u->end);
+            while (f->ci < nfmt_comments && fmt_comments[f->ci].start < u->end) f->ci++;
+            fmt_trailing(f, u->eline);
+            fmt_nl(f, 0);
+            f->last_line = u->eline;
+        }
+    }
+    fmt_comments_before(f, m->end_pos, 0, 1);
+    if (f->last_line && m->eline > f->last_line + 1) fmt_blank(f);
+    fmt_puts(f, "====");
+    fmt_trailing(f, m->eline);
+    fmt_nl(f, 0);
+    f->last_line = m->eline;
+}
+
+static int format_file(const char *spec) {
+    size_t len = strlen(spec);
+    char *path = xmalloc(len + 5);
+    strcpy(path, spec);
+    if (len < 4 || strcmp(path + len - 4, ".tla") != 0) strcat(path, ".tla");
+    char *text = read_file(path);
+    if (!text) {
+        printf("Error: Cannot find source file %s.\n", path);
+        printf("Error: Parsing or semantic analysis failed.\n");
+        return MANYAN_ERROR_PARSE;
+    }
+    fmt_mode = 1;
+    Module *m = parse_text(text, path);
+    Fmt f = {.src = text};
+    /* Preserve any text before the first ---- MODULE verbatim. */
+    if (m->pos > 0) buf_add(&f.out, text, (size_t)m->pos);
+    fmt_module(&f, m);
+    /* Preserve any text after ==== verbatim (avoiding a doubled newline). */
+    const char *tail = text + m->end;
+    if (*tail == '\r') tail++;
+    if (*tail == '\n') tail++;
+    if (*tail) buf_puts(&f.out, tail);
+    fwrite(f.out.s, 1, f.out.n, stdout);
+    xfree(f.out.s);
+    return MANYAN_OK;
+}
+
 /* Every global as the program starts, but for what manyan_define and
    manyan_module registered: each check is the first. */
 static void reset_check(void) {
@@ -23994,7 +25077,7 @@ static void reset_check(void) {
     Z(error_message); Z(error_expr); Z(error_status); Z(error_module); Z(error_java); Z(stackless);
     Z(java_frames); Z(java_depth); Z(fp_trace); Z(fp_depth); Z(fp_frames); Z(nframes); Z(tracking);
     Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
-    Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
+    Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(fmt_comments); Z(nfmt_comments); Z(fmt_mode); Z(fmt_group); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
     Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
     Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(lint); Z(level_probe); Z(every_argument);
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
@@ -24092,6 +25175,7 @@ static void reset_check(void) {
 static int check_model(const ManyanOptions *o) {
     static const char *none[] = {NULL};
     if ((found = o->result)) *found = (ManyanResult){.violated = none, .generated = -1, .distinct = -1, .left = -1, .depth = -1};
+    if (o->fmt) return format_file(o->spec);
     if (o->fp < 0 || o->fp >= (int)(sizeof fp_polys / sizeof *fp_polys)) {
         fprintf(stderr, "manyan: -fp takes an integer from 0 to %d\n", (int)(sizeof fp_polys / sizeof *fp_polys) - 1);
         return MANYAN_ERROR;

@@ -45,7 +45,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -81,7 +81,7 @@ else
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
-test: test-spec test-result test-again test-python test-symbolic test-typecheck test-lint
+test: test-spec test-result test-again test-python test-symbolic test-typecheck test-lint test-fmt
 
 test-spec: manyan
 	python3 tests/spec_runner.py ./manyan --strict
@@ -154,6 +154,16 @@ test-lint-oracle: manyan $(TLA_JAR) $(COMMUNITY)
 
 bless-lint: $(TLA_JAR) $(COMMUNITY)
 	python3 tests/lint_runner.py ./manyan --oracle "$(SANY)" --bless $(if $(ONLY),--only $(ONLY))
+
+# -fmt: canonical layout, idempotence, and SANY validity in tests/fmt.
+test-fmt: manyan
+	python3 tests/fmt_runner.py ./manyan --strict
+
+test-fmt-oracle: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/fmt_runner.py ./manyan --strict --oracle "$(SANY)"
+
+bless-fmt: manyan
+	python3 tests/fmt_runner.py ./manyan --bless $(if $(ONLY),--only $(ONLY))
 
 $(APALACHE):
 	mkdir -p $(OBJDIR)
