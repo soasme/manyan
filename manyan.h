@@ -65,6 +65,8 @@ typedef struct {
     long max_error;      /* symbolic checking: the invariant violations to find, 0 for 1, which the configuration's VIEW tells apart, as Apalache's --max-error (-max-error) */
     const char *run_dir; /* symbolic checking: the directory each counterexample is written to in ITF, as Apalache's --run-dir (-run-dir) */
     int typecheck;       /* type the specification as Apalache's type checker does, and check nothing else (-typecheck) */
+    int lint;            /* check syntax, semantics, levels and lint as SANY does, without checking a model (-lint) */
+    int fmt;             /* format the module to standard output, its meaning unchanged (-fmt) */
     const char *const *invariants;      /* expressions checked as invariants after the configuration's, NULL-terminated (-inv) */
     const char *const *postconditions;  /* "Module!Operator" each, checked after the configuration's postconditions, NULL-terminated (-postCondition) */
     const char *dump_trace;  /* write a counterexample to this file in TLC's JSON, or NULL (-dumpTrace json) */

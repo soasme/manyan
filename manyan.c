@@ -2589,7 +2589,7 @@ static Tok *next(void) { Tok *t = &P->t[P->pos]; if (t->kind != T_EOF) P->pos++;
 
 static _Noreturn void syntax_error(const char *what) {
     Tok *t = &P->t[P->pos];
-    const char *text = t->kind == T_EOF ? "end of module" : t->kind == T_STR ? "string" : S(t->id);
+    const char *text = t->kind == T_EOF ? "end of module" : t->kind == T_END ? "====" : t->kind == T_SEP ? "----" : t->kind == T_STR ? "string" : S(t->id);
     parse_error(P->file, t->line, t->col, "Encountered \"%s\": %s", text, what);
 }
 
@@ -2707,6 +2707,7 @@ static const OpInfo *op_info(Tok *t, int fix) {
 static Expr *parse_expr(void);
 static Expr *parse_binary(int bound);
 static Def *parse_definition(int local);
+static Def *parse_param(int kind);
 static void parse_bounds(Expr *e, int allow_unbounded);
 
 static Expr *mk_op(Tok *start, int op, int n, Expr **args) {
@@ -2950,6 +2951,7 @@ static Expr *parse_primary(void) {
             e->num = 0;
             for (;;) {
                 if (is_kw(peek(), "OTHER")) {
+                    if (e->n == 0) syntax_error("expected a CASE arm before OTHER");
                     next();
                     expect_op("->");
                     PUSH(e->args, e->n, NULL);
@@ -2969,26 +2971,17 @@ static Expr *parse_primary(void) {
         if (is_kw(t, "LET")) {
             next();
             e = mk_expr(X_LET, t);
-            int *recursive = NULL, nrec = 0;
             while (!is_kw(peek(), "IN")) {
                 if (is_kw(peek(), "RECURSIVE")) {
                     next();
-                    do {
-                        int name = expect_ident();
-                        PUSH(recursive, nrec, name);
-                        if (is_op(peek(), "(")) {
-                            next();
-                            while (!is_op(peek(), ")")) next();
-                            next();
-                        }
-                    } while (is_op(peek(), ",") && next());
+                    do PUSH(e->defs, e->ndefs, parse_param(D_RECURSIVE)); while (is_op(peek(), ",") && next());
                     continue;
                 }
-                PUSH(e->defs, e->ndefs, parse_definition(0));
+                int loc = 0;
+                if (is_kw(peek(), "LOCAL")) { loc = 1; next(); }
+                PUSH(e->defs, e->ndefs, parse_definition(loc));
             }
             next();
-            for (int i = 0; i < e->ndefs; i++)
-                for (int k = 0; k < nrec; k++) e->defs[i]->recursive |= e->defs[i]->name == recursive[k];
             e->n = 1;
             e->args = NEWN(Expr *, 1);
             e->args[0] = parse_expr();
@@ -2999,6 +2992,8 @@ static Expr *parse_primary(void) {
             next();
             e = mk_expr(X_CHOOSE, t);
             parse_bounds(e, 1);
+            if (e->nb != 1 || (!e->bounds[0].tuple && e->bounds[0].n != 1))
+                parse_error(P->file, t->line, t->col, "CHOOSE takes one bound variable or tuple");
             expect_op(":");
             e->n = 1;
             e->args = NEWN(Expr *, 1);
@@ -3651,6 +3646,13 @@ static Module *parse_module(Module *outer) {
         int local = 0;
         Tok *first = t;   /* a statement begins at its LOCAL */
         if (is_kw(t, "LOCAL")) { local = 1; next(); t = peek(); }
+        if (local && (t->kind == T_EOF || t->kind == T_END || t->kind == T_SEP || t->kind == T_STEP ||
+                      is_kw(t, "CONSTANT") || is_kw(t, "CONSTANTS") || is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES") ||
+                      is_kw(t, "ASSUME") || is_kw(t, "ASSUMPTION") || is_kw(t, "AXIOM") ||
+                      is_kw(t, "THEOREM") || is_kw(t, "LEMMA") || is_kw(t, "PROPOSITION") || is_kw(t, "COROLLARY") ||
+                      is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") ||
+                      is_kw(t, "OBVIOUS") || is_kw(t, "OMITTED") || is_kw(t, "RECURSIVE")))
+            parse_error(P->file, first->line, first->col, "Encountered \"LOCAL %s\"", t->kind == T_EOF ? "end of module" : S(t->id));
         if (is_kw(t, "CONSTANT") || is_kw(t, "CONSTANTS") || is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES")) {
             int var = is_kw(t, "VARIABLE") || is_kw(t, "VARIABLES");
             next();
@@ -4322,7 +4324,16 @@ static int inherited_conflict(Module *m, Def *d, Def *instance) {
     return 1;
 }
 
+static int is_core_op(int name);
+static int def_arity(Def *d) {
+    if (d->kind == D_OP || d->kind == D_INST) return d->nparams;
+    if (d->kind == D_PARAM || d->kind == D_CONST) return d->arity;
+    return 0;
+}
+
 static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int local, Expr *where) {
+    if (npath == 0 && where && is_core_op(name))
+        semantic_error(where, "Operator %s already defined or declared.", S(name));
     for (int i = 0; i < m->nsyms; i++)
         if (m->syms[i].name == name) {
             if (m->syms[i].def == def) return;
@@ -4467,6 +4478,53 @@ static const struct { const char *name; int kind; } core_ops[] = {
     {"[]", K_ALWAYS}, {"<>", K_EVENTUALLY}, {"~>", K_LEADSTO}, {"\\X", K_TIMES}, {"\\cdot", K_CDOT},
     {"-+->", K_WHILE}, {"BOOLEAN", K_BOOLEAN}, {"STRING", K_STRINGSET}, {NULL, 0}};
 
+static int is_core_op(int name) {
+    const char *s = S(name);
+    for (int i = 0; core_ops[i].name; i++) if (strcmp(core_ops[i].name, s) == 0) return 1;
+    return 0;
+}
+
+static int non_leibniz_expr(Expr *e, Def *p, int under) {
+    if (!e) return 0;
+    if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && e->def == p) return under;
+    int u = under;
+    switch (e->kind) {
+    case K_PRIME: case K_UNCHANGED: case K_ENABLED: case K_ALWAYS: case K_EVENTUALLY:
+    case K_LEADSTO: case K_WHILE: case K_CDOT: case X_SQACT: case X_ANGLEACT: case X_WF: case X_SF:
+        u = 1;
+        break;
+    }
+    for (int i = 0; i < e->n; i++) if (non_leibniz_expr(e->args[i], p, u)) return 1;
+    for (int i = 0; i < e->nb; i++) if (non_leibniz_expr(e->bounds[i].set, p, u)) return 1;
+    if (e->kind == X_LET) for (int i = 0; i < e->ndefs; i++) if (non_leibniz_expr(e->defs[i]->body, p, u)) return 1;
+    if (e->kind == X_LAMBDA && non_leibniz_expr(e->def->body, p, u)) return 1;
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (non_leibniz_expr(e->paths[i].keys[k], p, u)) return 1;
+    return 0;
+}
+
+static int is_non_leibniz(Def *d) {
+    if (!d || d->kind != D_OP || !d->body) return 0;
+    for (int i = 0; i < d->nparams; i++)
+        if (non_leibniz_expr(d->body, d->params[i], 0)) return 1;
+    return 0;
+}
+
+static int param_primed(Expr *e, Def *p, int under) {
+    if (!e) return 0;
+    if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && e->def == p) return under;
+    int u = under || e->kind == K_PRIME;
+    for (int i = 0; i < e->n; i++) if (param_primed(e->args[i], p, u)) return 1;
+    for (int i = 0; i < e->nb; i++) if (param_primed(e->bounds[i].set, p, u)) return 1;
+    if (e->kind == X_LET) for (int i = 0; i < e->ndefs; i++) if (param_primed(e->defs[i]->body, p, u)) return 1;
+    if (e->kind == X_LAMBDA && param_primed(e->def->body, p, u)) return 1;
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (param_primed(e->paths[i].keys[k], p, u)) return 1;
+    return 0;
+}
+
 /* The expression labeled `name` in x, but not in another label in it or
    in a LET definition, which have labels of their own (§5.7). */
 static Expr *find_label(Expr *x, int name, int own) {
@@ -4607,9 +4665,18 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
     return f;
 }
 
+static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name);
+
+static void resolve_call_args(Def *d, Expr **args, int n, Scope *sc) {
+    for (int i = 0; i < n; i++) {
+        int want = (d && (d->kind == D_OP || d->kind == D_INST) && i < d->nparams) ? d->params[i]->arity : 0;
+        resolve_arg(args[i], sc, want, i, d ? S(d->name) : "");
+    }
+}
+
 /* Resolves A!B(x)!C: each segment but the last names an instance, or
    the segments after a definition select a subexpression of it. */
-static void resolve_path(Expr *e, Scope *sc) {
+static void resolve_path(Expr *e, Scope *sc, int want_arity) {
     Def *path[32];
     Seg pargs[32];
     int np = 0;
@@ -4618,7 +4685,6 @@ static void resolve_path(Expr *e, Scope *sc) {
     Def *d = NULL;
     Expr **args = NULL;
     int nargs = 0;
-    for (int i = 0; i < e->nseg; i++) resolve_args(e->segs[i].args, e->segs[i].n, sc);
     for (int i = 0; i < e->nseg; i++) {
         Seg *s = &e->segs[i];
         Sym *sym = NULL;
@@ -4636,15 +4702,25 @@ static void resolve_path(Expr *e, Scope *sc) {
         if (!d) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
         if (i + 1 < e->nseg && d->kind == D_INST) {
             check_arity(e, d, s->n);
+            resolve_call_args(d, s->args, s->n, sc);
             pargs[np] = *s;
             path[np++] = d;
             m = d->target;
             d = NULL;
         } else if (i + 1 < e->nseg) {
+            resolve_call_args(d, s->args, s->n, sc);
+            for (int k = i + 1; k < e->nseg; k++) resolve_args(e->segs[k].args, e->segs[k].n, sc);
             d = subexpression(e, d, i, &args, &nargs);
             break;
         } else {
-            if (s->n || d->kind != D_OP || !d->nparams) check_arity(e, d, s->n);   /* bare, an operator argument */
+            int da = def_arity(d);
+            if (want_arity > 0) {
+                if (s->n != 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
+                if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
+            } else {
+                check_arity(e, d, s->n);
+                resolve_call_args(d, s->args, s->n, sc);
+            }
             args = s->args;
             nargs = s->n;
         }
@@ -4662,23 +4738,32 @@ static void resolve_path(Expr *e, Scope *sc) {
     e->nseg = np;
 }
 
-static void resolve_name(Expr *e, Scope *sc) {
-    if (e->nseg > 1) { resolve_path(e, sc); return; }
+static void resolve_name(Expr *e, Scope *sc, int want_arity) {
+    if (e->nseg > 1) { resolve_path(e, sc, want_arity); return; }
     Seg *s = &e->segs[0];
-    resolve_args(s->args, s->n, sc);
     e->args = s->args;
     e->n = s->n;
     Def *d = scope_lookup(sc, s->name);
     if (d) {
         if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
+        int da = def_arity(d);
+        if (want_arity > 0) {
+            if (s->n != 0 || da == 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
+            if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
+            e->kind = d->kind == D_PARAM ? K_PARAMCALL : K_CALL;
+            e->def = d;
+            return;
+        }
         if (d->kind == D_BOUND || (d->kind == D_PARAM && d->arity == 0 && s->n == 0)) {
             if (s->n) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
             e->kind = K_BOUND;
         } else if (d->kind == D_PARAM) {
-            if (s->n) check_arity(e, d, s->n);   /* bare, it is an operator argument */
+            check_arity(e, d, s->n);
+            resolve_call_args(d, s->args, s->n, sc);
             e->kind = K_PARAMCALL;
         } else {
-            if (s->n || !d->nparams) check_arity(e, d, s->n);
+            check_arity(e, d, s->n);
+            resolve_call_args(d, s->args, s->n, sc);
             e->kind = K_CALL;
         }
         e->def = d;
@@ -4693,8 +4778,14 @@ static void resolve_name(Expr *e, Scope *sc) {
     }
     d = sym->def;
     if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
-    int bare = s->n == 0 && (d->kind == D_OP ? d->nparams : d->kind == D_CONST ? d->arity : 0) > 0;
-    if (!bare) check_arity(e, d, s->n);   /* bare, it is an operator argument */
+    int da = def_arity(d);
+    if (want_arity > 0) {
+        if (s->n != 0 || da == 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
+        if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
+    } else {
+        check_arity(e, d, s->n);
+        resolve_call_args(d, s->args, s->n, sc);
+    }
     e->def = d;
     if (d->kind == D_CONST || d->kind == D_VAR) {
         e->kind = d->arity ? K_PARAMCALL : K_DECL;
@@ -4709,39 +4800,96 @@ static void resolve_name(Expr *e, Scope *sc) {
     }
 }
 
+static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name) {
+    if (!a) return;
+    if (want == 0) { resolve_expr(a, sc); return; }
+    if (a->kind == X_LAMBDA) {
+        if (a->def->nparams != want)
+            semantic_error(a, "Lambda expression with arity %d used as argument %d of operator %s.", a->def->nparams, idx + 1, op_name);
+        Scope *inner = sc;
+        for (int i = 0; i < a->def->nparams; i++) inner = bind(inner, a->def->params[i]->name, a->def->params[i]);
+        a->def->mod = cur_module;
+        resolve_expr(a->def->body, inner);
+        return;
+    }
+    if (a->kind == X_OPREF) {
+        a->def = operator_def(a, a->op, sc);
+        if (def_arity(a->def) != want) semantic_error(a, "Operator with incorrect arity passed as argument.");
+        return;
+    }
+    if (a->kind == X_NAME) {
+        resolve_name(a, sc, want);
+        return;
+    }
+    resolve_expr(a, sc);
+    semantic_error(a, "An expression appears as argument number %d (counting from 1) of operator %s where an operator of arity %d is expected.",
+                   idx + 1, op_name, want);
+}
+
 /* The function definitions being resolved: one named in its own body is
    recursive (§6.6). */
 static Def *open_defs[64];
 static int nopen_defs;
 
+static int in_except_rhs;   /* depth of EXCEPT value expressions where @ is defined */
+
+static void check_dup_labels(Expr *e, int *seen, int *nseen, int own) {
+    if (!e) return;
+    if (e->label && !own) {
+        for (int i = 0; i < *nseen; i++)
+            if (seen[i] == e->label->name) semantic_error(e, "Duplicate label `%s'.", S(e->label->name));
+        if (*nseen < 64) seen[(*nseen)++] = e->label->name;
+        int inner[64], ninner = 0;
+        check_dup_labels(e, inner, &ninner, 1);
+        return;
+    }
+    if (e->kind == X_LET) {
+        for (int i = 0; i < e->ndefs; i++) {
+            int inner[64], ninner = 0;
+            check_dup_labels(e->defs[i]->body, inner, &ninner, 0);
+        }
+        check_dup_labels(e->args[0], seen, nseen, 0);
+        return;
+    }
+    for (int i = 0; i < e->n; i++) check_dup_labels(e->args[i], seen, nseen, 0);
+    for (int i = 0; i < e->nb; i++) check_dup_labels(e->bounds[i].set, seen, nseen, 0);
+    if (e->kind == X_LAMBDA) check_dup_labels(e->def->body, seen, nseen, 0);
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) check_dup_labels(e->paths[i].keys[k], seen, nseen, 0);
+}
+
 static void resolve_expr(Expr *e, Scope *sc) {
     if (e->label && !e->label->defs) {
         Label *l = e->label;
+        if (in_except_rhs) semantic_error(e, "Labels inside EXCEPT clauses are not yet implemented.");
+        for (int i = 0; i < l->n; i++)
+            for (int j = 0; j < i; j++)
+                if (l->names[i] == l->names[j]) semantic_error(e, "Repeated formal parameter %s in label `%s'.", S(l->names[i]), S(l->name));
         l->defs = NEWN(Def *, l->n);
         for (int i = 0; i < l->n; i++)
             if (!(l->defs[i] = scope_lookup(sc, l->names[i]))) semantic_error(e, "Unknown operator: `%s'.", S(l->names[i]));
     }
     switch (e->kind) {
-    case X_NUM: case X_BOOL: case X_AT:
+    case X_NUM: case X_BOOL:
+        return;
+    case X_AT:
+        if (!in_except_rhs) semantic_error(e, "@ used where its meaning is not defined.");
         return;
     case X_STR:
         e->num = intern_n(e->text, e->len);
         mk_str(e->num);   /* a string the specification has, which Gen may make */
         return;
     case X_NAME:
-        resolve_name(e, sc);
+        resolve_name(e, sc, 0);
         for (int i = 0; i < nopen_defs; i++) if (open_defs[i] == e->def) e->def->self = 1;
         return;
     case X_OPREF:
-        e->def = operator_def(e, e->op, sc);
+        semantic_error(e, "Operator %s used where an expression is required.", S(e->op));
         return;
-    case X_LAMBDA: {
-        Scope *inner = sc;
-        for (int i = 0; i < e->def->nparams; i++) inner = bind(inner, e->def->params[i]->name, e->def->params[i]);
-        e->def->mod = cur_module;
-        resolve_expr(e->def->body, inner);
+    case X_LAMBDA:
+        semantic_error(e, "LAMBDA expression used where an expression is required.");
         return;
-    }
     case X_OP: {
         resolve_args(e->args, e->n, sc);
         for (int i = 0; core_ops[i].name; i++)
@@ -4773,20 +4921,41 @@ static void resolve_expr(Expr *e, Scope *sc) {
     }
     case X_LET: {
         Scope *inner = sc;
-        for (int i = 0; i < e->ndefs; i++)
-            if (e->defs[i]->recursive) inner = bind(inner, e->defs[i]->name, e->defs[i]);
+        int nreal = 0;
         for (int i = 0; i < e->ndefs; i++) {
             Def *d = e->defs[i];
+            if (d->kind == D_RECURSIVE) {
+                for (int j = 0; j < i; j++)
+                    if (e->defs[j]->name == d->name)
+                        semantic_error(d->where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(d->name));
+                Def *found = NULL;
+                for (int k = i + 1; k < e->ndefs && !found; k++)
+                    if (e->defs[k]->kind != D_RECURSIVE && e->defs[k]->name == d->name) found = e->defs[k];
+                if (!found) semantic_error(d->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(d->name));
+                if (def_arity(found) != d->arity)
+                    semantic_error(found->where, "Definition of %s has different arity than its RECURSIVE declaration.", S(d->name));
+                found->recursive = 1;
+                inner = bind(inner, found->name, found);
+                continue;
+            }
+            if (is_core_op(d->name)) semantic_error(d->where, "Operator %s already defined or declared.", S(d->name));
             d->local = 2;   /* a LET definition: bound in the environment */
             resolve_def(d, inner);
             if (!d->recursive) inner = bind(inner, d->name, d);
+            e->defs[nreal++] = d;
         }
+        e->ndefs = nreal;
         resolve_args(e->args, e->n, inner);
         return;
     }
     case X_EXCEPT:
-        resolve_args(e->args, e->n, sc);
-        for (int i = 0; i < e->n - 1; i++) resolve_args(e->paths[i].keys, e->paths[i].n, sc);
+        resolve_expr(e->args[0], sc);
+        for (int i = 0; i < e->n - 1; i++) {
+            resolve_args(e->paths[i].keys, e->paths[i].n, sc);
+            in_except_rhs++;
+            resolve_expr(e->args[i + 1], sc);
+            in_except_rhs--;
+        }
         return;
     default:
         resolve_args(e->args, e->n, sc);
@@ -4817,6 +4986,14 @@ static void resolve_def(Def *d, Scope *sc) {
         resolve_module(t);
         cur_module = saved;
         d->target = t;
+        for (int j = 0; j < d->nsubst; j++) {
+            int pname = d->subst_decl[j]->name, legal = 0;
+            for (int k = 0; k < j; k++)
+                if (d->subst_decl[k]->name == pname)
+                    semantic_error(d->where, "Multiple substitutions for symbol '%s' in substitution.", S(pname));
+            for (int i = 0; i < t->ndecls && !legal; i++) legal = t->decls[i]->name == pname;
+            if (!legal) semantic_error(d->where, "Identifier '%s' is not a legal target of a substitution.", S(pname));
+        }
         Def **decls = NEWN(Def *, t->ndecls);
         Expr **exprs = NEWN(Expr *, t->ndecls);
         for (int i = 0; i < t->ndecls; i++) {
@@ -4827,17 +5004,24 @@ static void resolve_def(Def *d, Scope *sc) {
             if (!exprs[i]) {
                 Expr *ref = NEW(Expr);
                 if (d->where) *ref = *d->where;
-                ref->kind = decl->arity && !scope_lookup(inner, decl->name) ? X_OPREF : X_NAME;   /* Op(_) <- Op */
+                ref->kind = decl->arity && !scope_lookup(inner, decl->name) && !module_lookup(cur_module, decl->name) ? X_OPREF : X_NAME;
+                if (decl->arity && !scope_lookup(inner, decl->name)) {
+                    Sym *sm = module_lookup(cur_module, decl->name);
+                    if (!sm && is_core_op(decl->name)) ref->kind = X_OPREF;
+                }
                 ref->nseg = 1;
                 ref->segs = NEW(Seg);
                 ref->segs->name = decl->name;
                 ref->op = decl->name;
-                if (!scope_lookup(inner, decl->name) && !module_lookup(cur_module, decl->name))
+                if (ref->kind == X_NAME && !scope_lookup(inner, decl->name) && !module_lookup(cur_module, decl->name))
                     semantic_error(d->where, "The constant or variable %s of module %s is not defined in the instantiating module.",
                                    S(decl->name), S(t->name));
                 exprs[i] = ref;
             }
-            resolve_expr(exprs[i], inner);
+            resolve_arg(exprs[i], inner, decl->arity, i, S(t->name));
+            if (decl->arity > 0 && exprs[i]->def && is_non_leibniz(exprs[i]->def))
+                semantic_error(d->where, "Error in instantiating module '%s':\n A non-Leibniz operator substituted for '%s'.",
+                               S(t->name), S(decl->name));
         }
         d->nsubst = t->ndecls;
         d->subst_decl = decls;
@@ -4846,7 +5030,11 @@ static void resolve_def(Def *d, Scope *sc) {
     }
     int open = d->kind == D_FCN && nopen_defs < 64;
     if (open) open_defs[nopen_defs++] = d;
-    if (d->body) resolve_expr(d->body, inner);
+    if (d->body) {
+        resolve_expr(d->body, inner);
+        int seen[64], nseen = 0;
+        check_dup_labels(d->body, seen, &nseen, 0);
+    }
     nopen_defs -= open;
 }
 
@@ -4986,13 +5174,18 @@ static void resolve_module(Module *m) {
             resolve_def(d, NULL);
             add_sym(m, d->name, d, NULL, 0, 0, NULL);
         } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
-            for (int k = i + 1; k < m->nunits; k++)
+            if (own_sym(m, u->def->name))
+                semantic_error(u->def->where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(u->def->name));
+            Def *found = NULL;
+            for (int k = i + 1; k < m->nunits && !found; k++)
                 if (m->units[k].kind == 0 && m->units[k].def->name == u->def->name &&
-                    (m->units[k].def->kind == D_OP || m->units[k].def->kind == D_FCN)) {
-                    m->units[k].def->recursive = 1;
-                    add_sym(m, u->def->name, m->units[k].def, NULL, 0, m->units[k].local, m->units[k].def->where);
-                    break;
-                }
+                    (m->units[k].def->kind == D_OP || m->units[k].def->kind == D_FCN))
+                    found = m->units[k].def;
+            if (!found) semantic_error(u->def->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(u->def->name));
+            if (def_arity(found) != u->def->arity)
+                semantic_error(found->where, "Definition of %s has different arity than its RECURSIVE declaration.", S(u->def->name));
+            found->recursive = 1;
+            add_sym(m, u->def->name, found, NULL, 0, found->local, found->where);
         } else if (u->kind == 1) {
             Def *d = u->def;
             resolve_def(d, NULL);
@@ -5009,7 +5202,12 @@ static void resolve_module(Module *m) {
             }
         } else if (u->kind == 2 && !u->def) {   /* a named one is resolved with its name */
             resolve_expr(u->expr, NULL);
+            int seen[64], nseen = 0;
+            check_dup_labels(u->expr, seen, &nseen, 0);
         } else if (u->kind == 3) {
+            for (int k = 0; k < i; k++)
+                if (m->units[k].kind == 3 && m->units[k].module->name == u->module->name)
+                    semantic_error(NULL, "Multiply-defined module '%s': this definition or declaration conflicts with another one.", S(u->module->name));
             u->module->nouter_syms = m->nsyms;
             resolve_module(u->module);
         }
@@ -5173,6 +5371,10 @@ static void check_def_levels(Def *d) {
     }
     for (int i = 0; i < d->nb; i++) check_levels(d->bounds[i].set, 3);
     check_levels(d->body, 3);
+    if (d->recursive && d->kind == D_OP && d->body)
+        for (int i = 0; i < d->nparams; i++)
+            if (param_primed(d->body, d->params[i], 0))
+                semantic_error(d->where, "Argument %d of recursive operator %s is primed.", i + 1, S(d->name));
 }
 
 /* The level of an expression (0 constant, 1 state, 2 action, 3 temporal). */
@@ -23794,7 +23996,7 @@ static void reset_check(void) {
     Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
     Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
     Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
-    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(lint); Z(level_probe); Z(every_argument);
+    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(lint); Z(level_probe); Z(every_argument);
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
     Z(primed); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);
@@ -23915,7 +24117,7 @@ static int check_model(const ManyanOptions *o) {
         strcpy(config_path, path);
         strcpy(config_path + strlen(config_path) - 4, ".cfg");
     }
-    config_text = o->typecheck ? xstrdup("") : read_file(config_path);
+    config_text = (o->typecheck || o->lint || o->fmt) ? xstrdup("") : read_file(config_path);
     if (!config_text) config_error("Cannot open the configuration file %s.", config_path);
     read_config(config_text, 1);
     char *text = read_file(path);
@@ -23976,6 +24178,7 @@ static int check_model(const ManyanOptions *o) {
     finish_module(root);
     resolve_module(root);
     if (lint.n) printf("%s", lint.s);
+    if (o->lint) return MANYAN_OK;
     if (o->typecheck) return typecheck(root);
     int ninvs = 0, *invs = NULL;
     for (const char *const *p = o->invariants; p && *p; p++) {
@@ -24197,6 +24400,8 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-depth") == 0 && i + 1 < argc) o.depth = atol(argv[++i]);
         else if (strcmp(argv[i], "-symbolic") == 0) o.symbolic = 1;
         else if (strcmp(argv[i], "-typecheck") == 0) o.typecheck = 1;
+        else if (strcmp(argv[i], "-lint") == 0) o.lint = 1;
+        else if (strcmp(argv[i], "-fmt") == 0) o.fmt = 1;
         else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
         else if (strcmp(argv[i], "-cinit") == 0 && i + 1 < argc) o.cinit = argv[++i];
         else if (strcmp(argv[i], "-max-error") == 0 && i + 1 < argc) o.max_error = atol(argv[++i]);

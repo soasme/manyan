@@ -1,0 +1,12 @@
+*** Warnings: 2
+
+line 5, col 10 to line 5, col 10 of module nested_redeclare_warn
+
+Multiple declarations or definitions for symbol C.
+This duplicates the one at line 2, col 10 to line 2, col 10 of module nested_redeclare_warn.
+
+line 6, col 10 to line 6, col 10 of module nested_redeclare_warn
+
+Multiple declarations or definitions for symbol x.
+This duplicates the one at line 3, col 10 to line 3, col 10 of module nested_redeclare_warn.
+OK

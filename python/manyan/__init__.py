@@ -122,7 +122,7 @@ class _Options(ctypes.Structure):   # manyan.h's ManyanOptions, in its order
                 ("fp", ctypes.c_int), ("aril", ctypes.c_longlong), ("trace_file", ctypes.c_char_p),
                 ("properties", _Strings), ("symbolic", ctypes.c_int), ("length", ctypes.c_long),
                 ("cinit", ctypes.c_char_p), ("max_error", ctypes.c_long), ("run_dir", ctypes.c_char_p),
-                ("typecheck", ctypes.c_int), ("invariants", _Strings), ("postconditions", _Strings),
+                ("typecheck", ctypes.c_int), ("lint", ctypes.c_int), ("fmt", ctypes.c_int), ("invariants", _Strings), ("postconditions", _Strings),
                 ("dump_trace", ctypes.c_char_p), ("no_te_spec", ctypes.c_int), ("result", ctypes.POINTER(_Result))]
 
 
