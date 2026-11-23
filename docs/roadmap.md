@@ -32,7 +32,8 @@ from TLC.
   than Manyan's.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
-  Init, the search for a fair cycle and the tableau have models.
+  Init, the search for a fair cycle, the tableau, level checking and
+  canonical formatting have models.
 
 ## 2. Fast where TLC is slow
 
@@ -79,13 +80,17 @@ s, `make test` 96 -> 37 s, and the oracle is TLC 1.8.0 at bc1b506, its
    check it faster, its output unchanged.
 3. **Format.** `manyan -fmt` prints a module's TLA⁺ code in one layout,
    its meaning unchanged, fast enough to run on save.
-   Done: idempotent, comment- and proof-preserving, verified against SANY
-   on all 433 tlaplus/Examples modules and `make test-fmt`.
+   Done: modeled in `tests/tla/Fmt.tla` (checked against TLC), idempotent,
+   comment- and proof-preserving, verified against SANY on all 433
+   tlaplus/Examples modules and `make test-fmt`, fuzzed under sanitizers
+   (`make fuzz-fmt`).
 4. **Lint.** `manyan -lint` checks that a module is syntactically and
    semantically right, as SANY does, without checking a model, and reports
    SANY's errors and warnings.
-   Done: verified against SANY on `make test-lint` and all 433
-   tlaplus/Examples modules.
+   Done: level checking modeled in `tests/tla/LevelCheck.tla` (checked
+   against TLC), verified against SANY on `make test-lint` (72 cases
+   covering SANY's semantic, level, warning and linter checks) and all 433
+   tlaplus/Examples modules, fuzzed under sanitizers (`make fuzz-lint`).
 
 ## What stays
 

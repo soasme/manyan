@@ -23,14 +23,16 @@ from spec_runner import ROOT, guarded, stage, workers
 TESTS = ROOT / "tests/lint"
 
 NOISE = re.compile(
-    r"^(\*\*\*\*\*\* SANY2|manyan version|Parsing file|Semantic processing|Linting of module|GuardMalloc\[)")
+    r"^(\*\*\*\*\*\* SANY2|manyan version|Parsing file|Semantic processing|Linting of module|GuardMalloc\[|Sysctl \(debug\.toggle_address_reuse\))")
 
 
 def outcome(output, code, oracle):
     if code != 0:
-        if "***Parse Error***" in output or "Fatal errors while parsing" in output:
-            return "PARSE ERROR\n"
-        return "SEMANTIC ERROR\n"
+        if oracle:
+            if "***Parse Error***" in output or "Fatal errors while parsing" in output:
+                return "PARSE ERROR\n"
+            return "SEMANTIC ERROR\n"
+        return "SEMANTIC ERROR\n" if "Semantic errors:" in output else "PARSE ERROR\n"
     lines = []
     for line in output.splitlines():
         if NOISE.match(line):

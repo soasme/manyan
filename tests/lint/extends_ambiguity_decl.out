@@ -1,0 +1,7 @@
+*** Warnings: 1
+
+line 2, col 10 to line 2, col 10 of module ExtB
+
+Warning: the declaration of 'X' conflicts with
+its declaration at line 2, col 10 to line 2, col 10 of module ExtA.
+OK

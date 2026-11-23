@@ -45,7 +45,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-lint fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -104,6 +104,8 @@ $(OBJDIR)/manyan-again: tests/again.c $(SRC) $(HDR)
 test-again: $(OBJDIR)/manyan-again
 	python3 tests/spec_runner.py $(OBJDIR)/manyan-again --strict
 	python3 tests/spec_runner.py "$(OBJDIR)/manyan-again -workers 4" --strict
+	python3 tests/lint_runner.py $(OBJDIR)/manyan-again --strict
+	python3 tests/fmt_runner.py $(OBJDIR)/manyan-again --strict
 
 # manyan.c and manyan-std.c built to link at run time, as the Python
 # package's check() loads them.
@@ -188,6 +190,8 @@ $(OBJDIR)/manyan-sanitize: $(SRC) $(HDR)
 
 sanitize: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/manyan-sanitize --strict
+	$(SANITIZE_ENV) python3 tests/lint_runner.py $(OBJDIR)/manyan-sanitize --strict
+	$(SANITIZE_ENV) python3 tests/fmt_runner.py $(OBJDIR)/manyan-sanitize --strict
 
 # Mutated models must not crash the sanitized build; random expressions
 # must print as TLC prints them; so must random simulations of the models.
@@ -196,6 +200,12 @@ RUNS ?= 1000
 SEED ?= 1
 fuzz: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/fuzz.py crash $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
+
+fuzz-fmt: $(OBJDIR)/manyan-sanitize
+	$(SANITIZE_ENV) python3 tests/fuzz.py fmt $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
+
+fuzz-lint: $(OBJDIR)/manyan-sanitize
+	$(SANITIZE_ENV) python3 tests/fuzz.py lint $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
 
 # The same in Debian, with Docker, for a machine whose sanitizers find no
 # leaks, as macOS's; its build apart from this one's.

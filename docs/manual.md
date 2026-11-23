@@ -366,8 +366,10 @@ make test-javascript   # tests/spec with the WebAssembly build, but for IOExec, 
 make site              # docs/ as the site's HTML pages, with the playground, in .obj/site (needs Python-Markdown)
 make test-spec-oracle  # also runs TLC on every test (downloads tla2tools 1.8.0)
 make bless ONLY=name   # writes a test's expected output from TLC
-make sanitize          # tests/spec under UBSan (and Guard Malloc on macOS)
+make sanitize          # tests/spec, tests/lint and tests/fmt under UBSan (and Guard Malloc on macOS)
 make fuzz              # mutated tests/spec models under the sanitizer build
+make fuzz-fmt          # mutated modules formatted under the sanitizer build (idempotence + comments)
+make fuzz-lint         # mutated modules linted under the sanitizer build
 make fuzz-oracle       # random expressions, printed by Manyan and by TLC
 make fuzz-sim          # random simulations of tests/spec models, by Manyan and by TLC
 make fuzz-check        # tests/spec models checked with random options, by Manyan and by TLC

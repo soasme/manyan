@@ -2227,6 +2227,8 @@ enum { D_OP, D_FCN, D_CONST, D_VAR, D_BOUND, D_PARAM, D_INST, D_RECURSIVE, D_THM
 
 typedef Value *(*Native)(Expr *call, Value **args, Ctx c);
 
+typedef struct { int arg; Def *param; } Coparam;
+
 struct Def {
     int kind;
     int name;
@@ -2252,6 +2254,9 @@ struct Def {
     unsigned level_mask;  /* 1 + twice the bits of the parameters a call's level depends on; 0 unknown */
     int level_bound;      /* TLC's bound on its level, plus 1; 0 unknown */
     int level_max;        /* a parameter's or declaration's: the highest level its uses allow, plus 1; 0 for any */
+    int *arg_min;         /* a higher-order parameter's or declaration's: min level each param of its operator arg must allow */
+    Coparam *coparams;    /* a higher-order parameter's or declaration's: params/decls passed into its arg j */
+    int ncoparams;
     int level_checked;
     unsigned level_walk;  /* the walk of subst_level that last entered it */
     Value *cache;         /* a constant definition without parameters, once evaluated */
@@ -3737,7 +3742,7 @@ static Module *parse_module(Module *outer) {
             }
             int after = P->pos;
             skip_proof();
-            if (fmt_mode) unit_span(add_unit(m, 6, d, P->pos == after ? body : NULL, NULL, 0), first, prev_tok(), t->id, 0);
+            unit_span(add_unit(m, 6, d, P->pos == after ? body : NULL, NULL, 0), first, prev_tok(), t->id, 0);
             continue;
         }
         if (is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") ||
@@ -4360,22 +4365,36 @@ static Expr def_span(Def *d) {
     return e;
 }
 
-/* Whether the definition d, which m extends or, with instance, instantiates,
+/* Whether the symbol d, which m extends or, with instance, instantiates,
    gives way to another of its name m has: as SANY, with a warning, keeping
-   the first. A declaration conflicts. The warning is at d, or at a LOCAL
-   INSTANCE. */
+   the first. A declaration and a definition conflict with an error; two
+   declarations or two definitions from EXTENDS warn. */
 static int inherited_conflict(Module *m, Def *d, Def *instance) {
     Sym *old = own_sym(m, d->name);
-    if (!old || old->def == d || d->kind == D_CONST || d->kind == D_VAR || old->def->kind == D_CONST || old->def->kind == D_VAR)
-        return 0;
+    if (!old || old->def == d) return 0;
+    int d_decl = d->kind == D_CONST || d->kind == D_VAR;
+    int o_decl = old->def->kind == D_CONST || old->def->kind == D_VAR;
+    if (instance && (d_decl || o_decl)) return 0;
     Buf here = {0}, there = {0};
-    Expr at = instance && instance->local ? *instance->where : def_span(d), span = def_span(old->def);
+    Expr at = instance && instance->local ? *instance->where : (d_decl ? *d->where : def_span(d));
+    Expr span = o_decl ? *old->def->where : def_span(old->def);
     file_loc_text(&here, &at);
     file_loc_text(&there, &span);
+    if (!instance && d_decl != o_decl) {
+        char *h = buf_take(&here), *t = buf_take(&there);
+        semantic_error(&at, "The %s of '%s' conflicts with \nits %s at %s.",
+                       d_decl ? "declaration" : "definition", S(d->name),
+                       o_decl ? "declaration" : "definition", t);
+        (void)h;
+    }
     Module *file = file_module(m);
-    buf_printf(&file->warnings, instance ? "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n"
-                                         : "%s\n\nWarning: the definition of '%s' conflicts with \nits definition at %s.\n\n\n",
-               here.s, S(d->name), there.s);
+    if (instance)
+        buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
+                   here.s, S(d->name), there.s);
+    else
+        buf_printf(&file->warnings, "%s\n\nWarning: the %s of '%s' conflicts with \nits %s at %s.\n\n\n",
+                   here.s, d_decl ? "declaration" : "definition", S(d->name),
+                   o_decl ? "declaration" : "definition", there.s);
     file->nwarnings++;
     xfree(here.s);
     xfree(there.s);
@@ -4511,6 +4530,15 @@ static void check_temporal(Expr *e) {
     }
 }
 
+static int in_def_body;       /* 1 inside a definition body where labels are permitted */
+static Scope *label_bounds;   /* locally-bound identifiers required as label parameters */
+
+static Scope *push_label_bound(Scope *lb, int name, Def *d) {
+    Scope *s = NEW(Scope);
+    s->name = name; s->def = d; s->next = lb;
+    return s;
+}
+
 static void resolve_bounds(Expr *e, Scope **sc) {
     Scope *outer = *sc;
     for (int i = 0; i < e->nb; i++) {
@@ -4524,6 +4552,7 @@ static void resolve_bounds(Expr *e, Scope **sc) {
             d->var_index = -1;
             b->defs[j] = d;
             *sc = bind(*sc, d->name, d);
+            label_bounds = push_label_bound(label_bounds, d->name, d);
         }
     }
 }
@@ -4864,10 +4893,14 @@ static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_na
     if (a->kind == X_LAMBDA) {
         if (a->def->nparams != want)
             semantic_error(a, "Lambda expression with arity %d used as argument %d of operator %s.", a->def->nparams, idx + 1, op_name);
-        Scope *inner = sc;
-        for (int i = 0; i < a->def->nparams; i++) inner = bind(inner, a->def->params[i]->name, a->def->params[i]);
+        Scope *inner = sc, *saved_lb = label_bounds;
+        for (int i = 0; i < a->def->nparams; i++) {
+            inner = bind(inner, a->def->params[i]->name, a->def->params[i]);
+            label_bounds = push_label_bound(label_bounds, a->def->params[i]->name, a->def->params[i]);
+        }
         a->def->mod = cur_module;
         resolve_expr(a->def->body, inner);
+        label_bounds = saved_lb;
         return;
     }
     if (a->kind == X_OPREF) {
@@ -4917,17 +4950,37 @@ static void check_dup_labels(Expr *e, int *seen, int *nseen, int own) {
             for (int k = 0; k < e->paths[i].n; k++) check_dup_labels(e->paths[i].keys[k], seen, nseen, 0);
 }
 
+static void resolve_expr_body(Expr *e, Scope *sc);
+
 static void resolve_expr(Expr *e, Scope *sc) {
+    Scope *saved_lb = label_bounds;
+    int labeled = 0;
     if (e->label && !e->label->defs) {
         Label *l = e->label;
+        if (!in_def_body) semantic_error(e, "Label not in definition or proof step.");
         if (in_except_rhs) semantic_error(e, "Labels inside EXCEPT clauses are not yet implemented.");
         for (int i = 0; i < l->n; i++)
             for (int j = 0; j < i; j++)
                 if (l->names[i] == l->names[j]) semantic_error(e, "Repeated formal parameter %s in label `%s'.", S(l->names[i]), S(l->name));
         l->defs = NEWN(Def *, l->n);
-        for (int i = 0; i < l->n; i++)
+        for (int i = 0; i < l->n; i++) {
             if (!(l->defs[i] = scope_lookup(sc, l->names[i]))) semantic_error(e, "Unknown operator: `%s'.", S(l->names[i]));
+            if (!scope_lookup(label_bounds, l->names[i]))
+                semantic_error(e, "Illegal parameter %s of label `%s'.", S(l->names[i]), S(l->name));
+        }
+        for (Scope *s = label_bounds; s; s = s->next) {
+            int found = 0;
+            for (int i = 0; i < l->n && !found; i++) found = l->names[i] == s->name;
+            if (!found) semantic_error(e, "Label %s must contain formal parameter `%s'.", S(l->name), S(s->name));
+        }
+        label_bounds = NULL;
+        labeled = 1;
     }
+    resolve_expr_body(e, sc);
+    if (labeled) label_bounds = saved_lb;
+}
+
+static void resolve_expr_body(Expr *e, Scope *sc) {
     switch (e->kind) {
     case X_NUM: case X_BOOL:
         return;
@@ -4971,9 +5024,10 @@ static void resolve_expr(Expr *e, Scope *sc) {
     }
     case X_FORALL: case X_EXISTS: case X_CHOOSE: case X_FILTER: case X_MAP: case X_FCN:
     case X_TFORALL: case X_TEXISTS: {
-        Scope *inner = sc;
+        Scope *inner = sc, *saved_lb = label_bounds;
         resolve_bounds(e, &inner);
         resolve_args(e->args, e->n, inner);
+        label_bounds = saved_lb;
         check_temporal(e);
         return;
     }
@@ -5015,6 +5069,16 @@ static void resolve_expr(Expr *e, Scope *sc) {
             in_except_rhs--;
         }
         return;
+    case X_APPLY:
+        resolve_args(e->args, e->n, sc);
+        if (e->n > 2 && (e->args[0]->kind == K_CALL || e->args[0]->kind == K_INSTCALL) && e->args[0]->def->kind == D_FCN) {
+            Def *f = e->args[0]->def;
+            int k = 0;
+            for (int i = 0; i < f->nb; i++) k += f->bounds[i].tuple ? 1 : f->bounds[i].n;
+            if (e->n - 1 != k)
+                semantic_error(e, "Function '%s' is defined with %d parameters, but is applied to %d arguments.", S(f->name), k, e->n - 1);
+        }
+        return;
     default:
         resolve_args(e->args, e->n, sc);
         if (e->kind == X_RECORD || e->kind == X_RCDSET) PUSH(cur_module->records, cur_module->nrecords, e);
@@ -5024,7 +5088,10 @@ static void resolve_expr(Expr *e, Scope *sc) {
 
 static void resolve_def(Def *d, Scope *sc) {
     d->mod = cur_module;
-    Scope *inner = sc;
+    Scope *inner = sc, *saved_lb = label_bounds;
+    int saved_in_def = in_def_body;
+    label_bounds = NULL;
+    in_def_body = 1;
     for (int i = 0; i < d->nparams; i++) {
         d->params[i]->var_index = -1;
         inner = bind(inner, d->params[i]->name, d->params[i]);
@@ -5084,6 +5151,8 @@ static void resolve_def(Def *d, Scope *sc) {
         d->nsubst = t->ndecls;
         d->subst_decl = decls;
         d->subst_expr = exprs;
+        label_bounds = saved_lb;
+        in_def_body = saved_in_def;
         return;
     }
     int open = d->kind == D_FCN && nopen_defs < 64;
@@ -5094,6 +5163,8 @@ static void resolve_def(Def *d, Scope *sc) {
         check_dup_labels(d->body, seen, &nseen, 0);
     }
     nopen_defs -= open;
+    label_bounds = saved_lb;
+    in_def_body = saved_in_def;
 }
 
 /* SANY's linter: a warning for a record field named as a definition or
@@ -5206,17 +5277,22 @@ static void resolve_module(Module *m) {
         for (int k = 0; k < x->ndecls; k++) add_decl(m, x->decls[k]);
     }
     /* A name is defined before it is used; RECURSIVE declares a definition to come. */
+    int pending_rec = 0;
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         cur_module = m;
         if (u->kind == 0) {
             Def *d = u->def;
             if (d->kind == D_CONST || d->kind == D_VAR) {
+                if (pending_rec)
+                    semantic_error(d->where, "A %s declaration may not appear within a recursive definition section.",
+                                   d->kind == D_VAR ? "VARIABLE" : "CONSTANT");
                 d->mod = m;
                 check_outer(m, d);
                 add_sym(m, d->name, d, NULL, 0, 0, d->where);
                 add_decl(m, d);
             } else if (d->kind == D_OP || d->kind == D_FCN || d->kind == D_INST) {
+                if (d->recursive && pending_rec > 0) pending_rec--;
                 resolve_def(d, NULL);
                 check_outer(m, d);
                 add_sym(m, d->name, d, NULL, 0, u->local, d->where);
@@ -5224,6 +5300,8 @@ static void resolve_module(Module *m) {
                 resolve_def(d, NULL);
             }
         } else if (u->kind == 4 && u->def->body) {
+            if (pending_rec)
+                semantic_error(u->def->where, "A named assumption or theorem may not appear within a recursive definition section.");
             /* A theorem's or assumption's name is an operator without parameters. */
             Def *d = NEW(Def);
             *d = *u->def;
@@ -5243,6 +5321,7 @@ static void resolve_module(Module *m) {
             if (def_arity(found) != u->def->arity)
                 semantic_error(found->where, "Definition of %s has different arity than its RECURSIVE declaration.", S(u->def->name));
             found->recursive = 1;
+            pending_rec++;
             add_sym(m, u->def->name, found, NULL, 0, found->local, found->where);
         } else if (u->kind == 1) {
             Def *d = u->def;
@@ -5258,16 +5337,28 @@ static void resolve_module(Module *m) {
                 if (s->npath) memcpy(path + 1, s->path, sizeof(Def *) * (size_t)s->npath);
                 add_sym(m, s->name, s->def, path, s->npath + 1, u->local, NULL);
             }
-        } else if (u->kind == 2 && !u->def) {   /* a named one is resolved with its name */
-            resolve_expr(u->expr, NULL);
-            int seen[64], nseen = 0;
-            check_dup_labels(u->expr, seen, &nseen, 0);
+        } else if (u->kind == 2) {
+            if (pending_rec) semantic_error(u->where, "An ASSUME may not appear within a recursive definition section.");
+            if (!u->def) {   /* a named one is resolved with its name */
+                int saved_in_def = in_def_body;
+                Scope *saved_lb = label_bounds;
+                in_def_body = 0;
+                label_bounds = NULL;
+                resolve_expr(u->expr, NULL);
+                in_def_body = saved_in_def;
+                label_bounds = saved_lb;
+                int seen[64], nseen = 0;
+                check_dup_labels(u->expr, seen, &nseen, 0);
+            }
         } else if (u->kind == 3) {
+            if (pending_rec) semantic_error(NULL, "A submodule may not appear within a recursive definition section.");
             for (int k = 0; k < i; k++)
                 if (m->units[k].kind == 3 && m->units[k].module->name == u->module->name)
                     semantic_error(NULL, "Multiply-defined module '%s': this definition or declaration conflicts with another one.", S(u->module->name));
             u->module->nouter_syms = m->nsyms;
             resolve_module(u->module);
+        } else if (u->kind == 6) {
+            if (pending_rec) semantic_error(NULL, "A THEOREM may not appear within a recursive definition section.");
         }
     }
     for (int i = 0; i < m->nunits; i++) {
@@ -5290,6 +5381,105 @@ static void resolve_module(Module *m) {
    higher levels than its parameters allow is an error. */
 
 static int level_max(Def *d) { return d->level_max ? d->level_max - 1 : 3; }
+
+static void record_arg_min(Def *p, int j, int l) {
+    if (!p || j < 0 || j >= p->arity || l <= 0) return;
+    if (!p->arg_min) p->arg_min = NEWN(int, p->arity);
+    if (l > p->arg_min[j]) p->arg_min[j] = l;
+}
+
+static void record_coparam(Def *p, int j, Def *q) {
+    if (!p || !q || j < 0 || j >= p->arity) return;
+    for (int i = 0; i < p->ncoparams; i++)
+        if (p->coparams[i].arg == j && p->coparams[i].param == q) return;
+    PUSH(p->coparams, p->ncoparams, ((Coparam){j, q}));
+}
+
+/* Records every parameter or module declaration whose level reaches e, as a
+   coparameter constraint on argument j of higher-order parameter/constant p. */
+static void collect_free_params(Expr *e, Def *p, int j) {
+    if (!e) return;
+    switch (e->kind) {
+    case K_BOUND:
+        if (e->def && e->def->kind == D_PARAM) record_coparam(p, j, e->def);
+        return;
+    case K_DECL:
+        if (e->def) record_coparam(p, j, e->def);
+        return;
+    case K_PRIME: case K_UNCHANGED: case K_ENABLED: case K_ALWAYS: case K_EVENTUALLY:
+    case K_LEADSTO: case K_WHILE: case X_SQACT: case X_ANGLEACT: case X_WF: case X_SF:
+    case X_TFORALL: case X_TEXISTS: case X_LAMBDA: case X_OPREF:
+        return;
+    default: break;
+    }
+    for (int i = 0; i < e->n; i++) collect_free_params(e->args[i], p, j);
+    for (int i = 0; i < e->nb; i++) collect_free_params(e->bounds[i].set, p, j);
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) collect_free_params(e->paths[i].keys[k], p, j);
+    if (e->kind == X_LET)
+        for (int i = 0; i < e->ndefs; i++) collect_free_params(e->defs[i]->body, p, j);
+}
+
+/* Checks or propagates the argument-level and coparameter constraints of a
+   higher-order parameter or module constant p instantiated with arg. */
+static void check_ho_arg(Expr *where, const char *ctx_name, int is_inst, Def *p, Expr *arg,
+                         Def **map_decls, Expr **map_exprs, int nmap) {
+    if (!p || p->arity <= 0 || !arg) return;
+    Def *F = arg->def;
+    if (!F) return;
+    if (F->kind == D_OP) check_def_levels(F);
+    if (F->kind == D_PARAM || F->kind == D_CONST) {
+        for (int j = 0; j < p->arity; j++)
+            if (p->arg_min && p->arg_min[j]) record_arg_min(F, j, p->arg_min[j]);
+        for (int k = 0; k < p->ncoparams; k++) {
+            int j = p->coparams[k].arg;
+            Def *q = p->coparams[k].param;
+            Expr *mapped = NULL;
+            for (int m = 0; m < nmap && !mapped; m++) if (map_decls[m] == q) mapped = map_exprs[m];
+            if (mapped) {
+                record_arg_min(F, j, expr_level(mapped));
+                collect_free_params(mapped, F, j);
+            } else {
+                record_coparam(F, j, q);
+            }
+        }
+        return;
+    }
+    if (F->kind != D_OP) return;
+    for (int j = 0; j < p->arity; j++) {
+        int fmax = j < F->nparams ? level_max(F->params[j]) : 3;
+        if (p->arg_min && p->arg_min[j] > fmax) {
+            if (is_inst)
+                semantic_error(where, "Level error in instantiating module '%s':\nThe level of the argument %d of the operator %s \nmust be at least %d.",
+                               ctx_name, j + 1, S(F->name), p->arg_min[j]);
+            semantic_error(where, "Level error in applying operator %s:\nThe permitted level of argument %d of the operator argument %s \nmust be at least %d.",
+                           ctx_name, j + 1, S(F->name), p->arg_min[j]);
+        }
+    }
+    for (int k = 0; k < p->ncoparams; k++) {
+        int j = p->coparams[k].arg;
+        Def *q = p->coparams[k].param;
+        int fmax = j < F->nparams ? level_max(F->params[j]) : 3;
+        Expr *mapped = NULL;
+        for (int m = 0; m < nmap && !mapped; m++) if (map_decls[m] == q) mapped = map_exprs[m];
+        if (mapped) {
+            if (expr_level(mapped) > fmax) {
+                if (is_inst)
+                    semantic_error(where, "Level error when instantiating module '%s':\nThe level of the argument %d of the operator %s \nmust be at most %d.",
+                                   ctx_name, j, S(p->name), fmax);
+                semantic_error(where, "Level error in applying operator %s:\nThe level of argument %d exceeds the maximum level allowed by the operator.",
+                               ctx_name, j + 1);
+            }
+            check_levels(mapped, fmax);
+        } else if (q->kind == D_PARAM || q->kind == D_CONST || q->kind == D_VAR) {
+            if (q->kind == D_VAR && 1 > fmax)
+                semantic_error(where, "Level error in applying operator %s:\nThe level of argument %d exceeds the maximum level allowed by the operator.",
+                               ctx_name, j + 1);
+            if (fmax < level_max(q)) q->level_max = fmax + 1;
+        }
+    }
+}
 
 /* Argument i of op in e, where its level may be at most cap; e itself may be at most max. */
 static void check_argument(Expr *e, const char *op, int i, Expr *a, int cap, int max) {
@@ -5358,6 +5548,16 @@ static void check_levels(Expr *e, int max) {
     case K_BOUND: case K_DECL:
         if (max < level_max(d)) d->level_max = max + 1;
         return;
+    case K_PARAMCALL:
+        if (d->arity > 0) {
+            for (int i = 0; i < e->n && i < d->arity; i++) {
+                record_arg_min(d, i, expr_level(e->args[i]));
+                collect_free_params(e->args[i], d, i);
+                check_levels(e->args[i], max);
+            }
+        }
+        if (max < level_max(d)) d->level_max = max + 1;
+        return;
     case K_PRIME: case K_UNCHANGED: check_operands(e, 1, 1, max); return;
     case K_ENABLED: check_operands(e, 2, 2, 2); return;   /* a state predicate of any action */
     case K_CDOT: check_operands(e, 2, 2, max); return;
@@ -5367,11 +5567,18 @@ static void check_levels(Expr *e, int max) {
         check_def_levels(d);
         for (int i = 0; i < e->n; i++)
             check_argument(e, S(d->name), i, e->args[i], i < d->nparams ? level_max(d->params[i]) : 3, max);
+        for (int i = 0; i < e->n && i < d->nparams; i++)
+            if (d->params[i]->arity > 0)
+                check_ho_arg(e, S(d->name), 0, d->params[i], e->args[i], d->params, e->args, e->n < d->nparams ? e->n : d->nparams);
         for (int k = 0; e->kind == K_INSTCALL && k < e->ndefs; k++) {
             Def *in = e->defs[k];
             check_def_levels(in);
             for (int i = 0; i < e->segs[k].n && i < in->nparams; i++)
                 check_argument(e, S(in->name), i, e->segs[k].args[i], level_max(in->params[i]), max);
+            for (int i = 0; i < e->segs[k].n && i < in->nparams; i++)
+                if (in->params[i]->arity > 0)
+                    check_ho_arg(e, S(in->name), 0, in->params[i], e->segs[k].args[i], in->params, e->segs[k].args,
+                                 e->segs[k].n < in->nparams ? e->segs[k].n : in->nparams);
         }
         return;
     case X_LET:
@@ -5424,6 +5631,8 @@ static void check_def_levels(Def *d) {
                 semantic_error(d->where, "Level error in instantiating module '%s':\nThe level of the expression or operator substituted for '%s' \nmust be at most %d.",
                                S(d->target->name), S(decl->name), level_max(decl));
             check_levels(x, level_max(decl));
+            if (decl->arity > 0)
+                check_ho_arg(d->where, S(d->target->name), 1, decl, x, d->subst_decl, d->subst_expr, d->nsubst);
         }
         return;
     }
@@ -14471,7 +14680,7 @@ static CtxNames context_names(Module *m) {
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         Def *d = u->def;
-        if (u->kind == 2) continue;
+        if (u->kind == 2 || u->kind == 5 || u->kind == 6) continue;
         if (u->kind == 3) { ctx_put(&c, (CtxName){S(u->module->name), 1, 0, NULL}); continue; }
         if (u->kind == 1 || d->kind == D_INST) {
             /* An instance brings its module's definitions, then its theorems
@@ -24117,9 +24326,13 @@ static void fmt_slice(Fmt *f, int start, int end) {
 }
 
 static int fmt_has_comment(Fmt *f, int start, int end) {
-    for (int i = f->ci; i < nfmt_comments && fmt_comments[i].start < end; i++)
-        if (fmt_comments[i].start >= start) return 1;
-    return 0;
+    int lo = f->ci, hi = nfmt_comments;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (fmt_comments[mid].start < start) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < nfmt_comments && fmt_comments[lo].start < end;
 }
 
 static int expr_pos(Expr *e) { return e->ppos && e->ppos < e->pos ? e->ppos : e->pos; }
@@ -25079,7 +25292,7 @@ static void reset_check(void) {
     Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
     Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(fmt_comments); Z(nfmt_comments); Z(fmt_mode); Z(fmt_group); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
     Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
-    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(lint); Z(level_probe); Z(every_argument);
+    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(in_def_body); Z(label_bounds); Z(lint); Z(level_probe); Z(every_argument);
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
     Z(primed); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);

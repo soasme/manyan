@@ -1,6 +1,8 @@
 """Fuzz manyan.
 
 usage: fuzz.py crash ENGINE [--runs N] [--seed S]
+       fuzz.py fmt ENGINE [--runs N] [--seed S]
+       fuzz.py lint ENGINE [--runs N] [--seed S]
        fuzz.py diff ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py sim ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py check ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
@@ -10,6 +12,15 @@ crash: mutates the models of tests/spec and runs the engine (a sanitizer
 build) on each, half of them as random simulations (-simulate or
 -generate); it must exit with one of its statuses, without a signal or a
 sanitizer report.
+
+fmt: mutates modules from tests/fmt, tests/lint and tests/spec and runs
+`ENGINE -fmt` (a sanitizer build) on each; it must exit 0 or 150 without
+a signal or sanitizer report, and every module that formats must be
+idempotent and preserve all comments.
+
+lint: mutates modules from tests/lint and tests/spec and runs
+`ENGINE -lint` (a sanitizer build) on each; it must exit 0 or 150 without
+a signal or sanitizer report.
 
 sim: runs models of tests/spec as random simulations (-simulate or
 -generate, sometimes with -continue), with random seeds and depths, with the engine and with TLC; they must print the same.
@@ -416,9 +427,85 @@ def live(engine, tlc, runs, seed):
     return failed
 
 
+def fuzz_fmt(engine, runs, seed):
+    import fmt_runner
+    rng = random.Random(seed)
+    seeds = sorted(
+        list((ROOT / "tests/fmt").glob("*.tla"))
+        + list((ROOT / "tests/lint").glob("*.tla"))
+        + [p for p in (ROOT / "tests/spec").rglob("*.tla") if p.suffixes == [".tla"] and ".files" not in str(p)]
+    )
+    failed = 0
+    for i in range(runs):
+        path = rng.choice(seeds)
+        text = mutate(path.read_text(), rng)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / path.name).write_text(text)
+            try:
+                done = subprocess.run(engine + ["-fmt", path.name], cwd=directory, timeout=10,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+            except subprocess.TimeoutExpired:
+                continue
+            code, raw = done.returncode, done.stdout
+            out = fmt_runner.strip_noise(raw)
+            bad = code not in (0, 150) or "runtime error" in raw or "Sanitizer" in raw
+            reason = f"exit {code}"
+            if not bad and code == 0:
+                if fmt_runner.extract_comments(text) != fmt_runner.extract_comments(out):
+                    bad, reason = True, "comments changed"
+                else:
+                    (directory / path.name).write_text(out)
+                    done2 = subprocess.run(engine + ["-fmt", path.name], cwd=directory, timeout=10,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+                    out2 = fmt_runner.strip_noise(done2.stdout)
+                    if done2.returncode != 0 or out2 != out:
+                        bad, reason = True, f"not idempotent (exit {done2.returncode})"
+            if bad:
+                failed += 1
+                kept = ROOT / ".obj" / f"crash-fmt-{seed}-{i}.tla"
+                kept.parent.mkdir(exist_ok=True)
+                kept.write_text(text)
+                print(f"FAIL fmt {path.relative_to(ROOT)} ({reason}), kept as {kept.relative_to(ROOT)}")
+                print(raw[-1000:])
+    print(f"{runs - failed}/{runs} mutated modules formatted cleanly")
+    return failed
+
+
+def fuzz_lint(engine, runs, seed):
+    rng = random.Random(seed)
+    seeds = sorted(
+        list((ROOT / "tests/lint").glob("*.tla"))
+        + [p for p in (ROOT / "tests/spec").rglob("*.tla") if p.suffixes == [".tla"] and ".files" not in str(p)]
+    )
+    failed = 0
+    for i in range(runs):
+        path = rng.choice(seeds)
+        text = mutate(path.read_text(), rng)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            spec_runner.stage(path, directory)
+            (directory / path.name).write_text(text)
+            try:
+                done = subprocess.run(engine + ["-lint", path.stem], cwd=directory, timeout=10,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+            except subprocess.TimeoutExpired:
+                continue
+            code, out = done.returncode, done.stdout
+            if code not in (0, 150) or "runtime error" in out or "Sanitizer" in out:
+                failed += 1
+                kept = ROOT / ".obj" / f"crash-lint-{seed}-{i}.tla"
+                kept.parent.mkdir(exist_ok=True)
+                kept.write_text(text)
+                print(f"FAIL lint {path.relative_to(ROOT)} exit {code}, kept as {kept.relative_to(ROOT)}")
+                print(out[-1000:])
+    print(f"{runs - failed}/{runs} mutated modules linted without crashing")
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["crash", "diff", "sim", "check", "live"])
+    parser.add_argument("mode", choices=["crash", "fmt", "lint", "diff", "sim", "check", "live"])
     parser.add_argument("engine")
     parser.add_argument("--tlc")
     parser.add_argument("--runs", type=int, default=200)
@@ -427,6 +514,10 @@ def main():
     engine = [str(Path(args.engine).resolve())]
     if args.mode == "crash":
         return 1 if crash(engine, args.runs, args.seed) else 0
+    if args.mode == "fmt":
+        return 1 if fuzz_fmt(engine, args.runs, args.seed) else 0
+    if args.mode == "lint":
+        return 1 if fuzz_lint(engine, args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
     return 1 if {"sim": sim, "check": check, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0

@@ -80,10 +80,18 @@ def extract_comments(src):
     return out
 
 
+NOISE = re.compile(r"^(GuardMalloc\[|Sysctl \(debug\.toggle_address_reuse\))")
+
+
+def strip_noise(text):
+    return "".join(line for line in text.splitlines(True) if not NOISE.match(line))
+
+
 def run_fmt(command, path, directory, memory):
     _, output, code, killed = guarded(command + ["-fmt", path.name], directory, 60, memory, b"")
     if killed:
         return None, f"{killed}\n"
+    output = strip_noise(output)
     if code != 0:
         if code == 150 and "***Parse Error***" in output:
             return f"PARSE ERROR\nexit {code}\n", output
