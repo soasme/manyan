@@ -10,6 +10,7 @@ module with a syntax error). For each valid module, `-fmt` must:
   3. with --oracle, produce a module accepted by SANY.
 """
 import argparse
+import re
 import shlex
 import shutil
 import sys
@@ -20,6 +21,63 @@ from pathlib import Path
 from spec_runner import ROOT, guarded, workers
 
 TESTS = ROOT / "tests/fmt"
+
+
+def extract_comments(src):
+    """Comments inside the outermost module, with trailing line spaces trimmed."""
+    m = re.search(r"----+[ \t]*MODULE\b", src)
+    if not m:
+        return []
+    i, n = m.start(), len(src)
+    out, depth = [], 0
+    while i < n:
+        if src.startswith("----", i):
+            j = i
+            while j < n and src[j] == "-":
+                j += 1
+            k = j
+            while k < n and src[k] in " \t":
+                k += 1
+            if src.startswith("MODULE", k) and (k + 6 == n or not (src[k + 6].isalnum() or src[k + 6] == "_")):
+                depth += 1
+            i = j
+            continue
+        if src.startswith("====", i):
+            while i < n and src[i] == "=":
+                i += 1
+            depth -= 1
+            if depth == 0:
+                break
+            continue
+        if src[i] == '"':
+            i += 1
+            while i < n and src[i] != '"':
+                i += 2 if src[i] == "\\" else 1
+            i += 1
+            continue
+        if src.startswith("\\*", i):
+            s = i
+            while i < n and src[i] != "\n":
+                i += 1
+            out.append(src[s:i].rstrip())
+            continue
+        if src.startswith("(*", i):
+            s, cd = i, 0
+            while i < n:
+                if src.startswith("(*", i):
+                    cd += 1
+                    i += 2
+                elif src.startswith("*)", i):
+                    cd -= 1
+                    i += 2
+                    if cd == 0:
+                        break
+                else:
+                    i += 1
+            out.append("\n".join(line.rstrip() for line in src[s:i].splitlines()))
+            continue
+        i += 1
+    return out
 
 
 def run_fmt(command, path, directory, memory):
@@ -70,6 +128,8 @@ def main():
             if actual != expected:
                 notes.append("output differs")
             if actual is not None and not actual.startswith("PARSE ERROR\n"):
+                if extract_comments(path.read_text()) != extract_comments(actual):
+                    notes.append("comments changed")
                 (directory / path.name).write_text(actual)
                 again, _ = run_fmt(engine, path, directory, memory)
                 if again != actual:

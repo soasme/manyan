@@ -1,0 +1,22 @@
+---- MODULE instances ----
+EXTENDS Naturals
+CONSTANT N, F(_), _ ++ _, -. _, _ ^+
+VARIABLE x
+
+---- MODULE Base ----
+CONSTANT A, B, Op(_, _)
+VARIABLE v
+Calc == Op(A, B) + v
+====
+
+INSTANCE Base WITH A <- N, B <- 1, Op <- +, v <- x
+
+LOCAL INSTANCE Base WITH A <- N, B <- 2, Op <- LAMBDA a, b : a + b, v <- x
+
+Named == INSTANCE Base WITH A <- N, B <- 3, Op <- *, v <- x
+
+Param(p, q) ==
+    INSTANCE Base WITH A <- p + q + N + 1000000, B <- p * q + N + 2000000, Op <- LAMBDA a, b : a + b, v <- x
+
+LOCAL LocalNamed(k) == INSTANCE Base WITH A <- k, B <- N, Op <- +, v <- x
+====

@@ -1,0 +1,79 @@
+---------------------------------- MODULE real_world_bfs ----------------------------------
+(* The safety search of Manyan (docs/standards/tla2.md, 10.4) on an explicit
+   state graph. States are expanded level by level, in any order within a
+   level; the search stops at the first state that violates the invariant
+   or has no successor. It reports the counts Manyan prints: states generated
+   (with duplicates), distinct states and the depth, or the length of the
+   trace to the error. *)
+EXTENDS Naturals, FiniteSets
+
+CONSTANT Graphs   \* a set of [succ, init, bad]: succ[n] are n's successors
+
+VARIABLES g, seen, cur, nxt, level, generated, result, trace
+vars == <<g, seen, cur, nxt, level, generated, result, trace>>
+
+Init == /\ g \in Graphs
+        /\ seen = [n \in g.init |-> 1]
+        /\ generated = Cardinality(g.init)
+        /\ level = 1
+        /\ nxt = {}
+        /\ IF g.init \cap g.bad # {}
+           THEN cur = {} /\ result = "invariant" /\ trace = 1
+           ELSE cur = g.init /\ result = "running" /\ trace = 0
+
+Expand(n) ==
+    LET new == g.succ[n] \ DOMAIN seen
+    IN  /\ cur' = cur \ {n}
+        /\ generated' = generated + Cardinality(g.succ[n])
+        /\ seen' = [m \in DOMAIN seen \cup new |-> IF m \in new THEN level + 1 ELSE seen[m]]
+        /\ nxt' = nxt \cup new
+        /\ CASE g.succ[n] = {}    -> result' = "deadlock" /\ trace' = level
+             [] new \cap g.bad # {} -> result' = "invariant" /\ trace' = level + 1
+             [] OTHER              -> UNCHANGED <<result, trace>>
+        /\ UNCHANGED <<g, level>>
+
+Advance == /\ cur = {} /\ nxt # {}
+           /\ cur' = nxt /\ nxt' = {} /\ level' = level + 1
+           /\ UNCHANGED <<g, seen, generated, result, trace>>
+
+Finish == /\ cur = {} /\ nxt = {}
+          /\ result' = "ok"
+          /\ UNCHANGED <<g, seen, cur, nxt, level, generated, trace>>
+
+Next == IF result = "running"
+        THEN (\E n \in cur : Expand(n)) \/ Advance \/ Finish
+        ELSE UNCHANGED vars
+
+-------------------------------------------------------------------------------
+(* What the search must find, stated without it. Within[k] holds the states
+   reachable in at most k steps; Dist(n) is n's level in the search. *)
+Nodes == DOMAIN g.succ
+Within[k \in 0..Cardinality(Nodes)] ==
+    IF k = 0 THEN g.init ELSE Within[k - 1] \cup UNION {g.succ[m] : m \in Within[k - 1]}
+Reach == Within[Cardinality(Nodes)]
+Dist(n) == 1 + CHOOSE k \in 0..Cardinality(Nodes) : n \in Within[k] /\ (k = 0 \/ n \notin Within[k - 1])
+Dead == {n \in Reach : g.succ[n] = {}}
+Bad == Reach \cap g.bad
+Sum(f, S) == LET s[T \in SUBSET S] == IF T = {} THEN 0 ELSE LET x == CHOOSE x \in T : TRUE IN f[x] + s[T \ {x}]
+             IN s[S]
+
+Complete ==
+    result = "ok" =>
+        /\ DOMAIN seen = Reach
+        /\ Bad = {} /\ Dead = {}
+        /\ generated = Cardinality(g.init) + Sum([n \in Reach |-> Cardinality(g.succ[n])], Reach)
+        /\ level = 1 + CHOOSE d \in 0..Cardinality(Nodes) : \A n \in Reach : Dist(n) <= d + 1 /\ \E m \in Reach : Dist(m) = d + 1
+
+Shortest ==
+    /\ result = "invariant" => /\ \E b \in Bad : Dist(b) = trace
+                               /\ \A b \in Bad : Dist(b) >= trace
+                               /\ \A d \in Dead : Dist(d) >= trace - 1
+    /\ result = "deadlock" =>  /\ \E d \in Dead : Dist(d) = trace
+                               /\ \A d \in Dead : Dist(d) >= trace
+                               /\ \A b \in Bad : Dist(b) > trace
+
+Levels == \A n \in DOMAIN seen : seen[n] = Dist(n)
+
+Terminates == <>(result # "running")
+Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
+================================================================================

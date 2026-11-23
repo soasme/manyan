@@ -1,0 +1,23 @@
+---- MODULE wrapping ----
+EXTENDS Naturals, Sequences, FiniteSets, TLC, Bags
+
+CONSTANTS AlphaParam, BetaParam, GammaParam, DeltaParam, EpsilonParam, ZetaParam, EtaParam
+
+VARIABLES stateOne, stateTwo, stateThree, stateFour, stateFive, stateSix, stateSeven
+
+LongSet == {stateOne, stateTwo, stateThree, stateFour, stateFive, stateSix, stateSeven, AlphaParam, BetaParam}
+
+LongTuple == <<stateOne, stateTwo, stateThree, stateFour, stateFive, stateSix, stateSeven, AlphaParam>>
+
+LongRecord == [firstField |-> stateOne, secondField |-> stateTwo, thirdField |-> stateThree, fourthField |-> stateFour]
+
+LongRcdSet == [firstField : AlphaParam, secondField : BetaParam, thirdField : GammaParam, fourthField : DeltaParam]
+
+LongFcn == [item \in AlphaParam \cup BetaParam |-> IF item \in GammaParam THEN stateOne + stateTwo ELSE stateThree + stateFour]
+
+Call(a, b, c, d, e, f) == a + b + c + d + e + f
+
+LongCall == Call(stateOne + stateTwo, stateThree + stateFour, stateFive + stateSix, stateSeven, AlphaParam, BetaParam)
+
+LongQuant == \A item \in AlphaParam, other \in BetaParam : item \in GammaParam => other \in DeltaParam /\ stateOne = stateTwo
+====

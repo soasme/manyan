@@ -1,0 +1,19 @@
+---- MODULE temporal_actions ----
+EXTENDS Naturals
+VARIABLE x, y, f, r
+
+vars == <<x, y>>
+Next == x' = x + 1 /\ UNCHANGED y
+State(p) == x + p
+
+SubIdent == [Next]_x
+SubTuple == [Next]_<<x, y>>
+SubApply == [Next]_(f[1])
+SubField == [Next]_(r.a)
+SubCall == [Next]_(State(1))
+AngleAct == <<Next>>_vars
+Fairness == WF_vars(Next) /\ SF_<<x, y>>(Next) /\ WF_(f[1])(Next)
+Temporal == []<> (x = 0) /\ <>[] (x = 1) /\ (x = 0 ~> x = 1) /\ (x = 0 -+-> y = 0)
+EnabledOp == ~ENABLED (x' = x) /\ ENABLED <<Next>>_vars
+QuantTemp == (\AA a : a = 0) /\ (\EE b : b = 1)
+====

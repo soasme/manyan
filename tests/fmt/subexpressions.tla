@@ -1,0 +1,24 @@
+---- MODULE subexpressions ----
+EXTENDS Naturals
+
+Target(x) ==
+    LET d == x + 1
+    IN  lab :: \A y \in {d} : y = x + 1
+
+Apply2(F(_, _), a, b) == F(a, b)
+Use1 == Target(1)!lab!1
+Use2 == Target(1)!lab!(2)
+Use3 == Apply2(Target!lab!@, 1, 2)
+Use4 == Target(1)!:!d!<<
+Use5 == Target(1)!:!d!>>
+
+---- MODULE Ops ----
+a ++ b == a + b
+a !! b == a + b
+-. a == 0 - a
+a ^+ == a + 1
+====
+
+I == INSTANCE Ops
+UseOps == I!++(1, 2) + I ! !!(1, 2) + I!-.(1) + I!^+(1)
+====

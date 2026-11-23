@@ -1,0 +1,30 @@
+---- MODULE proofs_theorems ----
+EXTENDS Naturals
+CONSTANT N
+VARIABLE x
+
+ASSUME N \in Nat
+ASSUMPTION A1 == N \geq 0
+AXIOM Ax1 == TRUE
+
+THEOREM T1 == x = x
+LEMMA L1 == 1 + 1 = 2
+  OBVIOUS
+PROPOSITION P1 == TRUE
+  BY DEF T1
+COROLLARY C1 ==
+  ASSUME NEW a \in Nat
+  PROVE  a \in Nat
+PROOF
+  OBVIOUS
+
+USE DEF T1
+HIDE L1
+
+THEOREM T2 == x = 0 => x = 0
+<1>1. ASSUME x = 0
+      PROVE  x = 0
+  OBVIOUS
+<1>2. QED
+  BY <1>1
+====
