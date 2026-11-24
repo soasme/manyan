@@ -1,0 +1,7 @@
+Error: Attempted to check if the value:
+[a |-> 1, b |-> 2]
+is an element of a set of 2-tuples.
+
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 0.
+exit 75

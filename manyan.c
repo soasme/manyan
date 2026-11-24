@@ -1215,9 +1215,9 @@ static int veq(Value *a, Value *b) {
         if (a->made == MADE_RECORD && !as_record(b)) equality_error(a, b);
         if (a->n != b->n) return 0;
         fp_enter(src);
-        for (int i = 0; i < a->n && same; i++)
-            same = ((a->kind == V_TUPLE && b->kind == V_TUPLE) || veq(fcn_key(a, i), fcn_key(b, i)))
-                && veq(a->u.fcn.vals[i], b->u.fcn.vals[i]);
+        if (a->kind != V_TUPLE || b->kind != V_TUPLE)
+            for (int i = 0; i < a->n && same; i++) same = veq(fcn_key(a, i), fcn_key(b, i));
+        for (int i = 0; i < a->n && same; i++) same = veq(a->u.fcn.vals[i], b->u.fcn.vals[i]);
         fp_leave(src);
         return same;
     }
@@ -1315,12 +1315,21 @@ static int lazy_is_infinite(Value *s) {
     switch (s->lazy) {
     case L_NAT: case L_INT: case L_STRING: case L_SEQ: case L_ANY: return 1;
     case L_SUBSET: case L_FILTER: case L_UNION: return set_is_infinite(s->u.l.a);
-    case L_FCNSET: case L_CUP: return set_is_infinite(s->u.l.a) || set_is_infinite(s->u.l.b);
+    case L_FCNSET:
+        if (set_is_infinite(s->u.l.a)) return 1;
+        return set_size(s->u.l.a) != 0 && set_is_infinite(s->u.l.b);
+    case L_CUP: return set_is_infinite(s->u.l.a) || set_is_infinite(s->u.l.b);
     case L_CAP: return set_is_infinite(s->u.l.a) && set_is_infinite(s->u.l.b);
     case L_DIFF: return set_is_infinite(s->u.l.a);
-    case L_RCDSET: case L_TIMES:
-        for (int i = 0; i < s->n; i++) if (set_is_infinite(s->u.l.names[s->n + i])) return 1;
-        return 0;
+    case L_RCDSET: case L_TIMES: {
+        int inf = 0;
+        for (int i = 0; i < s->n; i++) {
+            Value *p = s->u.l.names[s->n + i];
+            if (set_is_infinite(p)) inf = 1;
+            else if (set_size(p) == 0) return 0;
+        }
+        return inf;
+    }
     }
     return 0;
 }
@@ -1333,7 +1342,7 @@ static Value *mk_fcn_from(List *keys, List *vals);
    standard order, the last key's value varying fastest, until fn returns
    nonzero. The function is one value, reused: fn copies it to keep it. */
 static int each_function(Value **dom, int nd, Value *rng, int range, int (*fn)(Value *f, void *data), void *data) {
-    rng = enumerate(rng);
+    if (nd) rng = enumerate(rng);
     if (nd && !rng->n) return 0;
     Value *f = NEW(Value);
     f->kind = V_FCN;
@@ -1372,6 +1381,14 @@ static Value **product_sets(Value *s, int64_t *total) {
     int n = s->n;
     Value **sets = NEWN(Value *, n);
     *total = 1;
+    for (int i = 0; i < n; i++) {
+        Value *part = s->u.l.names[n + i];
+        if (!set_is_infinite(part) && set_size(part) == 0) {
+            *total = 0;
+            for (int j = 0; j < n; j++) sets[j] = mk_set(0);
+            return sets;
+        }
+    }
     for (int i = 0; i < n; i++) {
         Value *part = s->u.l.names[n + i];
         if (set_is_infinite(part) && s->lazy == L_TIMES)
@@ -1468,7 +1485,7 @@ static Value *fcnset_domain(Value *s) {
     if (user_set(s->u.l.a))
         fail("Attempted to enumerate a set of the form [D -> R],but the domain D:\n%s\ncannot be enumerated.", pretty(s->u.l.a));
     Value *dom = enumerate(s->u.l.a);
-    if (set_is_infinite(s->u.l.b))
+    if (dom->n && set_is_infinite(s->u.l.b))
         fail("Attempted to enumerate a set of the form [D -> R],but the range R:\n%s\ncannot be enumerated.", pretty(s->u.l.b));
     return dom;
 }
@@ -1764,14 +1781,22 @@ static int64_t set_size(Value *s) {
         return (int64_t)1 << k;
     }
     if (s->lazy == L_FCNSET) {
+        if ((k = set_size(s->u.l.a)) < 0) return -1;
+        if (k == 0) return 1;
         int64_t r = set_size(s->u.l.b);
-        if ((k = set_size(s->u.l.a)) < 0 || r < 0) return -1;
+        if (r < 0) return -1;
         for (; k > 0 && n; k--) if ((n *= r) > 2147483647) return -1;
         return n;
     }
-    for (int i = 0; i < s->n; i++)
-        if ((k = set_size(s->u.l.names[s->n + i])) < 0 || (n *= k) > 2147483647) return -1;
-    return n;
+    int overflow = 0;
+    for (int i = 0; i < s->n; i++) {
+        if (set_is_infinite(s->u.l.names[s->n + i])) { overflow = 1; continue; }
+        k = set_size(s->u.l.names[s->n + i]);
+        if (k == 0) return 0;
+        if (k < 0) overflow = 1;
+        else if (!overflow && (n *= k) > 2147483647) overflow = 1;
+    }
+    return overflow ? -1 : n;
 }
 
 static int set_member(Value *v, Value *s);
@@ -6462,7 +6487,8 @@ static Value *filter_member_test(Value *s, Value *v) {
     Bound *b = &e->bounds[0];
     Env *env = s->u.l.env;
     if (b->tuple) {
-        if (!is_fcn(v) || v->n != b->n) return FALSEV;
+        if (!is_fcn(v) || !fcn_is_tuple(v) || v->n != b->n)
+            fail("Attempted to check if the value:\n%s\nis an element of a set of %d-tuples.", pretty(v), b->n);
         for (int j = 0; j < b->n; j++) env = mk_binding(b->defs[j], v->u.fcn.vals[j], env);
     } else {
         env = mk_binding(b->defs[0], v, env);
@@ -6565,6 +6591,8 @@ static void warn_except(Expr *e) {
     warning(b.s + 1);
 }
 
+static Def at_def;   /* lexical binding key for @ in EXCEPT */
+
 static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *where) {
     Value *key = p->fields[i] >= 0 ? mk_str(p->fields[i]) : eval(p->keys[i], c);
     if (!is_fcn(f) && f->kind != V_LAMBDA)
@@ -6572,7 +6600,7 @@ static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *wh
     if (f->kind == V_TUPLE && key->kind != V_INT) fail("Attempted to access tuple at a non integral index: %s", pretty(key));
     if (f->kind == V_FCN && f->made == MADE_RECORD && key->kind != V_STR) fail("Attempted to access record by a non-string argument: %s", pretty(key));
     int k = f->kind == V_LAMBDA ? -1 : fcn_index(f, key);
-    if (f->kind != V_LAMBDA && k < 0) { warn_except(where->args[0]); return f; }
+    if (f->kind == V_LAMBDA ? !set_member(key, f->u.l.a) : k < 0) { warn_except(where->args[0]); return f; }
     Value *old = k >= 0 ? f->u.fcn.vals[k] : fcn_apply(f, key, where);
     Value *nv;
     if (i + 1 < p->n) {
@@ -6580,7 +6608,7 @@ static Value *except_update(Value *f, Path *p, int i, Expr *val, Ctx c, Expr *wh
     } else {
         Value *saved = at_value;
         at_value = old;
-        nv = eval(val, c);
+        nv = eval(val, (Ctx){mk_binding(&at_def, old, c.env), c.inst});
         at_value = saved;
     }
     return fcn_update(f, k, key, nv);
@@ -7271,7 +7299,8 @@ EVAL(ev_bool) { UNUSED_C; return BOOLV(e->num); }
 EVAL(ev_boolean) { UNUSED_C; (void)e; return boolean_set; }
 EVAL(ev_stringset) { UNUSED_C; (void)e; return mk_lazy(L_STRING); }
 EVAL(ev_at) {
-    UNUSED_C;
+    Env *b = env_find(c.env, &at_def);
+    if (b) return b->v;
     if (!at_value) fail_at(e, "@ used outside an EXCEPT.");
     return at_value;
 }
@@ -7393,16 +7422,7 @@ static Value *eval_operator_arg(Expr *a, Ctx c) {
         return force(b);
     }
     if (a->kind == K_PARAMCALL && a->n == 0) return decl_value(a->def, c, a);
-    if (a->kind == K_INSTCALL && a->n == 0) {
-        Inst *inst = c.inst;
-        for (int i = 0; i < a->ndefs; i++) {
-            Inst *in = NEW(Inst);
-            in->def = a->defs[i];
-            in->parent = inst;
-            inst = in;
-        }
-        return mk_oper(a->def, (Ctx){NULL, inst});
-    }
+    if (a->kind == K_INSTCALL && a->n == 0) return mk_oper(a->def, (Ctx){NULL, instance_chain(a, c)});
     return eval(a, c);
 }
 
@@ -7922,7 +7942,7 @@ NATIVE(n_append) {
     Value *t = mk_tuple(x->n + 1);
     for (int i = 0; i < x->n; i++) t->u.fcn.vals[i] = x->u.fcn.vals[i];
     t->u.fcn.vals[x->n] = a[1];
-    if (x->u.fcn.hash) t->u.fcn.hash = x->u.fcn.hash + pair_hash(t, x->n, a[1]);
+    if (x->u.fcn.hash && a[1]->kind <= V_MODEL) t->u.fcn.hash = x->u.fcn.hash + pair_hash(t, x->n, a[1]);
     return t;
 }
 
@@ -9545,8 +9565,14 @@ static int unchanged_now(Expr *e, Ctx c) {
         for (int i = 0; i < e->n; i++) if (!unchanged_now(e->args[i], c)) return 0;
         return 1;
     }
-    if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->local != 2)
-        return unchanged_now(e->def->body, (Ctx){NULL, c.inst});
+    if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
+        if (e->def->local == 2) {
+            Env *b = env_find(c.env, e->def);
+            if (b) return unchanged_now(e->def->body, (Ctx){b->ctx_env, b->ctx_inst});
+        } else {
+            return unchanged_now(e->def->body, (Ctx){NULL, c.inst});
+        }
+    }
     if (e->kind == K_DECL) {
         Expr prime = {.kind = K_PRIME, .n = 1, .args = &e};
         int var = assignable(&prime, c);
@@ -9565,8 +9591,14 @@ static int gen_unchanged(Expr *e, Ctx c, Cont *k) {
         if (e->n == 0) return gen_cont(k);
         return gen_unchanged(e->args[0], c, k);
     }
-    if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native && e->def->local != 2)
-        return gen_unchanged(e->def->body, (Ctx){NULL, c.inst}, k);
+    if (e->kind == K_CALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
+        if (e->def->local == 2) {
+            Env *b = env_find(c.env, e->def);
+            if (b) return gen_unchanged(e->def->body, (Ctx){b->ctx_env, b->ctx_inst}, k);
+        } else {
+            return gen_unchanged(e->def->body, (Ctx){NULL, c.inst}, k);
+        }
+    }
     if (e->kind == K_BOUND) {   /* a parameter: of its argument */
         Env *b = env_find(c.env, e->def);
         if (b && b->e) return gen_unchanged(b->e, (Ctx){b->ctx_env, b->ctx_inst}, k);
@@ -9845,7 +9877,6 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native || d->nparams != e->n) break;
-        if (e->n == 0 && def_level(d) == 0) break;   /* TLC computes it as a constant */
         if (d->local == 2) {
             Env *b = env_find(c.env, d);
             if (!b) break;
@@ -9859,6 +9890,7 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
             eval_depth--;
             return r;
         }
+        if (e->n == 0 && def_level(d) == 0) break;   /* TLC computes it as a constant */
         Env *env = NULL;
         for (int i = 0; i < e->n; i++) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
@@ -9870,6 +9902,24 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         return r;
     }
     case K_PARAMCALL: {
+        if (e->def->kind == D_PARAM) {
+            Env *b = env_find(c.env, e->def);
+            if (!b) break;
+            Value *op = force(b);
+            if (op->kind != V_OPER || op->u.op.table) break;
+            Def *d = op->u.op.def;
+            if (d->replacement) d = d->replacement;
+            if (d->kind != D_OP || d->native || d->nparams != e->n) break;
+            Env *env = op->u.op.env;
+            for (int i = 0; i < e->n; i++) {
+                if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
+                else env = mk_arg(d->params[i], e->args[i], c, env);
+            }
+            deeper();
+            int r = gen(d->body, (Ctx){env, op->u.op.inst}, k);
+            eval_depth--;
+            return r;
+        }
         /* A constant operator that stands for a definition is a call of it. */
         if (e->def->kind != D_CONST) break;
         Ctx at = {NULL, NULL};
@@ -10244,6 +10294,9 @@ static int arg_pure(Expr *e, Env *env) {
         for (int i = 0; i < e->ndefs; i++) if (e->defs[i]->nsubst) return 0;
     }
     for (int i = 0; i < e->n; i++) if (!arg_pure(e->args[i], env)) return 0;
+    if (e->kind == X_EXCEPT)
+        for (int i = 0; i < e->n - 1; i++)
+            for (int k = 0; k < e->paths[i].n; k++) if (!arg_pure(e->paths[i].keys[k], env)) return 0;
     for (int i = 0; i < e->nseg; i++)
         for (int k = 0; k < e->segs[i].n; k++) if (!arg_pure(e->segs[i].args[k], env)) return 0;
     return 1;
@@ -16068,6 +16121,11 @@ static void collect_fairness(Expr *e, Ctx c) {
         if (eval_bool(e->args[0], c)) collect_fairness(e->args[1], c);
         return;
     }
+    if (e->kind == X_IF && expr_level(e->args[0]) == 0) {
+        collect_fairness(eval_bool(e->args[0], c) ? e->args[1] : e->args[2], c);
+        return;
+    }
+    if (e->kind == X_BOOL && e->num) return;
     if (e->kind == K_CALL && e->def->kind == D_OP && !e->def->native) {
         Env *env = NULL;
         for (int i = 0; i < e->n; i++) env = mk_thunk(e->def->params[i], e->args[i], c, env);
