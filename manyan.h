@@ -60,7 +60,8 @@ typedef struct {
     const char *trace_file;  /* simulation: write behavior N to FILE_0_N, or NULL (-simulate file=FILE) */
     const char *const *properties;  /* Java system properties, "k=v" each, NULL-terminated (-Dk=v) */
     int symbolic;        /* check behaviors of up to length steps with a solver, as Apalache does (-symbolic) */
-    long length;         /* symbolic checking: the steps in a behavior, 0 for 10 (-length) */
+    long length;         /* symbolic checking: the steps in a behavior, 0 for 10 unless length_given (-length) */
+    int length_given;
     const char *cinit;   /* symbolic checking: the operator that chooses the constants the configuration leaves, as Apalache's --cinit (-cinit) */
     long max_error;      /* symbolic checking: the invariant violations to find, 0 for 1, which the configuration's VIEW tells apart, as Apalache's --max-error (-max-error) */
     const char *run_dir; /* symbolic checking: the directory each counterexample is written to in ITF, as Apalache's --run-dir (-run-dir) */

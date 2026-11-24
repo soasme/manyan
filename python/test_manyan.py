@@ -174,6 +174,40 @@ Next == x' = x""", "INIT Init\nNEXT Next\n"))
         self.assertEqual(run4.status, 75)
         self.assertIn("out of bounds significance level", run4.output)
 
+    def test_symbolic_and_typecheck_safety(self):
+        # Regressions for #15, #21, #39
+        base = spec("S", "EXTENDS Integers\nVARIABLE\n  \\* @type: Int;\n  x\nInit == x = 0\nNext == x' = x + 1\nInv == x < 3",
+                    "INIT Init\nNEXT Next\nINVARIANT Inv\n")
+        for neg in ("-1", "-2"):
+            r = check(["-symbolic", "-length", neg, "S"], base, symbolic=1, length=int(neg))
+            self.assertEqual(r.status, 255)
+        r_zero = check(["-symbolic", "-length", "0", "S"], base, symbolic=1, length=0)
+        self.assertEqual(r_zero.status, 0)
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in base.items():
+                Path(d, name).write_text(text)
+            r_inv = manyan.run(["-symbolic", "-invlevel", "2", "S"], cwd=d)
+            self.assertNotIn("SEGV", r_inv.output)
+            self.assertIn(r_inv.status, (0, 12, 255))
+        # Cyclic @typeAlias (#21)
+        for alias in ("a = <<$a, $a>>;", "a = Set($a);"):
+            r = check(["-typecheck", "C"], {"C.tla": f"---- MODULE C ----\n\\* @typeAlias: {alias}\n\\* @type: $a => Bool;\nF(x) == TRUE\n====\n"}, typecheck=1)
+            self.assertEqual(r.status, 255)
+            self.assertIn("Cyclic @typeAlias", r.output)
+        # INT64_MIN \div -1 (#21)
+        div_min = spec("D", "EXTENDS Integers\nVARIABLE\n  \\* @type: Int;\n  x\nMin64 == (0 - 1073741824) * 1073741824 * 8\n"
+                       "Init == x = Min64 \\div (0 - 1)\nNext == x' = x", "INIT Init\nNEXT Next\n")
+        r_div = check(["-symbolic", "D"], div_min, symbolic=1)
+        self.assertIn(r_div.status, (0, 255))
+        # CHOOSE <<x, y>> typing (#39)
+        ok_ch = check(["-typecheck", "CO"], {"CO.tla": "---- MODULE CO ----\nEXTENDS Integers\nOk == (CHOOSE <<x, y>> \\in {<<1, TRUE>>} : TRUE) = <<1, TRUE>>\n====\n"}, typecheck=1)
+        self.assertEqual(ok_ch.status, 0)
+        bad_ch = check(["-typecheck", "CB"], {"CB.tla": "---- MODULE CB ----\nEXTENDS Integers\nBad == (CHOOSE <<x, y>> \\in {<<1, TRUE>>} : TRUE) + 1\n====\n"}, typecheck=1)
+        self.assertEqual(bad_ch.status, 120)
+        # Disjoint rows sharing a tail variable (#21)
+        row_cyc = check(["-typecheck", "RC"], {"RC.tla": "---- MODULE RC ----\n\\* @type: ({ a: Int, v }, { b: Bool, v }) => Bool;\nF(x, y) == x = y\n====\n"}, typecheck=1)
+        self.assertEqual(row_cyc.status, 120)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -120,7 +120,7 @@ class _Options(ctypes.Structure):   # manyan.h's ManyanOptions, in its order
                 ("simulate", ctypes.c_int), ("generate", ctypes.c_int), ("traces", ctypes.c_long),
                 ("depth", ctypes.c_long), ("seed", ctypes.c_longlong), ("seed_given", ctypes.c_int),
                 ("fp", ctypes.c_int), ("aril", ctypes.c_longlong), ("trace_file", ctypes.c_char_p),
-                ("properties", _Strings), ("symbolic", ctypes.c_int), ("length", ctypes.c_long),
+                ("properties", _Strings), ("symbolic", ctypes.c_int), ("length", ctypes.c_long), ("length_given", ctypes.c_int),
                 ("cinit", ctypes.c_char_p), ("max_error", ctypes.c_long), ("run_dir", ctypes.c_char_p),
                 ("typecheck", ctypes.c_int), ("lint", ctypes.c_int), ("fmt", ctypes.c_int), ("invariants", _Strings), ("postconditions", _Strings),
                 ("dump_trace", ctypes.c_char_p), ("no_te_spec", ctypes.c_int), ("result", ctypes.POINTER(_Result))]
@@ -187,10 +187,13 @@ def check(spec, **options):
     keep = []
     o = _Options(spec=os.fsencode(spec), check_deadlock=1)
     for name, x in options.items():
-        if name not in dict(_Options._fields_) or name in ("spec", "seed_given", "result"):
+        if name not in dict(_Options._fields_) or name in ("spec", "seed_given", "length_given", "result"):
             raise TypeError(f"check() got an unexpected keyword argument {name!r}")
         if name == "seed":
             o.seed_given = x is not None
+            x = x or 0
+        elif name == "length":
+            o.length_given = x is not None
             x = x or 0
         if isinstance(x, (list, tuple)):
             x = _strings(x, keep)

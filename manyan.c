@@ -7207,9 +7207,9 @@ static Value *gen_value(Expr *call) {
     return any->v;
 }
 
-/* Whether a value chosen for \E e satisfies it in c: tried before its
-   bounds, which may be infinite, are enumerated. */
-static int witnessed(Expr *e, Ctx c) {
+/* Whether a value chosen for \E/\A e witnesses it (want=1 for \E, want=0 for \A)
+   in c: tried before its bounds, which may be infinite, are enumerated. */
+static int witnessed(Expr *e, Ctx c, int want) {
     for (int i = 0; i < nwitnesses; i++) {
         if (witnesses[i].e != e || (witnesses[i].step >= 0 && witnesses[i].step != gen_step)) continue;
         Value **v = witnesses[i].vals;
@@ -7224,7 +7224,7 @@ static int witnessed(Expr *e, Ctx c) {
                 for (int m = 0; in && b->tuple && m < b->n; m++) env = mk_binding(b->defs[m], (*v)->u.fcn.vals[m], env);
             }
         }
-        if (in && expected_bool(eval(e->args[0], (Ctx){env, c.inst}), e)) return 1;
+        if (in && expected_bool(eval(e->args[0], (Ctx){env, c.inst}), e) == want) return 1;
     }
     return 0;
 }
@@ -7235,7 +7235,7 @@ static __attribute__((noinline)) Value *ev_forall(Expr *e, Ctx c) {
     for (int i = 0; i < e->nb; i++)
         if (!e->bounds[i].set)
             fail_at(e, "TLC attempted to evaluate an unbounded %s.\nMake sure that the expression is of form %s x \\in S: P(x).", op, op);
-    if (nwitnesses && e->kind == X_EXISTS && witnessed(e, c)) return BOOLV(1);
+    if (nwitnesses && witnessed(e, c, e->kind == X_EXISTS)) return BOOLV(e->kind == X_EXISTS);
     for_bindings(e->bounds, e->nb, c, e->kind == X_FORALL ? forall_fn : exists_fn, &q);
     return BOOLV(q.value);
 }
@@ -7883,6 +7883,7 @@ NATIVE(n_div) {
     UNUSED;
     int64_t x = int_cast(a[0]), y = int_cast(a[1]);
     if (y == 0) fail_module("The second argument of \\div is 0.");
+    if (x == INT64_MIN && y == -1) fail_module("Overflow when computing %lld \\div %lld", (long long)x, (long long)y);
     int64_t q = x / y;
     if ((x % y != 0) && ((x < 0) != (y < 0))) q--;
     return mk_int(check_int(q, x, y, "\\div"));
@@ -18526,9 +18527,16 @@ static int bv_lt(const int *a, const int *b) {
 
 static int bv_le(const int *a, const int *b) { return bv_lt(b, a) ^ 1; }
 
+static int sym_ovf_guard = L_TRUE;
+
 static void no_overflow(int ovf) {
-    if (ovf == L_TRUE) fail("Symbolic checking cannot represent an integer of more than %d bits.", BW);
-    if (ovf != L_FALSE) sat_unit(ovf ^ 1);
+    if (ovf == L_FALSE) return;
+    if (sym_ovf_guard == L_TRUE) {
+        if (ovf == L_TRUE) fail("Symbolic checking cannot represent an integer of more than %d bits.", BW);
+        sat_unit(ovf ^ 1);
+    } else if (sym_ovf_guard != L_FALSE) {
+        sat_add2(sym_ovf_guard ^ 1, ovf ^ 1);
+    }
 }
 
 static int *bv_add_carry(const int *a, const int *b, int carry, int *ovf) {
@@ -19118,7 +19126,11 @@ static int sv_subseteq(SVal *a, SVal *b) {
 
 static int fcn_eq(SVal *a, SVal *b) {
     int aligned = a->n == b->n, r = L_TRUE;
-    for (int i = 0; i < a->n && aligned; i++) aligned = sv_same(a->u.fcn.keys[i], b->u.fcn.keys[i]);
+    for (int i = 0; i < a->n && aligned; i++) {
+        Value *ka = sv_known(a->u.fcn.keys[i]);
+        aligned = ka != NULL && sv_same(a->u.fcn.keys[i], b->u.fcn.keys[i]);
+        for (int j = 0; j < i && aligned; j++) aligned = !veq(ka, sv_known(a->u.fcn.keys[j]));
+    }
     if (aligned) {
         for (int i = 0; i < a->n && r != L_FALSE; i++)
             r = g_and(r, g_and(g_iff(a->u.fcn.guards[i], b->u.fcn.guards[i]),
@@ -19154,7 +19166,14 @@ static int sv_eq(SVal *a, SVal *b) {
     case C_BOOL: return g_iff(a->u.lit, b->u.lit);
     case C_INT: case C_ATOM: return bv_eq(a->u.bits, b->u.bits);
     case C_SET:
-        if (a->kind == SV_INF && b->kind == SV_INF && a->inf == b->inf && a->n == b->n) {
+        if (a->kind == SV_INF && b->kind == SV_INF && a->inf == INF_RANGE && b->inf == INF_RANGE) {
+            int *a1 = sv_open(a->u.inf.parts[0])->u.bits, *b1 = sv_open(a->u.inf.parts[1])->u.bits;
+            int *a2 = sv_open(b->u.inf.parts[0])->u.bits, *b2 = sv_open(b->u.inf.parts[1])->u.bits;
+            int e1 = bv_lt(b1, a1), e2 = bv_lt(b2, a2);
+            return g_or(g_and(e1, e2), g_and(g_and(e1 ^ 1, e2 ^ 1), g_and(bv_eq(a1, a2), bv_eq(b1, b2))));
+        }
+        if (a->kind == SV_INF && b->kind == SV_INF && a->inf == b->inf && a->n == b->n &&
+            (a->inf == INF_INT || a->inf == INF_NAT || a->inf == INF_STRING || a->inf == INF_SEQ)) {
             int r = L_TRUE;
             for (int i = 0; i < a->n; i++) {
                 if (a->u.inf.names[i] != b->u.inf.names[i]) return L_FALSE;
@@ -19267,6 +19286,7 @@ static SVal *sv_enum(SVal *s) {
         int *lo = sv_open(s->u.inf.parts[0])->u.bits, *hi = sv_open(s->u.inf.parts[1])->u.bits;
         int64_t l, h = bv_bound(hi);
         if (!bv_value(lo, &l) || h < 0) break;
+        if (h >= l && (uint64_t)h - (uint64_t)l >= 4096) break;
         r = sv_set(h >= l ? (int)(h - l + 1) : 0);
         for (int64_t i = l; i <= h; i++) {
             int *w = bv_const(i);
@@ -19287,6 +19307,13 @@ static SVal *sv_enum(SVal *s) {
     }
     case INF_FCNSET: {
         SVal *d = sv_enum(s->u.inf.parts[0]), *rng = sv_enum(s->u.inf.parts[1]);
+        if (rng->n == 0) {
+            int empty = L_TRUE;
+            for (int i = 0; i < d->n; i++) empty = g_and(empty, d->u.set.guards[i] ^ 1);
+            r = sv_set(1);
+            set_add(r, sv_fcn(0, 0), empty);
+            return r;
+        }
         for (int i = 0; i < d->n && total <= 4096; i++) total *= rng->n;
         if (total > 4096) break;
         r = sv_set((int)total);
@@ -19297,6 +19324,11 @@ static SVal *sv_enum(SVal *s) {
                 int j = (int)(k % rng->n);
                 fcn_add(f, d->u.set.elems[i], rng->u.set.elems[j], d->u.set.guards[i]);
                 g = g_and(g, g_implies(d->u.set.guards[i], rng->u.set.guards[j]));
+                for (int p = 0; p < i && g != L_FALSE; p++) {
+                    int same_k = g_and(g_and(d->u.set.guards[i], d->u.set.guards[p]),
+                                       sv_eq(d->u.set.elems[i], d->u.set.elems[p]));
+                    if (same_k != L_FALSE) g = g_and(g, g_implies(same_k, sv_eq(f->u.fcn.vals[i], f->u.fcn.vals[p])));
+                }
             }
             set_add(r, f, g);
         }
@@ -19393,6 +19425,11 @@ static SVal *sv_pick(SVal *s, int *g) {
             SVal *v = sv_pick(s->u.inf.parts[1], &h);
             fcn_add(r, d->u.set.elems[i], v, d->u.set.guards[i]);
             *g = g_and(*g, g_implies(d->u.set.guards[i], h));
+            for (int p = 0; p < i; p++) {
+                int same_k = g_and(g_and(d->u.set.guards[i], d->u.set.guards[p]),
+                                   sv_eq(d->u.set.elems[i], d->u.set.elems[p]));
+                if (same_k != L_FALSE) *g = g_and(*g, g_implies(same_k, sv_eq(v, r->u.fcn.vals[p])));
+            }
         }
         return r;
     }
@@ -19754,6 +19791,8 @@ static SVal *sym_oper(Value *v, Expr **args, int n, SCtx sc, Expr *call, int pol
     return sym_call(od, args, n, sc, oc, call, pol);
 }
 
+static Inst *sym_instance(Expr *e, SCtx sc);
+
 /* The operator argument op, written in sc, applied to the n values xs. */
 static SVal *sym_apply_op(Expr *op, SCtx sc, SVal **xs, int n, Expr *call) {
     Expr **args = NEWN(Expr *, n);
@@ -19767,6 +19806,12 @@ static SVal *sym_apply_op(Expr *op, SCtx sc, SVal **xs, int n, Expr *call) {
         at.s = senv_bind(d, xs[i], NULL, sc, at.s);
     }
     if (op->kind == X_LAMBDA) return sym_call(op->def, args, n, at, sc, call, P_BOTH);
+    if ((op->kind == K_CALL || op->kind == K_PARAMCALL) && op->n == 0)
+        return sym_call(op->def, args, n, at, sc, call, P_BOTH);
+    if (op->kind == K_INSTCALL && op->n == 0) {
+        SCtx target = {{NULL, sym_instance(op, sc)}, NULL};
+        return sym_call(op->def, args, n, at, target, call, P_BOTH);
+    }
     if (!sym_plain(op, sc)) fail_at(call, "Symbolic checking cannot apply this operator argument.");
     return sym_oper(eval_operator_arg(op, sc.c), args, n, at, call, P_BOTH);
 }
@@ -19839,6 +19884,7 @@ static SVal *sym_decl(Def *d, SCtx sc, Expr *where) {
         return v;
     }
     if (d->kind == D_VAR && d->var_index >= 0) {
+        if (sym_cinit) fail_at(where, "The constant initializer cannot reference variable %s.", S(d->name));
         SVal **st = sym_init ? sym_next : sym_cur;
         SVal *v = st ? st[d->var_index] : NULL;
         if (!v) fail_at(where, "In evaluation, the identifier %s is either undefined or not an operator.", S(d->name));
@@ -19942,7 +19988,7 @@ static SCtx sym_skolem(Expr *q, SCtx sc, SVal **sets, int *g) {
     int nb = q->nb;
     SVal **w = NULL;
     *g = L_TRUE;
-    if (q->kind == X_EXISTS) {
+    if (q->kind == X_EXISTS || q->kind == X_FORALL) {
         sym_witnesses = xrealloc(sym_witnesses, sizeof *sym_witnesses * (size_t)(nsym_witnesses + 1));
         sym_witnesses[nsym_witnesses].e = q;
         sym_witnesses[nsym_witnesses].step = sym_gen_step;
@@ -19976,21 +20022,34 @@ static SVal *sym_quant(Expr *e, SCtx sc, int pol) {
     return sv_bool(q.value);
 }
 
-/* CHOOSE x \in S : P, an element that satisfies P if one does. */
+/* CHOOSE x \in S : P, deterministically picking the least element (in TLC's
+   order for integers/booleans, first enumerated otherwise) that satisfies P. */
 static SVal *sym_choose(Expr *e, SCtx sc) {
     Bound *b = &e->bounds[0];
     if (!b->set) fail_at(e, "Symbolic checking cannot handle an unbounded CHOOSE.");
-    SVal *set = sym(b->set, sc, P_BOTH);
-    int g;
-    SVal *x = sv_pick(set, &g);
-    SCtx inner = sc;
-    if (!b->tuple) inner = sym_bind(inner, b->defs[0], x);
-    else for (int m = 0; m < b->n; m++) inner = sym_bind(inner, b->defs[m], sv_apply(x, sv_int_const(m + 1)));
-    int holds = g_and(g, sym_bool(e->args[0], inner, P_BOTH));
-    SQuant q = {e->args[0], P_BOTH, 1, L_FALSE, NULL};
-    sym_bindings(b, 1, &set, sc, sym_quant_fn, &q, e);
-    sat_add2(q.value ^ 1, holds);
-    return x;
+    SVal *s = sv_enum(sym(b->set, sc, P_BOTH));
+    if (!s->n) return sv_undef();
+    int has = L_FALSE;
+    SVal *best = NULL;
+    for (int i = 0; i < s->n; i++) {
+        int g = s->u.set.guards[i];
+        if (g == L_FALSE) continue;
+        SVal *x = s->u.set.elems[i];
+        SCtx inner = sc;
+        if (!b->tuple) inner = sym_bind(inner, b->defs[0], x);
+        else for (int m = 0; m < b->n; m++) inner = sym_bind(inner, b->defs[m], sv_apply(x, sv_int_const(m + 1)));
+        int h = g_and(g, sym_bool(e->args[0], inner, P_BOTH));
+        if (h == L_FALSE) continue;
+        if (!best) { best = x; has = h; continue; }
+        int c = sv_class(best);
+        int lt = c == C_INT ? bv_lt(sv_open(x)->u.bits, sv_open(best)->u.bits)
+               : c == C_BOOL ? g_and(sv_open(x)->u.lit ^ 1, sv_open(best)->u.lit)
+               : L_FALSE;
+        int take = g_and(h, g_or(has ^ 1, lt));
+        best = sv_ite(take, x, best);
+        has = g_or(has, h);
+    }
+    return best ? best : sv_undef();
 }
 
 static SVal *sym_set_op(Expr *e, SVal *a, SVal *b) {
@@ -20062,7 +20121,7 @@ static SCtx let_ctx(Expr *e, SCtx sc) {
     for (int changed = 1; changed;) {
         changed = 0;
         for (int i = 0; i < e->ndefs; i++) {
-            if (symbolic[i]) continue;
+            if (symbolic[i] || !e->defs[i]->body) continue;
             ExprInfo *in = expr_info(e->defs[i]->body);
             for (int k = 0; k < in->n && !symbolic[i]; k++) {
                 Def *x = in->defs[k];
@@ -20124,15 +20183,25 @@ static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
     }
     case K_AND: case K_OR: {
         int and = e->kind == K_AND;
+        int saved_ovf = sym_ovf_guard;
         l = and ? L_TRUE : L_FALSE;
-        for (int i = 0; i < e->n && l != (and ? L_FALSE : L_TRUE); i++)
+        for (int i = 0; i < e->n && l != (and ? L_FALSE : L_TRUE); i++) {
+            sym_ovf_guard = g_and(saved_ovf, and ? l : (l ^ 1));
             l = and ? g_and(l, sym_bool(e->args[i], sc, pol)) : g_or(l, sym_bool(e->args[i], sc, pol));
+        }
+        sym_ovf_guard = saved_ovf;
         return sv_bool(l);
     }
     case K_NOT: return sv_bool(sym_bool(e->args[0], sc, pol ^ (pol == P_BOTH ? 0 : 3)) ^ 1);
-    case K_IMPLIES:
+    case K_IMPLIES: {
         l = sym_bool(e->args[0], sc, pol ^ (pol == P_BOTH ? 0 : 3));
-        return sv_bool(l == L_FALSE ? L_TRUE : g_implies(l, sym_bool(e->args[1], sc, pol)));
+        if (l == L_FALSE) return sv_bool(L_TRUE);
+        int saved_ovf = sym_ovf_guard;
+        sym_ovf_guard = g_and(saved_ovf, l);
+        int r2 = sym_bool(e->args[1], sc, pol);
+        sym_ovf_guard = saved_ovf;
+        return sv_bool(g_implies(l, r2));
+    }
     case K_EQUIV: return sv_bool(g_iff(sym_bool(e->args[0], sc, P_BOTH), sym_bool(e->args[1], sc, P_BOTH)));
     case K_EQ: case K_NEQ:
         l = sv_eq(sym(e->args[0], sc, P_BOTH), sym(e->args[1], sc, P_BOTH));
@@ -20224,18 +20293,43 @@ static SVal *sym_parts(Expr *e, SCtx sc, int pol) {
     }
     case X_FORALL: case X_EXISTS: return sym_quant(e, sc, pol);
     case X_CHOOSE: return sym_choose(e, sc);
-    case X_IF:
+    case X_IF: {
         l = sym_bool(e->args[0], sc, P_BOTH);
         if (l == L_TRUE) return sym(e->args[1], sc, pol);
         if (l == L_FALSE) return sym(e->args[2], sc, pol);
-        return sv_ite(l, sym(e->args[1], sc, pol), sym(e->args[2], sc, pol));
+        int saved_ovf = sym_ovf_guard;
+        sym_ovf_guard = g_and(saved_ovf, l);
+        a = sym(e->args[1], sc, pol);
+        sym_ovf_guard = g_and(saved_ovf, l ^ 1);
+        b = sym(e->args[2], sc, pol);
+        sym_ovf_guard = saved_ovf;
+        return sv_ite(l, a, b);
+    }
     case X_CASE: {
-        int last = e->n - 2;
+        int last = e->n - 2, any = L_FALSE, saved_ovf = sym_ovf_guard;
         r = NULL;
-        if (!e->args[last]) { r = sym(e->args[last + 1], sc, pol); last -= 2; }
-        for (int i = last; i >= 0; i -= 2) {
-            SVal *v = sym(e->args[i + 1], sc, pol);
-            r = r ? sv_ite(sym_bool(e->args[i], sc, P_BOTH), v, r) : v;
+        int *gs = NEWN(int, e->n / 2 + 1), ng = 0, prev = L_FALSE;
+        for (int i = 0; i <= last; i += 2) {
+            if (!e->args[i]) { gs[ng++] = L_TRUE; break; }
+            gs[ng++] = sym_bool(e->args[i], sc, P_BOTH);
+        }
+        int n_arms = ng;
+        SVal **vs = NEWN(SVal *, n_arms + 1);
+        for (int k = 0; k < n_arms; k++) {
+            int active = g_and(gs[k], prev ^ 1);
+            sym_ovf_guard = g_and(saved_ovf, active);
+            vs[k] = sym(e->args[2 * k + 1], sc, pol);
+            prev = g_or(prev, gs[k]);
+        }
+        sym_ovf_guard = saved_ovf;
+        for (int k = n_arms - 1; k >= 0; k--) {
+            if (!e->args[2 * k]) { r = vs[k]; any = L_TRUE; }
+            else { any = g_or(any, gs[k]); r = r ? sv_ite(gs[k], vs[k], r) : vs[k]; }
+        }
+        if (any != L_TRUE && r) {
+            int c = sv_class(r);
+            SVal *u = c == C_BOOL ? sv_bool(2 * sat_var()) : c == C_INT ? sv_bits(SV_INT, bv_fresh()) : NULL;
+            if (u) r = sv_ite(any, r, u);
         }
         return r;
     }
@@ -20357,8 +20451,11 @@ static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call) {
     if (f == n_pow) {
         int64_t k;
         if (!bv_value(y, &k) || k < 0) fail_at(call, "Symbolic checking supports a ^ b only for a constant b >= 0.");
-        int *p = bv_const(1);
-        while (k-- > 0) p = bv_mul(p, x);
+        int *p = bv_const(1), *base = x;
+        for (uint64_t e = (uint64_t)k; e; e >>= 1) {
+            if (e & 1) p = bv_mul(p, base);
+            if (e > 1) base = bv_mul(base, base);
+        }
         return sv_bits(SV_INT, p);
     }
     if (f == n_range) {
@@ -20370,7 +20467,65 @@ static SVal *sym_native(Def *d, Expr **args, int n, SCtx sc, Expr *call) {
     if (f == n_cardinality) return sv_card(a[0]);
     if (f == n_isfinite) {
         SVal *s = sv_open(a[0]);
-        return sv_const(BOOLV(s->kind != SV_INF || (s->inf != INF_INT && s->inf != INF_NAT && s->inf != INF_STRING && s->inf != INF_SEQ)));
+        if (s->kind != SV_INF) return sv_const(TRUEV);
+        if (s->inf == INF_RANGE) return sv_const(TRUEV);
+        if (s->inf == INF_INT || s->inf == INF_NAT || s->inf == INF_STRING) return sv_const(FALSEV);
+        if (s->inf == INF_SEQ) return sv_bool(sv_eq(s->u.inf.parts[0], sv_set(0)));
+        if (s->inf == INF_FILTER) {
+            SVal *base = sv_open(s->u.inf.parts[0]);
+            if (base->kind == SV_SET || (base->kind == SV_INF && base->inf == INF_RANGE)) return sv_const(TRUEV);
+            fail_at(call, "Symbolic checking cannot decide IsFiniteSet on a filtered infinite set.");
+        }
+        /* For compound INF_SUBSET/INF_FCNSET/INF_RCDSET/INF_TIMES/INF_MINUS: check recursively. */
+        int fin = L_TRUE;
+        {
+            /* Simple recursive finiteness check on SV_INF */
+            SVal *stk[64];
+            int nstk = 0;
+            stk[nstk++] = s;
+            while (nstk && fin != L_FALSE) {
+                SVal *cur = sv_open(stk[--nstk]);
+                if (cur->kind != SV_INF || cur->inf == INF_RANGE) continue;
+                if (cur->inf == INF_INT || cur->inf == INF_NAT || cur->inf == INF_STRING) { fin = L_FALSE; break; }
+                if (cur->inf == INF_SEQ) { fin = g_and(fin, sv_eq(cur->u.inf.parts[0], sv_set(0))); continue; }
+                if (cur->inf == INF_SUBSET) { if (nstk < 64) stk[nstk++] = cur->u.inf.parts[0]; continue; }
+                if (cur->inf == INF_MINUS) {
+                    SVal *p0 = sv_open(cur->u.inf.parts[0]), *p1 = sv_open(cur->u.inf.parts[1]);
+                    if (p0->kind != SV_INF || p0->inf == INF_RANGE) continue;
+                    if (p1->kind != SV_INF || p1->inf == INF_RANGE) { fin = L_FALSE; break; }
+                    fail_at(call, "Symbolic checking cannot decide IsFiniteSet on this set difference.");
+                }
+                if (cur->inf == INF_FCNSET) {
+                    SVal *dom = sv_open(cur->u.inf.parts[0]), *rng = sv_open(cur->u.inf.parts[1]);
+                    if (dom->kind == SV_SET) {
+                        int empty = L_TRUE;
+                        for (int i = 0; i < dom->n; i++) empty = g_and(empty, dom->u.set.guards[i] ^ 1);
+                        if (rng->kind == SV_INF && (rng->inf == INF_INT || rng->inf == INF_NAT || rng->inf == INF_STRING)) { fin = g_and(fin, empty); continue; }
+                    }
+                    if (nstk + 2 <= 64) { stk[nstk++] = dom; stk[nstk++] = rng; }
+                    continue;
+                }
+                if (cur->inf == INF_RCDSET || cur->inf == INF_TIMES) {
+                    int any_empty = L_FALSE, has_inf = 0;
+                    for (int i = 0; i < cur->n; i++) {
+                        SVal *pt = sv_open(cur->u.inf.parts[i]);
+                        if (pt->kind == SV_SET) {
+                            int em = L_TRUE;
+                            for (int j = 0; j < pt->n; j++) em = g_and(em, pt->u.set.guards[j] ^ 1);
+                            any_empty = g_or(any_empty, em);
+                        } else if (pt->kind == SV_INF && (pt->inf == INF_INT || pt->inf == INF_NAT || pt->inf == INF_STRING)) {
+                            has_inf = 1;
+                        } else if (nstk < 64) {
+                            stk[nstk++] = pt;
+                        }
+                    }
+                    if (has_inf) fin = g_and(fin, any_empty);
+                    continue;
+                }
+                fail_at(call, "Symbolic checking cannot decide IsFiniteSet on this set.");
+            }
+        }
+        return sv_bool(fin);
     }
     if (f == n_seq) { SVal *s = sv_inf(INF_SEQ, 1); s->u.inf.parts[0] = a[0]; return s; }
     if (f == n_singleton) { SVal *s = sv_fcn(1, 0); fcn_add(s, a[0], a[1], L_TRUE); return s; }
@@ -20982,7 +21137,7 @@ static TF **sym_negated;
    to state *loop, or stuttering at its last, that violates property prop
    and is fair. A behavior that does not
    replay is a fault of the symbolic encoding, reported as such. */
-static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, int prop, int stutter, int *loop, Value ****out, int **acts) {
+static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, int n, int bad, int prop, int stutter, int *loop_start, int *loop, Value ****out, int **acts) {
     for (int i = 0; i < nsym_consts; i++) sym_consts[i]->value = sv_model(sym_const_vals[i]);
     Value ***s = NEWN(Value **, n);
     int *act_of = NEWN(int, n);
@@ -21031,13 +21186,24 @@ static int sym_behavior(SVal ***st, int **picks, int *nenabled, int **enabled, i
             if (p) at.env = mk_binding(p, sv_model(sym_history(st, n - 1)), at.env);
             cur_state = s[n - 1 - action];
             next_state = action ? s[n - 1] : NULL;
-            if (eval_bool(c->expr, at)) wrong = "the last state satisfies the invariant";
+            sigjmp_buf inv_h;
+            handler = &inv_h;
+            if (!sigsetjmp(inv_h, 0)) {
+                if (eval_bool(c->expr, at)) wrong = "the last state satisfies the invariant";
+            } else if (!error_message.s || !strstr(error_message.s, "CASE with no conditions true")) {
+                wrong = error_message.s ? error_message.s : "an error";
+            }
+            handler = &here;
         }
         if (!wrong && prop >= 0) {
-            int l = 0, m = n - !stutter;   /* the lasso's states */
-            for (int v; l < n - 1 && !stutter; l++) {
-                for (v = 0; v < nvars && veq(s[l][v], s[n - 1][v]); v++) {}
-                if (v == nvars) break;
+            int l = stutter ? n - 1 : 0, m = n - !stutter;   /* the lasso's states */
+            for (; l < n - 1 && !stutter; l++) {
+                if (loop_start) { if (lit_true(loop_start[l])) break; }
+                else {
+                    int v;
+                    for (v = 0; v < nvars && veq(s[l][v], s[n - 1][v]); v++) {}
+                    if (v == nvars) break;
+                }
             }
             *loop = l;
             if (l == m) wrong = "the last state is none before it";
@@ -21103,7 +21269,7 @@ static int sym_violated(int i, SVal ***st, int depth) {
    Apalache has no fairness. With fairness, the counterexample is TLC's:
    a fair lasso, which may also stutter forever at its last state. */
 
-typedef struct { SVal ***st; int k, *back; } Lasso;   /* st[0..k]: back[j], whether the loop goes back to j or before */
+typedef struct { SVal ***st; int k, *back, *start; } Lasso;   /* st[0..k]: back[j], whether the loop goes back to j or before */
 
 static int states_eq(SVal **a, SVal **b) {
     int l = L_TRUE;
@@ -21145,9 +21311,12 @@ static int sym_lasso(TF *t, SVal ***st, int k, int *back, int i, LassoMemo **mem
 
 /* The behavior st[0..k] as a lasso, its last state one before it. */
 static Lasso sym_loop(SVal ***st, int k) {
-    int *back = NEWN(int, k + 1);
-    for (int j = 0; j < k; j++) back[j] = g_or(j ? back[j - 1] : L_FALSE, states_eq(st[j], st[k]));
-    return (Lasso){st, k, back};
+    int *start = NEWN(int, k + 1), *back = NEWN(int, k + 1);
+    for (int j = 0; j < k; j++) {
+        start[j] = g_and(2 * sat_var(), states_eq(st[j], st[k]));
+        back[j] = g_or(j ? back[j - 1] : L_FALSE, start[j]);
+    }
+    return (Lasso){st, k, back, start};
 }
 
 /* The behavior st[0..k] stuttering forever at st[k]. */
@@ -21158,7 +21327,7 @@ static Lasso sym_stutter(SVal ***st, int k) {
     int *back = NEWN(int, k + 1);
     for (int j = 0; j < k; j++) back[j] = L_FALSE;
     back[k] = L_TRUE;
-    return (Lasso){s, k + 1, back};
+    return (Lasso){s, k + 1, back, NULL};
 }
 
 /* Whether fairness f's action is disabled at st[i]: a literal of its own,
@@ -21179,7 +21348,7 @@ static int sym_fair(Lasso ls) {
         for (int i = 0; i < ls.k; i++) {
             int on = ls.back[i], d = sym_disabled_at(f, i);
             sym_cur = ls.st[i], sym_next = ls.st[i + 1];
-            took = g_or(took, g_and(on, sym_bool(fairs[f].step, (SCtx){fairs[f].c, NULL}, P_BOTH)));
+            took = g_or(took, g_and(on, sym_bool(fairs[f].step, (SCtx){fairs[f].c, NULL}, P_POS)));
             off = strong ? g_and(off, g_implies(on, d)) : g_or(off, g_and(on, d));
         }
         fair = g_and(fair, g_or(took, off));
@@ -21254,7 +21423,7 @@ static int sym_report(SVal ***st, int **picks, int *nenabled, int **enabled, int
     while (sat_solve(&violated, 1) && !sym_enabled_refine(from)) {}
     Value ***states;
     int *act_of, loop;
-    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, -1, 0, &loop, &states, &act_of)) return 0;
+    if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, bad, -1, 0, NULL, &loop, &states, &act_of)) return 0;
     if (bad >= 0 && !depth) {   /* as TLC reports it */
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
         print_trace_state(states[0], states[0], 1);
@@ -21309,6 +21478,7 @@ static int symbolic(void) {
         return MANYAN_ERROR;
     }
     sat_init();
+    sym_ovf_guard = L_TRUE;
     SVal ***st = NEWN(SVal **, sym_length + 1);
     int **picks = NEWN(int *, sym_length + 1), **enabled = NEWN(int *, sym_length + 1), *nenabled = NEWN(int, sym_length + 1);
     sigjmp_buf here;
@@ -21382,10 +21552,11 @@ static int symbolic(void) {
             while (sat_solve(&violated, 1)) if (sym_enabled_refine(from)) { dead = depth; break; }
         }
         for (int p = 0; p < ntemporal_props && bad < 0 && dead < 0 && prop < 0; p++) {
-            if (sym_lasso_violated(p, sym_loop(st, depth), kept)) prop = p;
-            else if (as_tlc && sym_lasso_violated(p, sym_stutter(st, depth), kept)) prop = p, stutter = 1;
+            Lasso ls = sym_loop(st, depth);
+            if (sym_lasso_violated(p, ls, kept)) prop = p;
+            else if (as_tlc && sym_lasso_violated(p, (ls = sym_stutter(st, depth)), kept)) prop = p, stutter = 1;
             if (prop < 0) continue;
-            if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, stutter, &loop, &states, &act_of)) return MANYAN_ERROR;
+            if (!sym_behavior(st, picks, nenabled, enabled, depth + 1, -1, prop, stutter, ls.start, &loop, &states, &act_of)) return MANYAN_ERROR;
             handler = &here;
             lasso_depth = depth;
         }
@@ -21634,6 +21805,7 @@ static Type *unify_rows(Type *l, Type *r) {
     for (int i = 0; i < l->n; i++)
         for (int k = 0; k < r->n; k++) nshared += l->keys[i] == r->keys[k];
     if (!nshared) {
+        if (lv && rv && lv->var == rv->var) return NULL;
         Type *tail = ty_fresh();
         if (!ty_compute(lv ? lv : ty_row(0, NULL, NULL, NULL), ty_row(r->n, r->keys, r->args, tail))
             || !ty_compute(rv ? rv : ty_row(0, NULL, NULL, NULL), ty_row(l->n, l->keys, l->args, tail)))
@@ -21679,9 +21851,12 @@ static Type *ty_compute(Type *l, Type *r) {
         Type *lb = ty_bind[l->var], *rb = ty_bind[r->var];
         if (!lb) { if (rb && ty_occurs(l->var, rb)) return NULL; ty_set(l->var, r); return r; }
         if (!rb) { if (ty_occurs(r->var, lb)) return NULL; ty_set(r->var, l); return l; }
+        if (ty_occurs(l->var, rb) || ty_occurs(r->var, lb)) return NULL;
+        int mark = ty_ntrail;
         ty_set(l->var, r);
         Type *u = ty_compute(lb, rb);
-        if (u) ty_set(r->var, u);
+        if (!u || ty_occurs(r->var, u)) { ty_undo(mark); return NULL; }
+        ty_set(r->var, u);
         return u;
     }
     if (l->kind == TY_VAR) return unify_var(l, r);
@@ -22982,7 +23157,7 @@ static Type *pr_bool(Type **vars, int n, Bound *bs, int nb, Type *res, void *dat
 }
 static Type *pr_choose(Type **vars, int n, Bound *bs, int nb, Type *res, void *data) {
     (void)bs, (void)nb, (void)res, (void)data;
-    return sig1(ty_oper(n, vars, &ty_bool), vars[0]);
+    return sig1(ty_oper(n, vars, &ty_bool), n == 1 ? vars[0] : ty_tup(n, vars));
 }
 static Type *pr_filter(Type **vars, int n, Bound *bs, int nb, Type *res, void *data) {
     (void)bs, (void)nb, (void)res, (void)data;
@@ -23585,10 +23760,20 @@ static void tc_ensure_ts12(Type *t) {
                        "Either update the annotations, or use --features=no-rows.");
 }
 
-/* t with the aliases substituted; changed set if any was. */
-static Type *tc_unalias(Type *t, int *changed) {
+/* t with aliases expanded recursively, rejecting cycles cleanly. */
+static Type *tc_unalias_rec(Type *t, char *visiting, char *done) {
     if (t->kind == TY_CONST) {
-        for (int i = 0; i < tc_naliases; i++) if (tc_alias_names[i] == t->var) { *changed = 1; return tc_alias_types[i]; }
+        for (int i = 0; i < tc_naliases; i++)
+            if (tc_alias_names[i] == t->var) {
+                if (visiting[i]) tc_input_error("Cyclic @typeAlias: %s", S(tc_alias_names[i]) + 1);
+                if (!done[i]) {
+                    visiting[i] = 1;
+                    tc_alias_types[i] = tc_unalias_rec(tc_alias_types[i], visiting, done);
+                    visiting[i] = 0;
+                    done[i] = 1;
+                }
+                return tc_alias_types[i];
+            }
         if (S(t->var)[0] == '$') tc_input_error("Missing @typeAlias: %s = <type>;", S(t->var) + 1);
         return t;
     }
@@ -23598,8 +23783,14 @@ static Type *tc_unalias(Type *t, int *changed) {
     Type *c = NEW(Type);
     *c = *t;
     c->args = NEWN(Type *, n + 1);
-    for (int i = 0; i < n; i++) c->args[i] = tc_unalias(t->args[i], changed);
+    for (int i = 0; i < n; i++) c->args[i] = tc_unalias_rec(t->args[i], visiting, done);
     return c;
+}
+
+static Type *tc_unalias(Type *t, int *changed) {
+    (void)changed;
+    char *visiting = NEWN(char, tc_naliases + 1), *done = NEWN(char, tc_naliases + 1);
+    return tc_unalias_rec(t, visiting, done);
 }
 
 static const char *decl_name(Def *d) { return d ? S(d->name) : "ASSUME"; }
@@ -23624,10 +23815,15 @@ static void tc_annotations(void) {
             PUSH(tc_alias_types, tc_naliases, t);
         }
     }
-    for (int tries = 100; tries > 0; tries--) {   /* the aliases' closure */
-        int changed = 0;
-        for (int i = 0; i < tc_naliases; i++) tc_alias_types[i] = tc_unalias(tc_alias_types[i], &changed);
-        if (!changed) break;
+    {
+        char *visiting = NEWN(char, tc_naliases + 1), *done = NEWN(char, tc_naliases + 1);
+        for (int i = 0; i < tc_naliases; i++) {
+            if (done[i]) continue;
+            visiting[i] = 1;
+            tc_alias_types[i] = tc_unalias_rec(tc_alias_types[i], visiting, done);
+            visiting[i] = 0;
+            done[i] = 1;
+        }
     }
     for (int i = 0; i < tc_ndecls; i++) {
         int n, found = 0;
@@ -23885,9 +24081,11 @@ static int atom_fresh;
 /* A string of sort (-1: Str) that Gen makes, as Apalache makes one: one
    the specification has made, or a fresh one, FRESHk or FRESHk_OF_SORT. */
 static SVal *gen_atom(int sort) {
-    char name[64];
-    snprintf(name, sizeof name, sort < 0 ? "FRESH%d" : "FRESH%d_OF_%s", ++atom_fresh, sort < 0 ? "" : S(sort));
-    mk_str(intern(name));
+    Buf b = {0};
+    if (sort < 0) buf_printf(&b, "FRESH%d", ++atom_fresh);
+    else buf_printf(&b, "FRESH%d_OF_%s", ++atom_fresh, S(sort));
+    mk_str(intern(b.s));
+    xfree(b.s);
     SVal *r = NULL;
     for (int i = nstrs - 1; i >= 0; i--) {   /* the fresh one last */
         if ((!strs[i].value && !strs[i].model) || model_sort(i) != sort) continue;
@@ -25519,6 +25717,7 @@ static void reset_check(void) {
     Z(call_insts); Z(ncall_insts); Z(tc_seen); Z(ntc_seen); Z(tc_quiet); Z(lib_parsed); Z(tc_decls);
     Z(tc_ndecls); Z(tc_alias_names); Z(tc_alias_types); Z(tc_naliases); Z(tc_cur_decl); Z(atom_fresh);
     Z(mono_repeat); Z(mono_fcnsets); Z(sym_open_gens); Z(typed_mark);
+    sym_ovf_guard = L_TRUE;
 #undef Z
     arena = &perm_arena;
     nfrozen = -1;
@@ -25732,7 +25931,8 @@ static int check_model(const ManyanOptions *o) {
     /* A simulation is TLC's with one worker; -continue reports in the search's order.
        A 32-bit build has one worker, which prints what any number print. */
     nworkers = o->workers > 1 && !o->simulate && !o->keep_going && WIDE ? o->workers : 1;
-    sym_length = o->length ? o->length : 10;
+    if (o->length < 0) { fprintf(stderr, "manyan: -length must be non-negative\n"); return MANYAN_ERROR; }
+    sym_length = o->length_given ? o->length : (o->length ? o->length : 10);
     sym_max_error = o->max_error > 0 ? o->max_error : 1;
     sym_run_dir = o->symbolic ? o->run_dir : NULL;
     status = o->symbolic ? symbolic() : o->simulate ? simulate(o) : search();
@@ -25867,7 +26067,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-typecheck") == 0) o.typecheck = 1;
         else if (strcmp(argv[i], "-lint") == 0) o.lint = 1;
         else if (strcmp(argv[i], "-fmt") == 0) o.fmt = 1;
-        else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) o.length = atol(argv[++i]);
+        else if (strcmp(argv[i], "-length") == 0 && i + 1 < argc) { o.length = atol(argv[++i]); o.length_given = 1; }
         else if (strcmp(argv[i], "-cinit") == 0 && i + 1 < argc) o.cinit = argv[++i];
         else if (strcmp(argv[i], "-max-error") == 0 && i + 1 < argc) o.max_error = atol(argv[++i]);
         else if (strcmp(argv[i], "-run-dir") == 0 && i + 1 < argc) o.run_dir = argv[++i];
