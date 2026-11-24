@@ -110,6 +110,7 @@ static ManyanValue *atoi_(ManyanCall *call, ManyanValue **a) {
 /* The command's words, each a string, as IOExec takes them. */
 static char **command_words(ManyanCall *call, ManyanValue *v, const char *op) {
     if (manyan_kind(v) != MANYAN_TUPLE) manyan_fail(call, "The argument of %s should be a sequence, but instead it is:\n%s", op, manyan_print(v));
+    if (manyan_size(v) == 0) manyan_throw(call, "Index 0 out of bounds for length 0");
     for (size_t i = 0; i < manyan_size(v); i++)
         if (manyan_kind(manyan_value(v, i)) != MANYAN_STRING)
             manyan_fail(call, "The argument of IOExec should be a sequence, but instead it is:\n%s", manyan_print(manyan_value(v, i)));
@@ -352,7 +353,8 @@ static void put(Text *t, const char *s, size_t n) {
 }
 static void puts_(Text *t, const char *s) { put(t, s, strlen(s)); }
 
-static void svg_markup(ManyanCall *call, Text *t, ManyanValue *elem) {
+static void svg_markup(ManyanCall *call, Text *t, ManyanValue *elem, int depth) {
+    if (depth > 1000) manyan_fail(call, "SVG nesting too deep.");
     ManyanValue *name = manyan_field(elem, "name"), *attrs = manyan_field(elem, "attrs");
     ManyanValue *children = manyan_field(elem, "children"), *text = manyan_field(elem, "innerText");
     if (!name || manyan_kind(name) != MANYAN_STRING || !attrs || !children || !text || manyan_kind(text) != MANYAN_STRING
@@ -373,13 +375,13 @@ static void svg_markup(ManyanCall *call, Text *t, ManyanValue *elem) {
         else if (!strncmp(c, ">>", 2)) puts_(t, "&gt;&gt;"), c++;
         else put(t, c, 1);
     }
-    for (size_t i = 0; i < manyan_size(children); i++) svg_markup(call, t, manyan_value(children, i));
+    for (size_t i = 0; i < manyan_size(children); i++) svg_markup(call, t, manyan_value(children, i), depth + 1);
     puts_(t, "</"), puts_(t, manyan_string_value(name, NULL)), puts_(t, ">");
 }
 
 static ManyanValue *svg_elem_to_string(ManyanCall *call, ManyanValue **a) {
     Text t = {0};
-    svg_markup(call, &t, a[0]);
+    svg_markup(call, &t, a[0], 0);
     ManyanValue *v = manyan_string(t.s ? t.s : "", t.n);
     free(t.s);
     return v;
@@ -403,9 +405,11 @@ static ManyanValue *ring_network(ManyanCall *call, ManyanValue **a) {
 /* JSON text as Json's getValue makes it a value: an array a tuple, an
    object a record, a number Gson's getAsInt, true, false and strings
    themselves; null is no value. */
-typedef struct { ManyanCall *call; const char *p, *end; } Json;
+typedef struct { ManyanCall *call; const char *p, *end; int depth; } Json;
 
-static void json_space(Json *j) { while (j->p < j->end && strchr(" \t\r\n", *j->p)) j->p++; }
+static void json_space(Json *j) {
+    while (j->p < j->end && (*j->p == ' ' || *j->p == '\t' || *j->p == '\r' || *j->p == '\n')) j->p++;
+}
 
 static _Noreturn void json_bad(Json *j) {
     manyan_throw(j->call, "com.google.gson.JsonSyntaxException: malformed JSON at %.20s", j->p < j->end ? j->p : "end of input");
@@ -458,8 +462,11 @@ static ManyanValue *json_string(Json *j) {
         case 'u': {
             unsigned u = json_hex4(j);
             if (u >= 0xd800 && u < 0xdc00 && j->end - j->p >= 6 && j->p[0] == '\\' && j->p[1] == 'u') {   /* a surrogate pair */
+                const char *save = j->p;
                 j->p += 2;
-                u = 0x10000 + ((u - 0xd800) << 10) + (json_hex4(j) - 0xdc00);
+                unsigned lo = json_hex4(j);
+                if (lo >= 0xdc00 && lo < 0xe000) u = 0x10000 + ((u - 0xd800) << 10) + (lo - 0xdc00);
+                else j->p = save;
             }
             utf8(&t, u);
             break;
@@ -479,6 +486,7 @@ static ManyanValue *json_value(Json *j) {
     if (j->p == j->end) json_bad(j);
     if (*j->p == '"') return json_string(j);
     if (*j->p == '[' || *j->p == '{') {
+        if (++j->depth > 1000) json_bad(j);
         int object = *j->p++ == '{';
         Values keys = {0}, values = {0};
         json_space(j);
@@ -499,12 +507,13 @@ static ManyanValue *json_value(Json *j) {
             json_expect(j, object ? '}' : ']');
             break;
         }
+        j->depth--;
         ManyanValue *v = object ? manyan_record(keys.n, keys.v, values.v) : manyan_tuple(values.n, values.v);
         free(keys.v), free(values.v);
         return v;
     }
     const char *word = j->p;
-    while (j->p < j->end && !strchr(" \t\r\n,]}", *j->p)) j->p++;
+    while (j->p < j->end && *j->p && !strchr(" \t\r\n,]}", *j->p)) j->p++;
     size_t n = (size_t)(j->p - word);
     if (n == 4 && !strncmp(word, "true", 4)) return manyan_bool(1);
     if (n == 5 && !strncmp(word, "false", 5)) return manyan_bool(0);
@@ -541,7 +550,7 @@ static ManyanValue *json_deserialize(ManyanCall *call, ManyanValue **a) {
     manyan_effect(call);
     size_t n;
     char *text = json_file(call, a[0], &n);
-    Json j = {call, text, text + n};
+    Json j = {call, text, text + n, 0};
     ManyanValue *v = json_value(&j);
     json_space(&j);
     if (j.p != j.end) json_bad(&j);
@@ -557,7 +566,7 @@ static ManyanValue *nd_json_deserialize(ManyanCall *call, ManyanValue **a) {
     Values lines = {0};
     for (const char *p = text, *end = text + n; p < end;) {
         const char *eol = memchr(p, '\n', (size_t)(end - p));
-        Json j = {call, p, eol ? eol : end};
+        Json j = {call, p, eol ? eol : end, 0};
         json_space(&j);
         if (j.p < j.end) {
             add(&lines, json_value(&j));
@@ -702,11 +711,12 @@ static ManyanValue *to_json_object(ManyanCall *call, ManyanValue **a) {   /* get
 static void json_write(ManyanCall *call, ManyanValue *path, Text *t) {
     const char *name = manyan_string_value(path, NULL);
     char *dir = strdup(name);
-    for (char *p = strchr(dir + 1, '/'), *last = strrchr(dir, '/'); p && p <= last; p = strchr(p + 1, '/')) {
-        *p = 0;
-        mkdir(dir, 0777);
-        *p = '/';
-    }
+    if (*dir)
+        for (char *p = strchr(dir + 1, '/'), *last = strrchr(dir, '/'); p && p <= last; p = strchr(p + 1, '/')) {
+            *p = 0;
+            mkdir(dir, 0777);
+            *p = '/';
+        }
     free(dir);
     FILE *f = fopen(name, "w");
     if (!f) manyan_throw(call, "%s (%s)", name, strerror(errno));
@@ -1018,15 +1028,24 @@ static ManyanValue *csv_read(ManyanCall *call, ManyanValue **a) {
 
 /* A number as Java's MessageFormat gives it: #,##0.### */
 static const char *java_number(double d) {
-    char *out = manyan_alloc(64);
-    char digits[48];
-    snprintf(digits, sizeof digits, "%.3f", d);
-    char *dot = strchr(digits, '.'), *e = digits + strlen(digits);
-    while (e > dot + 1 && e[-1] == '0') *--e = 0;
-    if (e == dot + 1) *dot = 0;
+    if (isnan(d)) return "NaN";
+    if (isinf(d)) return d < 0 ? "-\xe2\x88\x9e" : "\xe2\x88\x9e";
+    char digits[512];
+    int n = snprintf(digits, sizeof digits, "%.3f", d);
+    if (n < 0 || (size_t)n >= sizeof digits) {
+        char *out = manyan_alloc(64);
+        snprintf(out, 64, "%g", d);
+        return out;
+    }
+    char *dot = strchr(digits, '.'), *e = digits + n;
+    if (dot) {
+        while (e > dot + 1 && e[-1] == '0') *--e = 0;
+        if (e == dot + 1) *dot = 0;
+    }
     if (!strcmp(digits, "-0")) strcpy(digits, "0");
     const char *p = digits, *end = strchr(digits, '.');
     size_t ints = (end ? (size_t)(end - digits) : strlen(digits)) - (*p == '-'), k = 0;
+    char *out = manyan_alloc(strlen(digits) + ints / 3 + 2);
     if (*p == '-') out[k++] = *p++;
     for (size_t i = 0; i < ints; i++) {
         if (i && (ints - i) % 3 == 0) out[k++] = ',';
@@ -1189,8 +1208,8 @@ int manyan_std_init(void) {
     static const struct { const char *module, *name; int arity; ManyanNative fn; const char *java; } natives[] = {
         {"IOUtils", "IOEnv", 0, io_env, OVERRIDE("IOUtils", "ioEnv()")},
         {"IOUtils", "atoi", 1, atoi_, OVERRIDE("IOUtils", "atoi(" J_V ")")},
-        {"IOUtils", "IOExec", 1, io_exec, OVERRIDE("IOUtils", "ioExec(" J_V ")")},
-        {"IOUtils", "IOEnvExec", 2, io_env_exec, OVERRIDE("IOUtils", "ioEnvExec(" J_V "," J_V ")")},
+        {"IOUtils", "IOExec", 1, io_exec, OVERRIDE("IOUtils", "ioExec(" J_V ") throws java.io.IOException,java.lang.InterruptedException")},
+        {"IOUtils", "IOEnvExec", 2, io_env_exec, OVERRIDE("IOUtils", "ioEnvExec(" J_V "," J_V ") throws java.io.IOException,java.lang.InterruptedException")},
         {"IOUtils", "Serialize", MANYAN_LAZY, serialize,
          "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
         {"SequencesExt", "SetToSeq", 1, set_to_seq, OVERRIDE("SequencesExt", "SetToSeq(" J_V ")")},

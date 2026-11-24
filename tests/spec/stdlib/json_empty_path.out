@@ -1,0 +1,8 @@
+Error: Attempted to apply the operator overridden by the Java method
+public static synchronized tlc2.value.impl.BoolValue tlc2.overrides.Json.serialize(tlc2.value.impl.StringValue,tlc2.value.impl.Value) throws java.io.IOException,
+but it produced the following error:
+ (No such file or directory)
+
+0 states generated, 0 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 0.
+exit 75

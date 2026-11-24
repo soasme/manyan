@@ -156,6 +156,24 @@ Next == x' = x""", "INIT Init\nNEXT Next\n"))
         self.assertEqual(run.status, 75)
         self.assertIn("TLCGet(1) was undefined", run.output)
 
+    def test_json_safety_cases(self):
+        # Regression for #20: deep nesting, NUL bytes, and lone high surrogate in JsonDeserialize
+        deep = "[" * 5000 + "1" + "]" * 5000
+        run = check(["J"], {**spec("J", 'EXTENDS Json\nVARIABLE x\nInit == x = JsonDeserialize("d.json")\nNext == x\' = x',
+                                   "INIT Init\nNEXT Next\n"), "d.json": deep})
+        self.assertEqual(run.status, 75)
+        run2 = check(["J2"], {**spec("J2", 'EXTENDS Json\nVARIABLE x\nInit == x = JsonDeserialize("s.json")\nNext == x\' = x\nInv == x # "\\u2441"',
+                                     "INIT Init\nNEXT Next\nINVARIANT Inv\n"), "s.json": '"\\uD800\\u0041"'})
+        self.assertEqual(run2.status, 0)
+        run3 = check(["J3"], {**spec("J3", 'EXTENDS Json\nVARIABLE x\nInit == x = JsonDeserialize("n.json")\nNext == x\' = x',
+                                     "INIT Init\nNEXT Next\n"), "n.json": "\x001"})
+        self.assertEqual(run3.status, 75)
+        run4 = check(["CS"], {**spec("CS", 'EXTENDS Statistics\nVARIABLE x\nInit == x = ChiSquare(<<1, 1>>, <<1, 1>>, "1e60")\nNext == x\' = x',
+                                     "INIT Init\nNEXT Next\n"),
+                              "Statistics.tla": (ROOT / "tests/spec/stdlib/chi_square.files/Statistics.tla").read_text()})
+        self.assertEqual(run4.status, 75)
+        self.assertIn("out of bounds significance level", run4.output)
+
 
 if __name__ == "__main__":
     unittest.main()
