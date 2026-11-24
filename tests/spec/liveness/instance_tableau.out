@@ -1,0 +1,13 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Prop was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ x = 1
+/\ y = 0
+
+State 2: Stuttering
+2 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 13

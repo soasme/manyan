@@ -1,0 +1,14 @@
+Finished computing initial states: 2 states generated, with 1 of them distinct.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ f = ({} :> FALSE @@ {m1} :> TRUE @@ {m2} :> FALSE @@ {m1, m2} :> TRUE)
+/\ m = m1
+
+State 2: <Next line 8, col 9 to line 8, col 31 of module symmetry_lambda>
+/\ f = ({} :> FALSE @@ {m1} :> TRUE @@ {m2} :> FALSE @@ {m1, m2} :> TRUE)
+/\ m = m2
+
+4 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+exit 12

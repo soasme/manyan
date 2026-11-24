@@ -5023,7 +5023,7 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
     case X_OP: {
         resolve_args(e->args, e->n, sc);
         for (int i = 0; core_ops[i].name; i++)
-            if (strcmp(core_ops[i].name, S(e->op)) == 0) { e->kind = (short)core_ops[i].kind; check_temporal(e); return; }
+            if (strcmp(core_ops[i].name, S(e->op)) == 0) { e->kind = (short)core_ops[i].kind; return; }
         Def *d = scope_lookup(sc, e->op);
         Sym *sym = d ? NULL : module_lookup(cur_module, e->op);
         if (sym) d = sym->def;
@@ -5047,7 +5047,6 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
         resolve_bounds(e, &inner);
         resolve_args(e->args, e->n, inner);
         label_bounds = saved_lb;
-        check_temporal(e);
         return;
     }
     case X_LET: {
@@ -5562,6 +5561,7 @@ static const char *sany_connective(int kind) {
    the parameters and declarations it uses. */
 static void check_levels(Expr *e, int max) {
     if (!e) return;
+    check_temporal(e);
     Def *d = e->def;
     switch (e->kind) {
     case K_BOUND: case K_DECL:
@@ -5688,8 +5688,10 @@ static int def_level(Def *d) {
         if (d->body) l = expr_level(d->body);
         for (int i = 0; i < d->nb; i++) if (d->bounds[i].set) { int b = expr_level(d->bounds[i].set); if (b > l) l = b; }
     } else if (d->kind == D_INST) {
-        for (int i = 0; i < d->nsubst; i++)
-            if (d->subst_expr[i]->kind != X_OPREF) { int b = expr_level(d->subst_expr[i]); if (b > l) l = b; }
+        for (int i = 0; i < d->nsubst; i++) {
+            int b = expr_level(d->subst_expr[i]);
+            if (b > l) l = b;
+        }
     }
     d->level_busy = 0;
     if (every_argument) d->level_bound = l + 1;
@@ -5711,7 +5713,7 @@ static int subst_level(Expr *e, Def **chain, int n, unsigned walk) {
     if (!e) return 0;
     Def *in = chain[n - 1];
     int l = 0, k;
-    if (e->kind == K_DECL)
+    if (e->kind == K_DECL || e->kind == K_PARAMCALL)
         for (int i = 0; i < in->nsubst; i++)
             if (in->subst_decl[i] == e->def) {
                 Expr *x = in->subst_expr[i];
@@ -5777,6 +5779,7 @@ static int level_params(Expr *e) {
     if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && e->def == param_probe) return 1;
     switch (e->kind) {
     case K_DECL: return 1;
+    case K_PARAMCALL: if (e->def->kind == D_CONST) return 1; break;
     case K_PRIME: case K_UNCHANGED: case X_SQACT: case X_ANGLEACT: case K_ENABLED:
     case K_ALWAYS: case K_EVENTUALLY: case K_LEADSTO: case K_WHILE: case X_WF: case X_SF:
     case X_TFORALL: case X_TEXISTS: case X_LAMBDA: case X_OPREF:
@@ -5841,7 +5844,7 @@ static int expr_level(Expr *e) {
         for (int i = 0; i < e->n - 1; i++) { int k = max_level(e->paths[i].keys, e->paths[i].n); if (k > l) l = k; }
         return l;
     case X_LAMBDA: return expr_level(e->def->body);
-    case X_OPREF: return def_level(e->def);
+    case X_OPREF: return e->def ? def_level(e->def) : 0;
     default: return l;
     }
 }
@@ -6320,7 +6323,7 @@ static Def *const_operator(Def *d, Ctx c, Ctx *at) {
         if (i >= 0) {
             Expr *x = in->def->subst_expr[i];
             *at = (Ctx){in->env, in->parent};
-            if (x->kind != X_OPREF) return NULL;
+            if (x->kind != X_OPREF && !(x->kind == K_CALL && x->n == 0)) return NULL;
             return x->def->kind == D_CONST ? const_operator(x->def, *at, at) : x->def;
         }
     }
@@ -8093,6 +8096,7 @@ static Register *registers;
 static int nregisters;
 static Value *register_key(int64_t key) { return key < 0 ? mk_str((int)(-1 - key)) : mk_int(key); }
 static Buf *register_at(Value *k, int make) {
+    if (in_worker) worker_cannot();
     int64_t key = k->kind == V_INT ? k->u.i : -1 - (int64_t)k->u.i;
     for (int i = 0; i < nregisters; i++) if (registers[i].key == key) return &registers[i].val;
     if (!make) return NULL;
@@ -8109,6 +8113,7 @@ static Value *register_get(Value *k) {
 /* TLCGet("all") or "all:named": the numbered or named registers, each to
    the tuple of its value in each worker, which in manyan is the one. */
 static Value *registers_all(int named) {
+    if (in_worker) worker_cannot();
     List keys = {0}, vals = {0};
     for (int i = 0; i < nregisters; i++)
         if ((registers[i].key < 0) == named) {
@@ -10729,6 +10734,9 @@ static Value *permute_value(Value *v, Value *perm) {
         for (int i = 0; i < v->n; i++) t->u.fcn.vals[i] = permute_value(v->u.fcn.vals[i], perm);
         return t;
     }
+    case V_LAMBDA:
+        if (set_is_infinite(v->u.l.a)) return v;
+        return permute_value(realize(v), perm);
     case V_FCN: {
         List keys = {0}, vals = {0};
         for (int i = 0; i < v->n; i++) {
@@ -10871,6 +10879,8 @@ static int permuted_hashes(Value *v, uint64_t *h, int atom, int depth) {
                 sums[p] += wymix((km ? k[p] : k0) ^ 0x8ebc6af09c88c6e3ULL, (vm ? x[p] : x0) ^ 0x589965cc75374cc3ULL);
         }
         tag = 0x06 | (uint64_t)v->n << 8;
+    } else if (v->kind == V_LAMBDA && !set_is_infinite(v->u.l.a)) {
+        return permuted_hashes(realize(v), h, atom, depth);
     } else {
         return 0;   /* an interval, or a value hashed as it is */
     }
@@ -15449,7 +15459,8 @@ static int tfl_same(TF **a, int na, TF **b, int nb) {
 static int tnode_add(TFList lits, TFList next) {
     for (int i = 0; i < lits.n; i++)
         for (int j = 0; j < lits.n; j++)
-            if (lits.v[i]->atom == lits.v[j]->atom && lits.v[i]->c.env == lits.v[j]->c.env && lits.v[i]->neg != lits.v[j]->neg) return -1;
+            if (lits.v[i]->atom == lits.v[j]->atom && lits.v[i]->c.env == lits.v[j]->c.env
+                && lits.v[i]->c.inst == lits.v[j]->c.inst && lits.v[i]->neg != lits.v[j]->neg) return -1;
     for (int i = 0; i < ntnodes; i++)
         if (tfl_same(tnodes[i].lits, tnodes[i].nlits, lits.v, lits.n) &&
             tfl_same(tnodes[i].next, tnodes[i].nnext, next.v, next.n)) return i;
