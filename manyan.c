@@ -2522,7 +2522,7 @@ static Tok *lex(const char *src, const char *file, int *count) {
                 if (!s[len] || s[len] == '\n') parse_error(file, t->line, t->col, "Unterminated string");
                 if (s[len] == '\\') {
                     char e = s[len + 1];
-                    if (!e) parse_error(file, t->line, t->col, "Unterminated string");
+                    if (!e || e == '\n' || e == '\r') parse_error(file, t->line, t->col, "Unterminated string");
                     char c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e == 'f' ? '\f' : e;
                     buf_add(&b, &c, 1);
                     len += 2;
@@ -2850,7 +2850,8 @@ static Expr *parse_name(void) {
         memset(s, 0, sizeof *s);
         static const char *sels[] = {"<<", ">>", ":", "@", "("};
         for (int k = 0; k < 5 && n > 1; k++) if (is_op(t, sels[k])) s->sel = -1 - k;
-        if (n > 1 && t->kind == T_NUM && t->num > 0) s->sel = (int)t->num;
+        if (n > 1 && t->kind == T_NUM && t->num > 0)
+            s->sel = t->num > INT32_MAX ? INT32_MAX : (int)t->num;
         if (s->sel == SEL_NULL) {
             s->args = parse_args(&s->n);
         } else if (s->sel) {
@@ -3153,22 +3154,32 @@ static Expr *parse_primary(void) {
             if (binder_ahead()) {
                 e = mk_expr(X_FILTER, t);
                 int start = P->pos;
-                Bound b;
-                memset(&b, 0, sizeof b);
-                Expr tmp;
-                memset(&tmp, 0, sizeof tmp);
-                parse_bounds(&tmp, 0);
-                if (tmp.nb == 1 && is_op(peek(), ":") && (tmp.bounds[0].n == 1 || tmp.bounds[0].tuple)) {
+                Bound b = {.tuple = is_op(peek(), "<<"), .pos = peek()->pos};
+                if (b.tuple) next();
+                b.line = peek()->line;
+                b.col = peek()->col;
+                if (b.tuple) {
+                    do PUSH(b.names, b.n, expect_ident()); while (is_op(peek(), ",") && next());
+                    expect_op(">>");
+                } else {
+                    PUSH(b.names, b.n, expect_ident());
+                }
+                if (is_op(peek(), "\\in")) {
                     next();
-                    e->bounds = tmp.bounds;
-                    e->nb = 1;
-                    e->n = 1;
-                    e->args = NEWN(Expr *, 1);
-                    e->args[0] = parse_expr();
-                    expect_op("}");
-                    P->limit = saved;
-                    finish(e);
-                    return e;
+                    b.set = parse_expr();
+                    if (is_op(peek(), ":")) {
+                        next();
+                        e->bounds = NEW(Bound);
+                        e->bounds[0] = b;
+                        e->nb = 1;
+                        e->n = 1;
+                        e->args = NEWN(Expr *, 1);
+                        e->args[0] = parse_expr();
+                        expect_op("}");
+                        P->limit = saved;
+                        finish(e);
+                        return e;
+                    }
                 }
                 P->pos = start;
             }
@@ -3617,8 +3628,10 @@ static Def *parse_instance(Tok *start, int name) {
             p->name = pname;
             PUSH(d->subst_decl, n, p);
             Tok *at = peek();
-            if ((at->kind == T_OP || at->kind == T_KW) && (is_op(peek_at(1), ",") || peek_at(1)->line != at->line ||
-                                                             peek_at(1)->kind == T_SEP || peek_at(1)->kind == T_END)) {
+            if ((at->kind == T_OP || at->kind == T_KW) &&
+                (op_info(at, INFIX) || op_info(at, PREFIX) || op_info(at, POSTFIX)) &&
+                (is_op(peek_at(1), ",") || peek_at(1)->line != at->line ||
+                 peek_at(1)->kind == T_SEP || peek_at(1)->kind == T_END)) {
                 Expr *r = mk_expr(X_OPREF, at);
                 r->op = canonical(at->id);
                 next();
@@ -5863,7 +5876,6 @@ static int expr_level(Expr *e) {
         return d > l ? d : l;
     }
     case X_LET:
-        for (int i = 0; i < e->ndefs; i++) { int d = def_level(e->defs[i]); if (d > l) l = d; }
         return l;
     case X_EXCEPT:
         for (int i = 0; i < e->n - 1; i++) { int k = max_level(e->paths[i].keys, e->paths[i].n); if (k > l) l = k; }
@@ -14054,7 +14066,10 @@ static int cfg_token(CfgLexer *L) {
         Buf b = {0};
         while (s[n] != '"') {
             if (!s[n] || s[n] == '\n' || s[n] == '\r') cfg_string_error(L, n);
-            if (s[n] == '\\' && s[n + 1]) n++;
+            if (s[n] == '\\') {
+                if (!s[n + 1] || s[n + 1] == '\n' || s[n + 1] == '\r') cfg_string_error(L, n + 1);
+                n++;
+            }
             buf_add(&b, s + n, 1);
             n++;
         }
@@ -24623,7 +24638,7 @@ static int needs_parens(Fmt *f, Expr *c, const OpInfo *p, int is_right, int flat
     if (ci->fix == INFIX) return !(ci->lo > p->hi);
     if (ci->fix == PREFIX) {
         if (strcmp(ci->name, "-.") == 0 && p->hi >= 12) return 1;
-        if (p->left && p->hi >= ci->lo) return 1;
+        if ((!open_ok || p->left) && p->hi >= ci->lo) return 1;
         return 0;
     }
     return 0;
