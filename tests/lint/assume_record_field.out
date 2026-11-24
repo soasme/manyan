@@ -1,0 +1,8 @@
+line 4, col 7 to line 4, col 7 of module assume_record_field
+
+The field name "A" in the record constructor is identical to the existing definition or declaration
+named A, located at line 3, col 1 to line 3, col 16 of module assume_record_field.
+The field in the record will not take the value of the A definition or declaration.
+In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.
+Therefore, DOMAIN [A |-> ...] = {"A"} holds true.
+OK

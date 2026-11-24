@@ -85,12 +85,13 @@ static Block *unlinked(Block *b) {
     return b;
 }
 
-static void *xmalloc(size_t n) { return linked(malloc(sizeof(Block) + n), quit != NULL); }
-static void *xcalloc(size_t n, size_t size) { return linked(calloc(1, sizeof(Block) + n * size), quit != NULL); }
+static void *xmalloc(size_t n) { return linked(n > SIZE_MAX - sizeof(Block) ? NULL : malloc(sizeof(Block) + n), quit != NULL); }
+static void *xcalloc(size_t n, size_t size) { return linked(size && n > (SIZE_MAX - sizeof(Block)) / size ? NULL : calloc(1, sizeof(Block) + n * size), quit != NULL); }
 static void xfree(void *p) { if (p) free(unlinked((Block *)p - 1)); }
 
 static void *xrealloc(void *p, size_t n) {
     if (!p) return xmalloc(n);
+    if (n > SIZE_MAX - sizeof(Block)) return linked(NULL, 0);
     Block *b = (Block *)p - 1;
     int tracked = b->link.next != NULL;
     return linked(realloc(unlinked(b), sizeof(Block) + n), tracked);
@@ -136,9 +137,10 @@ static void free_check(void) {
 
 /* Memory the caller fills, 8-byte aligned; alloc's is zeroed. */
 static void *alloc_raw(size_t n) {
+    if (n > SIZE_MAX - sizeof(Chunk) - 7) return linked(NULL, 0);
     n = (n + 7) & ~(size_t)7;
     Chunk *c = arena->head;
-    if (!c || c->used + n > c->size) {
+    if (!c || n > c->size - c->used) {
         size_t size = n > 1 << 20 ? n : 1 << 20;
         Chunk *fresh = size == 1 << 20 && arena->spare ? arena->spare : xmalloc(sizeof(Chunk) + size);
         if (fresh == arena->spare) arena->spare = NULL;
@@ -249,6 +251,7 @@ typedef struct { char *s; size_t n, cap; } Buf;
 
 /* Room for n more bytes and the terminating 0. */
 static inline void buf_room(Buf *b, size_t n) {
+    if (n > SIZE_MAX / 2 - b->n - 1) linked(NULL, 0);
     if (b->n + n + 1 > b->cap) {
         b->cap = (b->n + n + 1) * 2;
         b->s = xrealloc(b->s, b->cap);
@@ -270,6 +273,7 @@ static void buf_printf(Buf *b, const char *fmt, ...) {
     va_start(ap, fmt);
     int n = vsnprintf(small, sizeof small, fmt, ap);
     va_end(ap);
+    if (n < 0) return;
     if (n < (int)sizeof small) { buf_add(b, small, (size_t)n); return; }
     char *big = xmalloc((size_t)n + 1);
     va_start(ap, fmt);
@@ -3623,10 +3627,11 @@ static void unit_span(Unit *u, Tok *first, Tok *last, int kw, int group) {
 /* A name SANY records where it appears: a RECURSIVE operator's, a theorem's or an assumption's. */
 static void add_name(Module *m, Def *d) { add_unit(m, 4, d, NULL, NULL, 0); }
 
-static Def *thm_name(int name) {
+static Def *thm_name(int name, Tok *at) {
     Def *d = NEW(Def);
     d->kind = D_THM;
     d->name = name;
+    d->where = mk_expr(X_NAME, at);
     return d;
 }
 
@@ -3720,7 +3725,7 @@ static Module *parse_module(Module *outer) {
             unit_section = 1;
             next();
             Def *d = NULL;
-            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); }
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id, t); next(); }
             Expr *e = parse_expr();
             if (d) { d->body = e; add_name(m, d); }
             Unit *u = add_unit(m, 2, d, e, NULL, 0);
@@ -3733,7 +3738,7 @@ static Module *parse_module(Module *outer) {
             unit_section = 2;
             next();
             Def *d = NULL;
-            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id); next(); add_name(m, d); }
+            if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id, t); next(); add_name(m, d); }
             /* A theorem's statement is kept for its subexpressions; ASSUME ... PROVE is not. */
             Expr *body = NULL;
             if (!is_kw(peek(), "ASSUME")) {
@@ -4678,6 +4683,7 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
         if (s->sel == 0 && names) {
             cur = find_label(cur, s->name, own);
             if (!cur) semantic_error(e, "Unknown label `%s'.", S(s->name));
+            if (cur->label->n && !cur->label->defs) semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
             take(&sel, e, cur->label->defs, cur->label->n, s);
             own = 1;
         } else if (s->sel == 0) {
@@ -4698,8 +4704,11 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
                 if (s->sel == SEL_NULL || s->sel == SEL_AT) {
                     Def *bound[64];
                     int nbound = 0;
-                    for (int b = 0; b < cur->nb; b++)
+                    for (int b = 0; b < cur->nb; b++) {
+                        if (cur->bounds[b].n && !cur->bounds[b].defs)
+                            semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
                         for (int j = 0; j < cur->bounds[b].n && nbound < 64; j++) bound[nbound++] = cur->bounds[b].defs[j];
+                    }
                     take(&sel, e, bound, nbound, s);
                     n = 1, cur = cur->args[0];
                 } else if ((n = operand(s->sel, cur->bounds[0].set ? cur->nb : 0))) {
@@ -4764,10 +4773,10 @@ static void resolve_call_args(Def *d, Expr **args, int n, Scope *sc) {
 /* Resolves A!B(x)!C: each segment but the last names an instance, or
    the segments after a definition select a subexpression of it. */
 static void resolve_path(Expr *e, Scope *sc, int want_arity) {
-    Def *path[32];
-    Seg pargs[32];
-    int np = 0;
-    memset(pargs, 0, sizeof pargs);
+    Def *path_buf[32], **path = path_buf;
+    Seg pargs_buf[32], *pargs = pargs_buf;
+    int np = 0, cap = 32;
+    memset(pargs_buf, 0, sizeof pargs_buf);
     Module *m = cur_module;
     Def *d = NULL;
     Expr **args = NULL;
@@ -4782,8 +4791,18 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
             sym = module_lookup(m, s->name);
             if (sym && sym->local) sym = NULL;
         }
+        int need = np + (sym ? sym->npath : 0) + 1;
+        if (need > cap) {
+            int ncap = cap;
+            while (ncap < need) ncap *= 2;
+            Def **np2 = NEWN(Def *, ncap);
+            Seg *na2 = NEWN(Seg, ncap);
+            memcpy(np2, path, sizeof(Def *) * (size_t)np);
+            memcpy(na2, pargs, sizeof(Seg) * (size_t)np);
+            path = np2, pargs = na2, cap = ncap;
+        }
         if (sym) {
-            for (int k = 0; k < sym->npath && np < 32; k++) path[np++] = sym->path[k];
+            for (int k = 0; k < sym->npath; k++) path[np++] = sym->path[k];
             d = sym->def;
         }
         if (!d) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
@@ -5308,7 +5327,7 @@ static void resolve_module(Module *m) {
             d->kind = D_OP;
             d->level = d->var_index = -1;
             resolve_def(d, NULL);
-            add_sym(m, d->name, d, NULL, 0, 0, NULL);
+            add_sym(m, d->name, d, NULL, 0, 0, d->where);
         } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
             if (own_sym(m, u->def->name))
                 semantic_error(u->def->where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(u->def->name));
@@ -5754,6 +5773,7 @@ static int max_level(Expr **args, int n) {
    predicate when they are not empty. */
 static Def *param_probe;
 static int level_params(Expr *e) {
+    if (!e) return 0;
     if ((e->kind == K_BOUND || e->kind == K_PARAMCALL) && e->def == param_probe) return 1;
     switch (e->kind) {
     case K_DECL: return 1;
@@ -7694,7 +7714,8 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
         if (*p != '%') { buf_add(b, p, 1); continue; }
         const char *spec = p++;
         int64_t index = 0;
-        int left = 0, width = 0, prec = -1;
+        int left = 0;
+        int64_t width = 0, prec = -1;
         const char *q = p;
         for (; isdigit((unsigned char)*q); q++) if (index <= INT32_MAX) index = index * 10 + (*q - '0');
         if (*q == '$' && q > p) {
@@ -7706,8 +7727,8 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
         }
         else index = 0;
         for (; *p && strchr("-#+ 0,(<", *p); p++) left |= *p == '-';
-        while (isdigit((unsigned char)*p)) width = width * 10 + (*p++ - '0');
-        if (*p == '.') for (prec = 0, p++; isdigit((unsigned char)*p); p++) prec = prec * 10 + (*p - '0');
+        while (isdigit((unsigned char)*p)) { if (width <= INT32_MAX) width = width * 10 + (*p - '0'); p++; }
+        if (*p == '.') for (prec = 0, p++; isdigit((unsigned char)*p); p++) { if (prec <= INT32_MAX) prec = prec * 10 + (*p - '0'); }
         char c = *p;
         if (c == '%' || c == 'n') { buf_puts(b, c == '%' ? "%" : "\n"); continue; }
         if (!c || !strchr("sSbBhHdoxXeEfgGaAcCtT", c)) {
@@ -7726,6 +7747,10 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
             *cls = "java.util.IllegalFormatConversionException";
             return format_msg;
         }
+        if (width > (1 << 20)) {
+            *cls = "java.lang.OutOfMemoryError";
+            return "Java heap space";
+        }
         Buf t = {0};
         if (c == 's' || c == 'S') buf_puts(&t, args[i]);
         else if (c == 'b' || c == 'B') buf_puts(&t, "true");
@@ -7734,9 +7759,9 @@ static const char *java_format(Buf *b, const char *f, int n, const char *const *
             for (const char *k = args[i]; *k; k++) h = 31 * h + (unsigned char)*k;
             buf_printf(&t, "%x", h);
         }
-        int len = prec >= 0 && (size_t)prec < t.n ? prec : (int)t.n;
+        int len = prec >= 0 && (size_t)prec < t.n ? (int)prec : (int)t.n;
         if (isupper((unsigned char)c)) for (int k = 0; k < len; k++) t.s[k] = (char)toupper((unsigned char)t.s[k]);
-        buf_printf(b, left ? "%-*.*s" : "%*.*s", width, len, t.s ? t.s : "");
+        buf_printf(b, left ? "%-*.*s" : "%*.*s", (int)width, len, t.s ? t.s : "");
         xfree(t.s);
     }
     return NULL;
@@ -8167,9 +8192,11 @@ NATIVE(n_tlcset) {
     }
     if (a[0]->kind == V_STR ? strncmp(S(a[0]->u.i), "s:", 2) : a[0]->kind != V_INT || a[0]->u.i < 0)
         fail_module("The first argument of TLCSet should be a nonnegative integer, but instead it is:\n%s", pretty(a[0]));
+    Buf tmp = {0};
+    encode(&tmp, a[1]);
     Buf *b = register_at(a[0], 1);
-    b->n = 0;
-    encode(b, a[1]);
+    xfree(b->s);
+    *b = tmp;
     return TRUEV;
 }
 
@@ -9822,7 +9849,10 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
                 if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
                 else env = mk_arg(d->params[i], e->args[i], c, env);
             }
-            return gen(d->body, (Ctx){env, b->ctx_inst}, k);
+            deeper();
+            int r = gen(d->body, (Ctx){env, b->ctx_inst}, k);
+            eval_depth--;
+            return r;
         }
         Env *env = NULL;
         for (int i = 0; i < e->n; i++) {
@@ -9845,7 +9875,10 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
             else env = mk_arg(d->params[i], e->args[i], c, env);
         }
-        return gen(d->body, (Ctx){env, at.inst}, k);
+        deeper();
+        int r = gen(d->body, (Ctx){env, at.inst}, k);
+        eval_depth--;
+        return r;
     }
     case K_INSTCALL: {
         if (e->def->kind != D_OP || e->def->native) break;
@@ -9853,13 +9886,19 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         int plain = e->n == 0;
         for (int i = 0; i < e->ndefs && plain; i++) plain = e->defs[i]->nparams == 0;
         if (plain && expr_level(e) == 0) break;
-        return gen(e->def->body, instance_ctx(e, c), k);
+        deeper();
+        int r = gen(e->def->body, instance_ctx(e, c), k);
+        eval_depth--;
+        return r;
     }
     case K_BOUND: {
         /* A parameter stands for its argument, which may be an action. */
         Env *b = env_find(c.env, e->def);
         if (!b || !b->e) break;
-        return gen(b->e, (Ctx){b->ctx_env, b->ctx_inst}, k);
+        deeper();
+        int r = gen(b->e, (Ctx){b->ctx_env, b->ctx_inst}, k);
+        eval_depth--;
+        return r;
     }
     case K_EQ: {
         int var = assignable(e->args[0], c);
@@ -10186,6 +10225,7 @@ static int def_scan(Def *d) {
 /* Whether evaluating e in env can have no effect: what its names are bound
    to evaluated, or itself so. */
 static int arg_pure(Expr *e, Env *env) {
+    if (!e) return 1;
     if (e->kind == K_BOUND || (e->kind == K_CALL && e->def->local == 2 && !e->def->nparams)) {   /* a LET definition's too */
         Env *b = env_find(env, e->def);
         if (!b) return 0;
@@ -13992,6 +14032,7 @@ static int cfg_name(CfgLexer *L, int kind) {
    value, as TLC takes any other token. TLC makes the model values before
    it reads a module, so their names are interned even when cfg_scanning,
    when no value is made (§7.5). */
+static int cfg_depth;
 static Value *cfg_value(CfgLexer *L, int kind) {
     if (!kind) cfg_fail(L, "It was expecting a value, but did not find it.");
     if (symbolic_mode && cfg_is(kind, "-") && isdigit((unsigned char)L->s[L->pos])) {   /* a negative integer */
@@ -13999,6 +14040,11 @@ static Value *cfg_value(CfgLexer *L, int kind) {
         return cfg_scanning ? NULL : mk_int(-cfg_num);
     }
     if (cfg_is(kind, "{")) {
+        int lim = stack_limit ? stack_limit : 1000;
+        if (++cfg_depth > lim) {
+            printf("Error: %s\n", stack_overflow);
+            stop(MANYAN_ERROR);
+        }
         List l = {0};
         kind = cfg_token(L);
         if (!cfg_is(kind, "}"))
@@ -14009,6 +14055,7 @@ static Value *cfg_value(CfgLexer *L, int kind) {
                 if (!cfg_is(kind, ",")) cfg_fail(L, "It was expecting }, but did not find it.");
                 kind = cfg_token(L);
             }
+        cfg_depth--;
         return cfg_scanning ? NULL : list_set(&l);
     }
     if (cfg_scanning && (kind == 'n' || kind == 's' || cfg_is(kind, "TRUE") || cfg_is(kind, "FALSE"))) return NULL;
@@ -14037,6 +14084,7 @@ static void cfg_add(const char *keyword, int name, int op, Value *v, int target,
    the second, after the modules, makes its statements. */
 static void read_config(const char *text, int scanning) {
     CfgLexer L = {text, 0, 1, 1};
+    cfg_depth = 0;
     int seen[sizeof cfg_keywords / sizeof *cfg_keywords] = {0};
     cfg_scanning = scanning;
     int kind = cfg_token(&L);
@@ -25317,7 +25365,7 @@ static void reset_check(void) {
     Z(error_message); Z(error_expr); Z(error_status); Z(error_module); Z(error_java); Z(stackless);
     Z(java_frames); Z(java_depth); Z(fp_trace); Z(fp_depth); Z(fp_frames); Z(nframes); Z(tracking);
     Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
-    Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(fmt_comments); Z(nfmt_comments); Z(fmt_mode); Z(fmt_group); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
+    Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(cfg_depth); Z(fmt_comments); Z(nfmt_comments); Z(fmt_mode); Z(fmt_group); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
     Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
     Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(in_def_body); Z(label_bounds); Z(lint); Z(level_probe); Z(every_argument);
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
@@ -25469,7 +25517,9 @@ static int check_model(const ManyanOptions *o) {
     keep_going = o->keep_going;
     te_spec = !o->keep_going && !o->no_te_spec;
     for (const char *const *p = o->properties; p && *p; p++) {
-        int n = (int)(strchr(*p, '=') - *p);
+        const char *eq = strchr(*p, '=');
+        if (!eq) { fprintf(stderr, "manyan: property %s needs =\n", *p); return MANYAN_ERROR; }
+        int n = (int)(eq - *p);
         char *key = xmalloc((size_t)n + 3);
         sprintf(key, "-D%.*s", n, *p);
         *prop(key) = intern(*p + n + 1);
@@ -25493,7 +25543,14 @@ static int check_model(const ManyanOptions *o) {
     int *extends = NEWN(int, root->nextends + extra + 1);
     if (root->nextends) memcpy(extends, root->extends, sizeof(int) * (size_t)root->nextends);
     root->extends = extends;
-    for (const char *const *p = o->postconditions; p && *p; p++) root->extends[root->nextends++] = intern_n(*p, (int)(strchr(*p, '!') - *p));
+    for (const char *const *p = o->postconditions; p && *p; p++) {
+        const char *bang = strchr(*p, '!');
+        if (!bang || bang == *p || !bang[1]) {
+            fprintf(stderr, "manyan: postcondition %s needs Module!Operator\n", *p);
+            return MANYAN_ERROR;
+        }
+        root->extends[root->nextends++] = intern_n(*p, (int)(bang - *p));
+    }
     if (o->dump_trace) {
         intern("action");   /* before _JsonTrace's "state", as TLC */
         root->extends[root->nextends++] = intern("_JsonTrace");

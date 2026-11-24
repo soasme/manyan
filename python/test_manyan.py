@@ -133,6 +133,29 @@ Inv == m # M""", "CONSTANT M = M\nINIT Init\nNEXT Next\nINVARIANT Inv\n")).resul
         self.assertEqual(run.status, 0)
         self.assertEqual(run.output, "---- MODULE M ----\nVARIABLES x, y\nInit == x = 0 /\\ y = 1\n====\n")
 
+    def test_invalid_c_options(self):
+        if "MANYAN_LIB" not in os.environ:
+            return
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "M.tla").write_text("---- MODULE M ----\nVARIABLE x\nInit == x = 0\nNext == x' = x\n====\n")
+            Path(d, "M.cfg").write_text("INIT Init\nNEXT Next\n")
+            here = os.getcwd()
+            os.chdir(d)
+            try:
+                self.assertEqual(manyan.check("M", properties=["no_equals"]).status, 255)
+                self.assertEqual(manyan.check("M", postconditions=["no_bang"]).status, 255)
+                self.assertEqual(manyan.check("M", postconditions=["M!"]).status, 255)
+            finally:
+                os.chdir(here)
+
+    def test_tlcset_encode_error_no_crash(self):
+        run = check(["R"], spec("R", """EXTENDS Naturals, TLC, TLCExt
+VARIABLE x
+Init == AssertError("x", TLCSet(1, Nat)) = FALSE /\\ x = TLCGet(1)
+Next == x' = x""", "INIT Init\nNEXT Next\n"))
+        self.assertEqual(run.status, 75)
+        self.assertIn("TLCGet(1) was undefined", run.output)
+
 
 if __name__ == "__main__":
     unittest.main()

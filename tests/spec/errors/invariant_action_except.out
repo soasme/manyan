@@ -1,0 +1,2 @@
+Error: The invariant BadInv is not a state predicate (one with no primes or temporal operators).
+exit 76
