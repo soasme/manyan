@@ -15512,9 +15512,8 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         eval_restore(es);
         return d.acc ? d.acc : tf_new(d.op == TF_AND ? TF_TRUE : TF_FALSE, NULL, NULL);
     }
-    case X_LET:   /* which TLC cannot handle, and Apalache can */
-        if (symbolic_mode) return to_tf(e->args[0], let_env(e, c), neg);
-        break;
+    case X_LET:
+        return to_tf(e->args[0], let_env(e, c), neg);
     default: break;
     }
     cannot_handle(e, NULL);
