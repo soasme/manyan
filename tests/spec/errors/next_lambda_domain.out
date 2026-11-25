@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: In applying the function
+(5 :> 1 @@ 6 :> 1),
+the first argument is:
+7
+which is not in its domain.
+
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+1 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 75

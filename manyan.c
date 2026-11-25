@@ -9444,9 +9444,9 @@ static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Exp
     const char *wrong = why == 2 ? "which does not match its formal parameter." : "which is not in its domain.";
     if (!where && why == 1 && argno > 0) {   /* a part of several outside its set: TLC names the whole domain */
         const char *dom = pretty(enumerate(f->u.l.a));
-        fail_module("In applying the function\n%s,\n%s is:\n%s\nwhich is not in the function's domain %s.\n", pretty(f), part, pretty(a), dom);
+        fail("In applying the function\n%s,\n%s is:\n%s\nwhich is not in the function's domain %s.\n", pretty(f), part, pretty(a), dom);
     }
-    if (!where) fail_module("In applying the function\n%s,\n%s is:\n%s\n%s\n", pretty(f), part, pretty(a), wrong);
+    if (!where) fail("In applying the function\n%s,\n%s is:\n%s\n%s\n", pretty(f), part, pretty(a), wrong);
     /* Computing states, TLC binds the argument itself (Tool.getFcnContext). */
     if (argno < 0) fail("Attempted to apply a function to an argument not in its domain.\n%s", loc_str(where));
     fail("In applying the function\n%s,\n%s is:\n%s%s%s\n%s", pretty(f), argno || why != 2 ? part : "the argument",
