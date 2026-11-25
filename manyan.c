@@ -15333,10 +15333,18 @@ static TF *tf_new(int op, TF *a, TF *b) {
     return t;
 }
 
+static int level_in_bound(Expr *e, Ctx c) {
+    every_argument = 1;
+    int level = level_in(e, c);
+    every_argument = 0;
+    return level;
+}
+
 static TF *tf_atom(Expr *e, Ctx c, int neg) {
     TF *t = tf_new(TF_ATOM, NULL, NULL);
     t->atom = e; t->c = c; t->neg = neg;
-    t->action = level_in(e, c) >= 2;
+    int l = level_in(e, c);
+    t->action = (l == 0 ? level_in_bound(e, c) : l) >= 2;
     t->index = natoms;
     for (int i = 0; i < natoms; i++)   /* ~A has A's slot */
         if (atoms[i]->atom == e && atoms[i]->c.env == c.env && atoms[i]->c.inst == c.inst) { t->index = atoms[i]->index; break; }
@@ -15403,6 +15411,7 @@ static Value *stateless_value(Expr *e, Ctx c) {
 static TF *to_tf(Expr *e, Ctx c, int neg) {
     int level = level_in(e, c);
     if (level <= 2) {
+        if (level == 0) level = level_in_bound(e, c);
         if (level == 0) {   /* as TLC, a constant is its value */
             Value *v = eval(e, c);
             if (v->kind != V_BOOL) not_boolean_formula(e);
