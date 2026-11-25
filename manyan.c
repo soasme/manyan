@@ -430,8 +430,10 @@ static void error_reset(void) {
     stackless = 0;
 }
 
+static int silent_errors;      /* inside try_realize: error messages are discarded */
+
 static _Noreturn void raise_error(void) {
-    if (tracking && nfrozen < 0) {
+    if (tracking && nfrozen < 0 && !silent_errors) {
         int nfp = fp_depth < 64 ? fp_depth : 64;
         frozen = xmalloc(sizeof(Expr *) * (size_t)(nframes + nfp + 1));
         if (nframes) memcpy(frozen, frames, sizeof(Expr *) * (size_t)nframes);
@@ -480,30 +482,34 @@ static _Noreturn void vfail(Expr *e, int module, int status, const char *fmt, va
     raise_error();
 }
 
-static _Noreturn void fail_at(Expr *e, const char *fmt, ...) {
+static _Noreturn void fail_at_(Expr *e, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfail(e, 0, MANYAN_ERROR, fmt, ap);
 }
 
 /* An error TLC raises as a TLCRuntimeException, which exits with status. */
-static _Noreturn void fail_runtime(Expr *e, int status, const char *fmt, ...) {
+static _Noreturn void fail_runtime_(Expr *e, int status, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfail(e, 2, status, fmt, ap);
 }
 
 /* An error in an operator of a standard module, which TLC implements in Java. */
-static _Noreturn void fail_module(const char *fmt, ...) {
+static _Noreturn void fail_module_(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfail(NULL, 1, MANYAN_ERROR, fmt, ap);
 }
 
+#define fail_at(e, ...) (silent_errors ? raise_error() : fail_at_((e), __VA_ARGS__))
+#define fail_runtime(e, st, ...) (silent_errors ? raise_error() : fail_runtime_((e), (st), __VA_ARGS__))
+#define fail_module(...) (silent_errors ? raise_error() : fail_module_(__VA_ARGS__))
 #define fail(...) fail_at(NULL, __VA_ARGS__)
 
 /* An error TLC meets as Java's exception cls. */
 static _Noreturn void fail_java(const char *cls, const char *msg) {
+    if (silent_errors) raise_error();
     error_reset();
     buf_puts(&error_message, msg);
     error_module = 1;
@@ -1077,6 +1083,7 @@ static Expr *value_source(Value *v) {
 }
 
 static _Noreturn void compare_error(Value *a, Value *b) {
+    if (silent_errors) raise_error();
     fp_enter(value_source(a));
     const char *k = kind_name(a);
     if (a->kind == V_FCN && a->made == MADE_RECORD)
@@ -1091,6 +1098,7 @@ static int number_set(Value *v) { return v->kind == V_LAZY && v->lazy <= L_INT; 
 
 /* TLC's error comparing sets of which one is infinite. */
 static _Noreturn void incomparable(Value *a, Value *b) {
+    if (silent_errors) raise_error();
     /* Two overridden values compare by the first's module. */
     if (user_set(a) && user_set(b)) fail_module("Attempted to compare %s with the value\n%s", pretty(a), pretty(b));
     fp_enter(value_source(a));
@@ -1188,6 +1196,7 @@ static inline int vcmp_quick(Value *a, Value *b) {
 }
 
 static _Noreturn void equality_error(Value *a, Value *b) {
+    if (silent_errors) raise_error();
     fp_enter(value_source(a));
     const char *k = kind_name(a);
     if (a->kind == V_BOOL) fail("Attempted to compare equality of boolean %s with non-boolean:\n%s", pretty(a), pretty(b));
@@ -8111,6 +8120,7 @@ NATIVE(n_printt) {
 NATIVE(n_assert) {
     UNUSED;
     if (a[0]->kind == V_BOOL && a[0]->u.i) return TRUEV;
+    if (silent_errors) raise_error();
     error_reset();
     buf_printf(&error_message, "The first argument of Assert evaluated to FALSE; the second argument was:\n%s", pretty(a[1]));
     error_status = MANYAN_VIOLATION_ASSERT;
@@ -9296,12 +9306,12 @@ typedef struct {
     EnabledOut *enabled_out;
     int (*gen_emit)(void);
     int64_t cur_level;
-    int shifted, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes;
+    int shifted, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes, silent_errors;
 } EvalState;
 
 static EvalState eval_save(void) {
     return (EvalState){handler, arena, cur_state, next_state, gen_target, enabled_seen, at_value, enabled_out, gen_emit, cur_level,
-                       shifted, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes};
+                       shifted, gen_init, nenabled_names, java_depth, eval_depth, keep_lazy, fp_depth, nregions, nframes, silent_errors};
 }
 
 static void eval_restore(EvalState s) {
@@ -9311,7 +9321,7 @@ static void eval_restore(EvalState s) {
     gen_emit = s.gen_emit; cur_level = s.cur_level;
     shifted = s.shifted; gen_init = s.gen_init; nenabled_names = s.nenabled_names;
     java_depth = s.java_depth; eval_depth = s.eval_depth; keep_lazy = s.keep_lazy; fp_depth = s.fp_depth;
-    nregions = s.nregions; nframes = s.nframes;
+    nregions = s.nregions; nframes = s.nframes; silent_errors = s.silent_errors;
 }
 
 /* The error being reported, which an evaluation whose own error is
@@ -9348,6 +9358,7 @@ NATIVE(n_asserterror) {
     sigjmp_buf here;
     handler = &here;
     java_depth = 0;
+    silent_errors = 0;
     int failed = sigsetjmp(here, 0);
     if (!failed) eval(call->args[1], c);
     else if (error_java) { eval_restore(s); xfree(saved.msg.s); raise_error(); }   /* Java's own exception */
@@ -9367,6 +9378,7 @@ static Value *try_realize(Value *f) {
     Value *volatile r = f;
     sigjmp_buf here;
     handler = &here;
+    silent_errors = 1;
     if (!sigsetjmp(here, 0)) r = realize(r);
     eval_restore(s);
     error_restore(&e);
@@ -9436,6 +9448,7 @@ static int bind_arg(Bound *bs, int nb, Value *dom, Value *a, Env **env, int *arg
 }
 
 static _Noreturn void lambda_outside(Value *f, Value *a, int why, int argno, Expr *where) {
+    if (silent_errors) raise_error();
     char part[48];
     if (argno == 0) snprintf(part, sizeof part, "the first argument");
     else if (argno < 0) snprintf(part, sizeof part, "the argument list");
@@ -25664,7 +25677,7 @@ static void reset_check(void) {
 #define Z(x) memset(&(x), 0, sizeof(x))
     Z(perm_arena); Z(scratch_arena); Z(scratch_resets); Z(regions); Z(nregions); Z(strs); Z(nstrs);
     Z(capstrs); Z(str_table); Z(str_table_size); Z(in_worker); Z(exit_requested); Z(handler);
-    Z(error_message); Z(error_expr); Z(error_status); Z(error_module); Z(error_java); Z(stackless);
+    Z(error_message); Z(error_expr); Z(error_status); Z(error_module); Z(error_java); Z(stackless); Z(silent_errors);
     Z(java_frames); Z(java_depth); Z(fp_trace); Z(fp_depth); Z(fp_frames); Z(nframes); Z(tracking);
     Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
     Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(cfg_depth); Z(fmt_comments); Z(nfmt_comments); Z(fmt_mode); Z(fmt_group); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
