@@ -1,0 +1,23 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Prop was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module nested_leadsto>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module nested_leadsto>
+x = 2
+
+State 4: <Next line 8, col 9 to line 8, col 27 of module nested_leadsto>
+x = 3
+
+State 5: Stuttering
+Warning: The stuttering counterexample above may be caused by the absence of a fairness constraint in the behavior specification Spec defined at line 9, col 1 to line 9, col 26 of module nested_leadsto. To rule out such counterexamples, conjoin a suitable fairness constraint to Spec (compare Chapter 8, page 87ff of Specifying Systems at https://lamport.azurewebsites.net/tla/book.html).
+(Use the -nowarning option to disable this warning.)
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 13

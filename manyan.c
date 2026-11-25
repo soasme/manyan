@@ -15320,12 +15320,49 @@ typedef struct TF {
     Ctx c;
     int neg, action;   /* action: the predicate relates a state to its successor */
     int index;         /* TF_EVENTUALLY: its acceptance set; TF_ATOM: its cache slot */
+    int id;            /* unique id for canonical tableau hashing */
 } TF;
 
 static TF **eventualities;
 static int neventualities;
 static TF **atoms;
 static int natoms;
+static TF **tf_ht;
+static int tf_ht_size, tf_count, tf_no_intern;
+
+static void tf_reset(void) {
+    neventualities = 0;
+    natoms = 0;
+    tf_count = 0;
+    if (tf_ht) memset(tf_ht, 0, sizeof(TF *) * (size_t)tf_ht_size);
+}
+
+static uint64_t tf_hash_key(int op, TF *a, TF *b) {
+    uint64_t h = (uint64_t)(unsigned)op * 0x9e3779b97f4a7c15ULL;
+    if (a) h = (h ^ (uint64_t)(unsigned)a->id) * 0x100000001b3ULL;
+    if (b) h = (h ^ (uint64_t)(unsigned)b->id) * 0x100000001b3ULL;
+    return h ^ (h >> 33);
+}
+
+static void tf_ht_insert(TF *t) {
+    if ((tf_count + 1) * 2 >= tf_ht_size) {
+        int size = tf_ht_size ? tf_ht_size * 2 : 256;
+        TF **nt = xcalloc((size_t)size, sizeof(TF *));
+        for (int i = 0; i < tf_ht_size; i++) {
+            TF *x = tf_ht[i];
+            if (!x) continue;
+            int j = (int)(tf_hash_key(x->op, x->a, x->b) & (uint64_t)(size - 1));
+            while (nt[j]) j = (j + 1) & (size - 1);
+            nt[j] = x;
+        }
+        xfree(tf_ht);
+        tf_ht = nt;
+        tf_ht_size = size;
+    }
+    int j = (int)(tf_hash_key(t->op, t->a, t->b) & (uint64_t)(tf_ht_size - 1));
+    while (tf_ht[j]) j = (j + 1) & (tf_ht_size - 1);
+    tf_ht[j] = t;
+}
 
 static TF *tf_new(int op, TF *a, TF *b) {
     if (op == TF_AND || op == TF_OR) {   /* TLC simplifies a junction with a constant */
@@ -15334,14 +15371,43 @@ static TF *tf_new(int op, TF *a, TF *b) {
         if (b->op == unit) return a;
         if (a->op == TF_TRUE + TF_FALSE - unit) return a;
         if (b->op == TF_TRUE + TF_FALSE - unit) return b;
+        if (a == b) return a;
     }
     if ((op == TF_ALWAYS || op == TF_EVENTUALLY) && a->op == op) return a;   /* as TLC simplifies [][]A and <><>A */
+    if (!tf_no_intern && op != TF_ATOM && tf_ht_size) {
+        int j = (int)(tf_hash_key(op, a, b) & (uint64_t)(tf_ht_size - 1));
+        while (tf_ht[j]) {
+            TF *x = tf_ht[j];
+            if (x->op == op && x->a == a && x->b == b) return x;
+            j = (j + 1) & (tf_ht_size - 1);
+        }
+    }
     TF *t = NEW(TF);
     t->op = op; t->a = a; t->b = b;
+    t->id = ++tf_count;
     if (op == TF_EVENTUALLY) {
         t->index = neventualities;
         eventualities = xrealloc(eventualities, sizeof(TF *) * (size_t)(neventualities + 1));
         eventualities[neventualities++] = t;
+    }
+    if (!tf_no_intern && op != TF_ATOM) tf_ht_insert(t);
+    return t;
+}
+
+/* Simplifies temporal constants ([]TRUE, []FALSE, <>TRUE, <>FALSE) before
+   tableau construction, after tautology checking has run. */
+static TF *tf_simplify(TF *t) {
+    switch (t->op) {
+    case TF_TRUE: case TF_FALSE: case TF_ATOM: return t;
+    case TF_AND: case TF_OR: {
+        TF *a = tf_simplify(t->a), *b = tf_simplify(t->b);
+        return a == t->a && b == t->b ? t : tf_new(t->op, a, b);
+    }
+    case TF_ALWAYS: case TF_EVENTUALLY: {
+        TF *a = tf_simplify(t->a);
+        if (a->op == TF_TRUE || a->op == TF_FALSE) return a;
+        return a == t->a ? t : tf_new(t->op, a, NULL);
+    }
     }
     return t;
 }
@@ -15354,13 +15420,19 @@ static int level_in_bound(Expr *e, Ctx c) {
 }
 
 static TF *tf_atom(Expr *e, Ctx c, int neg) {
+    int slot = natoms;
+    for (int i = 0; i < natoms; i++) {   /* ~A has A's slot; reuse exact atom */
+        if (atoms[i]->atom == e && atoms[i]->c.env == c.env && atoms[i]->c.inst == c.inst) {
+            if (!tf_no_intern && atoms[i]->neg == neg) return atoms[i];
+            slot = atoms[i]->index;
+            break;
+        }
+    }
     TF *t = tf_new(TF_ATOM, NULL, NULL);
     t->atom = e; t->c = c; t->neg = neg;
     int l = level_in(e, c);
     t->action = (l == 0 ? level_in_bound(e, c) : l) >= 2;
-    t->index = natoms;
-    for (int i = 0; i < natoms; i++)   /* ~A has A's slot */
-        if (atoms[i]->atom == e && atoms[i]->c.env == c.env && atoms[i]->c.inst == c.inst) { t->index = atoms[i]->index; break; }
+    t->index = slot;
     atoms = xrealloc(atoms, sizeof(TF *) * (size_t)(natoms + 1));
     atoms[natoms++] = t;
     return t;
@@ -15537,12 +15609,24 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
 typedef struct { TF **lits; int nlits; TF **next; int nnext; int *succ; int nsucc; int expanded; } TNode;
 
 static TNode *tnodes;
-static int ntnodes;
+static int ntnodes, captnodes;
+static int *tnode_ht;
+static int tnode_ht_size;
 
 typedef struct { TF **v; int n; } TFList;
 
+static void tnodes_reset(void) {
+    ntnodes = 0;
+    if (tnode_ht) memset(tnode_ht, 0, sizeof(int) * (size_t)tnode_ht_size);
+}
+
+static int tfl_has(TFList l, TF *t) {
+    for (int i = 0; i < l.n; i++) if (l.v[i] == t) return 1;
+    return 0;
+}
+
 static void tfl_add(TFList *l, TF *t) {
-    for (int i = 0; i < l->n; i++) if (l->v[i] == t) return;
+    if (tfl_has(*l, t)) return;
     TF **grown = NEWN(TF *, l->n + 1);
     if (l->n) memcpy(grown, l->v, sizeof(TF *) * (size_t)l->n);
     grown[l->n++] = t;
@@ -15559,47 +15643,168 @@ static int tfl_same(TF **a, int na, TF **b, int nb) {
     return 1;
 }
 
-static int tnode_add(TFList lits, TFList next) {
-    for (int i = 0; i < lits.n; i++)
-        for (int j = 0; j < lits.n; j++)
-            if (lits.v[i]->atom == lits.v[j]->atom && lits.v[i]->c.env == lits.v[j]->c.env
-                && lits.v[i]->c.inst == lits.v[j]->c.inst && lits.v[i]->neg != lits.v[j]->neg) return -1;
-    for (int i = 0; i < ntnodes; i++)
-        if (tfl_same(tnodes[i].lits, tnodes[i].nlits, lits.v, lits.n) &&
-            tfl_same(tnodes[i].next, tnodes[i].nnext, next.v, next.n)) return i;
-    tnodes = xrealloc(tnodes, sizeof(TNode) * (size_t)(ntnodes + 1));
-    TNode *t = &tnodes[ntnodes];
-    memset(t, 0, sizeof *t);
-    t->lits = lits.v; t->nlits = lits.n; t->next = next.v; t->nnext = next.n;
-    return ntnodes++;
+static void tf_sort(TF **v, int n) {
+    for (int i = 1; i < n; i++) {
+        TF *x = v[i];
+        int j = i;
+        while (j > 0 && v[j - 1]->id > x->id) v[j] = v[j - 1], j--;
+        v[j] = x;
+    }
 }
 
-/* Expands the formulas in todo into tableau nodes, adding their indices to out. */
-static void expand(TFList todo, TFList lits, TFList next, List *out) {
+static uint64_t tnode_hash(TF **lits, int nlits, TF **next, int nnext) {
+    uint64_t h = 0xcbf29ce484222325ULL;
+    h = (h ^ (uint64_t)(unsigned)nlits) * 0x100000001b3ULL;
+    for (int i = 0; i < nlits; i++) h = (h ^ (uint64_t)(unsigned)lits[i]->id) * 0x100000001b3ULL;
+    h = (h ^ (uint64_t)(unsigned)nnext) * 0x100000001b3ULL;
+    for (int i = 0; i < nnext; i++) h = (h ^ (uint64_t)(unsigned)next[i]->id) * 0x100000001b3ULL;
+    return h ^ (h >> 33);
+}
+
+static void tnode_ht_grow(void) {
+    int size = tnode_ht_size ? tnode_ht_size * 2 : 256;
+    int *nt = xcalloc((size_t)size, sizeof(int));
+    for (int i = 0; i < ntnodes; i++) {
+        uint64_t h = tnode_hash(tnodes[i].lits, tnodes[i].nlits, tnodes[i].next, tnodes[i].nnext);
+        int j = (int)(h & (uint64_t)(size - 1));
+        while (nt[j]) j = (j + 1) & (size - 1);
+        nt[j] = i + 1;
+    }
+    xfree(tnode_ht);
+    tnode_ht = nt;
+    tnode_ht_size = size;
+}
+
+static int tnode_add(TF **lits, int nlits, TF **next, int nnext) {
+    TF **sl = nlits ? NEWN(TF *, nlits) : NULL;
+    TF **sn = nnext ? NEWN(TF *, nnext) : NULL;
+    if (nlits) { memcpy(sl, lits, sizeof(TF *) * (size_t)nlits); tf_sort(sl, nlits); }
+    if (nnext) { memcpy(sn, next, sizeof(TF *) * (size_t)nnext); tf_sort(sn, nnext); }
+    uint64_t h = tnode_hash(sl, nlits, sn, nnext);
+    if (tnode_ht_size) {
+        int j = (int)(h & (uint64_t)(tnode_ht_size - 1));
+        while (tnode_ht[j]) {
+            int i = tnode_ht[j] - 1;
+            TNode *t = &tnodes[i];
+            if (t->nlits == nlits && t->nnext == nnext &&
+                (!nlits || memcmp(t->lits, sl, sizeof(TF *) * (size_t)nlits) == 0) &&
+                (!nnext || memcmp(t->next, sn, sizeof(TF *) * (size_t)nnext) == 0))
+                return i;
+            j = (j + 1) & (tnode_ht_size - 1);
+        }
+    }
+    if ((ntnodes + 1) * 2 >= tnode_ht_size) tnode_ht_grow();
+    if (ntnodes == captnodes) tnodes = xrealloc(tnodes, sizeof(TNode) * (size_t)(captnodes = captnodes ? captnodes * 2 : 64));
+    Arena *saved = arena;
+    arena = &perm_arena;
+    TF **pl = nlits ? NEWN(TF *, nlits) : NULL;
+    TF **pn = nnext ? NEWN(TF *, nnext) : NULL;
+    if (nlits) memcpy(pl, sl, sizeof(TF *) * (size_t)nlits);
+    if (nnext) memcpy(pn, sn, sizeof(TF *) * (size_t)nnext);
+    arena = saved;
+    int idx = ntnodes++;
+    TNode *t = &tnodes[idx];
+    memset(t, 0, sizeof *t);
+    t->lits = pl; t->nlits = nlits; t->next = pn; t->nnext = nnext;
+    int j = (int)(h & (uint64_t)(tnode_ht_size - 1));
+    while (tnode_ht[j]) j = (j + 1) & (tnode_ht_size - 1);
+    tnode_ht[j] = idx + 1;
+    return idx;
+}
+
+typedef struct { int *v, n, cap; unsigned char *seen; int nseen; } ExpandOut;
+
+static void expand_emit(ExpandOut *out, int i) {
+    if (i >= out->nseen) {
+        int nc = out->nseen ? out->nseen * 2 : 64;
+        while (nc <= i) nc *= 2;
+        out->seen = xrealloc(out->seen, (size_t)nc);
+        memset(out->seen + out->nseen, 0, (size_t)(nc - out->nseen));
+        out->nseen = nc;
+    }
+    if (out->seen[i]) return;
+    out->seen[i] = 1;
+    if (out->n == out->cap) out->v = xrealloc(out->v, sizeof(int) * (size_t)(out->cap = out->cap ? out->cap * 2 : 16));
+    out->v[out->n++] = i;
+}
+
+/* Expands the formulas in todo into tableau nodes, processing alpha rules
+   before beta rules, pruning contradictions early, and skipping already-
+   satisfied beta formulas (Manna & Pnueli §5.5). */
+static void expand_rec(TFList todo, TFList lits, TFList next, TFList done, ExpandOut *out) {
+    /* Copy todo so alpha removal does not mutate the caller's slice. */
+    if (todo.n) {
+        TF **copy = NEWN(TF *, todo.n);
+        memcpy(copy, todo.v, sizeof(TF *) * (size_t)todo.n);
+        todo.v = copy;
+    }
+    for (;;) {
+        int pick = -1;
+        for (int k = todo.n - 1; k >= 0; k--) {
+            TF *f = todo.v[k];
+            if (tfl_has(done, f) || (f->op != TF_OR && f->op != TF_EVENTUALLY)) { pick = k; break; }
+            if (f->op == TF_OR && (tfl_has(done, f->a) || tfl_has(done, f->b) || tfl_has(todo, f->a) || tfl_has(todo, f->b))) { pick = k; break; }
+            if (f->op == TF_EVENTUALLY && (tfl_has(done, f->a) || tfl_has(todo, f->a) || tfl_has(next, f))) { pick = k; break; }
+        }
+        if (pick < 0) break;
+        TF *f = todo.v[pick];
+        todo.v[pick] = todo.v[--todo.n];
+        if (tfl_has(done, f)) continue;
+        switch (f->op) {
+        case TF_FALSE: return;
+        case TF_TRUE: continue;
+        case TF_ATOM:
+            for (int i = 0; i < lits.n; i++)
+                if (lits.v[i]->atom == f->atom && lits.v[i]->c.env == f->c.env &&
+                    lits.v[i]->c.inst == f->c.inst && lits.v[i]->neg != f->neg) return;
+            tfl_add(&lits, f);
+            tfl_add(&done, f);
+            break;
+        case TF_AND:
+            tfl_add(&done, f);
+            if (!tfl_has(done, f->a)) tfl_add(&todo, f->a);
+            if (!tfl_has(done, f->b)) tfl_add(&todo, f->b);
+            break;
+        case TF_ALWAYS:
+            tfl_add(&done, f);
+            if (!tfl_has(next, f)) {
+                tfl_add(&next, f);
+                if (!tfl_has(done, f->a)) tfl_add(&todo, f->a);
+            }
+            break;
+        case TF_OR:
+        case TF_EVENTUALLY:
+            tfl_add(&done, f);
+            break;
+        }
+    }
     if (todo.n == 0) {
-        int i = tnode_add(lits, next);
-        if (i >= 0) list_add(out, mk_int(i));
+        int i = tnode_add(lits.v, lits.n, next.v, next.n);
+        if (i >= 0) expand_emit(out, i);
         return;
     }
-    TF *f = todo.v[todo.n - 1];
-    TFList rest = {todo.v, todo.n - 1};
-    switch (f->op) {
-    case TF_TRUE: expand(rest, lits, next, out); return;
-    case TF_FALSE: return;
-    case TF_ATOM: { TFList l = lits; tfl_add(&l, f); expand(rest, l, next, out); return; }
-    case TF_AND: { TFList r = rest; tfl_add(&r, f->a); tfl_add(&r, f->b); expand(r, lits, next, out); return; }
-    case TF_OR: {
-        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, out);
-        TFList r2 = rest; tfl_add(&r2, f->b); expand(r2, lits, next, out);
-        return;
+    TF *f = todo.v[--todo.n];
+    tfl_add(&done, f);
+    if (f->op == TF_OR) {
+        TFList r1 = todo; tfl_add(&r1, f->a); expand_rec(r1, lits, next, done, out);
+        TFList r2 = todo; tfl_add(&r2, f->b); expand_rec(r2, lits, next, done, out);
+    } else {
+        TFList r1 = todo; tfl_add(&r1, f->a); expand_rec(r1, lits, next, done, out);
+        TFList n2 = next; tfl_add(&n2, f); expand_rec(todo, lits, n2, done, out);
     }
-    case TF_ALWAYS: { TFList r = rest; tfl_add(&r, f->a); TFList n = next; tfl_add(&n, f); expand(r, lits, n, out); return; }
-    case TF_EVENTUALLY: {
-        TFList r1 = rest; tfl_add(&r1, f->a); expand(r1, lits, next, out);
-        TFList n = next; tfl_add(&n, f); expand(rest, lits, n, out);
-        return;
-    }
-    }
+}
+
+static void expand(TF **v, int n, int **out_v, int *out_n) {
+    Arena *saved = arena, tmp = {0};
+    arena = &tmp;
+    ExpandOut out = {0};
+    TFList todo = {v, n}, none = {0};
+    expand_rec(todo, none, none, none, &out);
+    arena = saved;
+    arena_free(&tmp);
+    xfree(out.seen);
+    *out_v = out.v;
+    *out_n = out.n;
 }
 
 static int tnode_defers(int t, int e) {
@@ -15610,12 +15815,11 @@ static int tnode_defers(int t, int e) {
 static void tnode_expand(int i) {
     if (tnodes[i].expanded) return;
     tnodes[i].expanded = 1;
-    List out = {0};
-    TFList todo = {tnodes[i].next, tnodes[i].nnext}, none = {0};
-    expand(todo, none, none, &out);
-    tnodes[i].succ = NEWN(int, out.n);
-    for (int k = 0; k < out.n; k++) tnodes[i].succ[k] = (int)out.v[k]->u.i;
-    tnodes[i].nsucc = out.n;
+    int *succ, nsucc;
+    expand(tnodes[i].next, tnodes[i].nnext, &succ, &nsucc);
+    tnodes[i].succ = nsucc ? memcpy(NEWN(int, nsucc), succ, sizeof(int) * (size_t)nsucc) : NULL;
+    tnodes[i].nsucc = nsucc;
+    xfree(succ);
 }
 
 /* The values of the atoms, 0 unknown, 1 false, 2 true: natoms for each
@@ -15831,7 +16035,7 @@ static void regenerate(int s) {
 }
 
 static int tnode_admits(int n, int s) {
-    for (int i = 0; i < tnodes[n].nlits; i++) {
+    for (int i = tnodes[n].nlits - 1; i >= 0; i--) {
         TF *t = tnodes[n].lits[i];
         if (!t->action && !atom_holds(t, s, s)) return 0;
     }
@@ -16440,7 +16644,8 @@ static Value ***lasso_values(int *ls, int n) {
 /* Prints, as TLC, the properties the lasso violates, each by the name of
    its PROPERTY; one that fails to evaluate is left out. */
 static void print_violated(Value ***ls, int n, int cyc) {
-    int saved_atoms = natoms, saved_eventualities = neventualities;
+    int saved_atoms = natoms, saved_eventualities = neventualities, saved_intern = tf_no_intern;
+    tf_no_intern = 1;
     int *names = NEWN(int, ntemporal_props + 1), nnames = 0;
     for (int p = 0; p < ntemporal_props; p++) {
         EvalState saved = eval_save();
@@ -16455,6 +16660,7 @@ static void print_violated(Value ***ls, int n, int cyc) {
     }
     natoms = saved_atoms;
     neventualities = saved_eventualities;
+    tf_no_intern = saved_intern;
     for (int i = 0; i < nnames; i++) found_violated(names[i]);
     if (nnames == 1) printf("Error: Temporal property %s was violated.\n\n", S(names[0]));
     else if (nnames == 0) printf("Error: Temporal properties were violated.\n\n");
@@ -16726,19 +16932,18 @@ static void warn_stuttering(void) {
 
 /* The product nodes of the initial states, as TLC adds them. */
 static int live_roots(TF *negated, int **roots) {
-    List init = {0};
-    TFList todo = {0}, empty = {0};
-    tfl_add(&todo, negated);
-    expand(todo, empty, empty, &init);
+    int *init, ninit;
+    expand(&negated, 1, &init, &ninit);
     int n = 0;
     *roots = NULL;
     for (int s = 0; s < nstates; s++) {
         if (states[s].parent != -1) continue;
-        for (int i = 0; i < init.n; i++) {
-            int t = (int)init.v[i]->u.i;
+        for (int i = 0; i < ninit; i++) {
+            int t = init[i];
             if (tnode_admits(t, s)) PUSH(*roots, n, pnode_find(s, t, 1));
         }
     }
+    xfree(init);
     return n;
 }
 
@@ -17094,26 +17299,24 @@ static void add_init_lits(TF **v, int n) {
 
 static void live_init_lits(void) {
     for (int p = 0; p < ntemporal_props; p++) {
-        natoms = 0;
-        neventualities = 0;
-        ntnodes = 0;
-        TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
+        tf_reset();
+        tnodes_reset();
+        TF *neg = tf_simplify(to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1));
         if (!tf_tableau(neg)) continue;
-        List init = {0};
-        TFList todo = {0}, empty = {0};
-        tfl_add(&todo, neg);
-        expand(todo, empty, empty, &init);
-        for (int i = 0; i < init.n; i++) {
-            TNode *n = &tnodes[init.v[i]->u.i];
+        int *init, ninit;
+        expand(&neg, 1, &init, &ninit);
+        for (int i = 0; i < ninit; i++) {
+            TNode *n = &tnodes[init[i]];
             add_init_lits(n->lits, n->nlits);
         }
+        xfree(init);
     }
 }
 
-/* A node's literals come last first: TLC takes them in the formula's order. */
+/* A node's literals are sorted by id (formula order), as TLC takes them. */
 static void eval_init_lits(Value **st) {
     for (int i = 0; i < ninit_lits; i++)
-        for (int j = init_lits[i].n - 1; j >= 0; j--) {
+        for (int j = 0; j < init_lits[i].n; j++) {
             TF *t = init_lits[i].v[j];
             if (holds_in(t->atom, t->c, st, NULL) == t->neg) break;
         }
@@ -17152,8 +17355,7 @@ static int live_at;   /* the state live_eval is at; read after an error jumps ba
 
 static char *eval_on_state;   /* each atom: of a property without a tableau */
 static void live_eval(void) {
-    natoms = 0;
-    neventualities = 0;
+    tf_reset();
     for (int p = 0; p < ntemporal_props; p++) {
         int from = natoms;
         int flat = !tf_tableau(to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1));
@@ -17228,12 +17430,12 @@ static void atom_cache_reset(void) {
 }
 
 static TF *live_setup(int p) {
-    neventualities = 0;
-    natoms = 0;
-    ntnodes = 0;
+    tf_reset();
+    tnodes_reset();
     product_reset();
     TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
+    neg = tf_simplify(neg);
     atom_cache_reset();
     return live_negated = neg;
 }
@@ -17748,9 +17950,10 @@ static int pem_group(Pem *pems, int n, int i, int prune) {
     int forks = nworkers > 1 && !in_worker;
     TF *tf = tf_new(TF_TRUE, NULL, NULL);
     for (int j = 0; j < pems[i].tf.n; j++) tf = tf_new(TF_AND, tf, pems[i].tf.v[j]);
+    tf = tf_simplify(tf);
     promises = (TFList){0};
     tf_promises(tf);
-    ntnodes = 0;
+    tnodes_reset();
     product_reset();
     int *roots, nroots = live_roots(tf, &roots);
     live_build(tf, 0, NULL);
@@ -17833,7 +18036,7 @@ static void worker_groups(int lo, int hi) {
 static int pem_violated(void) {
     if (sim_n || nsymmetry || view_expr || !ntemporal_props) return -1;
     decoded_reset();
-    neventualities = natoms = 0;
+    tf_reset();
     TF *f = NULL, *neg = NULL;
     for (int i = 0; i < nfairness; i++) {
         TF *t = to_tf(fairness[i], root_ctx, 0);
@@ -25724,7 +25927,8 @@ static void reset_check(void) {
     Z(sim_printing); Z(sim_order); Z(sim_acts); Z(sim_n); Z(sim_init_states); Z(sim_fresh);
     Z(sim_init_arena); Z(cfg); Z(ncfg); Z(cfg_text); Z(cfg_len); Z(cfg_str); Z(cfg_scanning); Z(cfg_num);
     Z(spec_def); Z(sym_assumes); Z(nsym_assumes); Z(eventualities); Z(neventualities); Z(atoms); Z(natoms);
-    Z(tnodes); Z(ntnodes); Z(atom_cache); Z(atom_cache_size); Z(step_atoms); Z(atom_slot); Z(nstate_slots);
+    Z(tf_ht); Z(tf_ht_size); Z(tf_count); Z(tf_no_intern);
+    Z(tnodes); Z(ntnodes); Z(captnodes); Z(tnode_ht); Z(tnode_ht_size); Z(atom_cache); Z(atom_cache_size); Z(step_atoms); Z(atom_slot); Z(nstate_slots);
     Z(nstep_slots); Z(decoded); Z(decoded_arena); Z(following); Z(no_atom); Z(live_step); Z(fairs);
     Z(nfairs); Z(real_succ); Z(nreal_succ); Z(real_found); Z(product_acts); Z(pnodes); Z(npnodes);
     Z(cappnodes); Z(pnodes_mapped); Z(pnodes_of); Z(product_arena); Z(live_cap); Z(nlive_cap); Z(tlc_fps);
