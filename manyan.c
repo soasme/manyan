@@ -2765,6 +2765,7 @@ static const OpInfo *op_info(Tok *t, int fix) {
 }
 
 static Expr *parse_expr(void);
+static Expr *parse_primary(void);
 static Expr *parse_binary(int bound);
 static Def *parse_definition(int local);
 static Def *parse_param(int kind);
@@ -2955,6 +2956,7 @@ static Expr *parse_subscript(void) {
         finish(e);
         return e;
     }
+    if (is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) return parse_primary();
     if (is_op(t, "<<") || is_op(t, "(") || is_op(t, "{") || is_op(t, "[")) return parse_binary(16);
     syntax_error("expected a subscript");
 }
@@ -24780,6 +24782,7 @@ static int subscript_needs_parens(Expr *v) {
         for (int i = 0; i < v->nseg; i++) if (v->segs[i].n || v->segs[i].sel) return 1;
         return 0;
     }
+    if (v->kind == X_BOOL || (v->kind == X_OP && v->n == 0)) return 0;
     return v->kind != X_TUPLE && v->kind != X_SETENUM && v->kind != X_FILTER && v->kind != X_MAP &&
            v->kind != X_RECORD && v->kind != X_RCDSET && v->kind != X_FCNSET && v->kind != X_FCN &&
            v->kind != X_EXCEPT;
