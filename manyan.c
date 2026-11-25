@@ -1119,6 +1119,8 @@ static inline int atoms_cmp(Value **x, Value **y, int n) {
     return 0;
 }
 
+static int as_record(Value *f);
+
 /* The standard order (§7.4). Model values come first; other values of
    different kinds cannot be compared. */
 static int vcmp(Value *a, Value *b) {
@@ -1150,6 +1152,7 @@ static int vcmp(Value *a, Value *b) {
         return a->u.i < b->u.i ? -1 : a->u.i > b->u.i;
     }
     if (is_fcn(a) && is_fcn(b)) {
+        if (a->made == MADE_RECORD && !as_record(b)) compare_error(a, b);
         if (a->n != b->n) return a->n < b->n ? -1 : 1;
         fp_enter(src);
         for (int i = 0; i < a->n && !c; i++) {
@@ -1455,6 +1458,7 @@ static Value *enumerate_functions(Value **dom, int nd, Value *rng, int range) {
 static _Noreturn void count_infinite(Value *s);
 
 static Value *cup_merge(Value *a, Value *b);
+static int record_mismatch(Value *a, Value *b);
 static _Noreturn void sort_error(Value *a, Value *b);
 static Value **elements_slot(Value *s);
 static Value *enumerate_lazy(Value *s);
@@ -1681,7 +1685,8 @@ static Value *enumerate_lazy(Value *s) {
         if (s->lazy == L_CUP) {
             if (!enumerable(a) || !enumerable(b))
                 fail("Attempted to enumerate S \\cup T when S:\n%s\nand T:\n%s\nare not both enumerable", pretty(a), pretty(b));
-            if (kinds_differ(enumerate(a), enumerate(b))) sort_error(a, b);
+            Value *ea = enumerate(a), *eb = enumerate(b);
+            if (kinds_differ(ea, eb) || record_mismatch(ea, eb)) sort_error(a, b);
             set = cup_merge(a, b);
         } else if (s->lazy == L_CAP) {
             if (enumerable(a)) set = select_members(a, b, 1);
@@ -2020,19 +2025,42 @@ static int kinds_differ(Value *a, Value *b) {
     return ka >= 0 && kb >= 0 && ka != kb;
 }
 
+static int has_record(Value *s) {
+    for (int i = 0; i < s->n; i++)
+        if (s->u.set.elems[i]->kind == V_FCN && s->u.set.elems[i]->made == MADE_RECORD) return 1;
+    return 0;
+}
+
+static int has_non_record(Value *s) {
+    for (int i = 0; i < s->n; i++) {
+        Value *e = s->u.set.elems[i];
+        if (e->kind == V_LAMBDA) e = realize(e);
+        if (is_fcn(e) && !as_record(e)) return 1;
+    }
+    return 0;
+}
+
+/* 1 if a has a record and b a non-record function, -1 if vice versa, 0 else. */
+static int record_mismatch(Value *a, Value *b) {
+    if (elem_kind(a) != V_FCN || elem_kind(b) != V_FCN) return 0;
+    if (has_record(a) && has_non_record(b)) return 1;
+    if (has_record(b) && has_non_record(a)) return -1;
+    return 0;
+}
+
 /* S \cup T of two finite sets, enumerated. */
 static Value *cup_merge(Value *s, Value *b) {
     Value *a = enumerate(s);
     b = enumerate(b);
     if (!b->n) return a;
     if (!a->n) return b;
-    if (kinds_differ(a, b)) cup_error(s->kind == V_INTERVAL ? s : a, b);
+    if (kinds_differ(a, b) || record_mismatch(a, b) > 0) cup_error(s->kind == V_INTERVAL ? s : a, b);
     /* Both are sorted: merge them. */
     Value *r = mk_set(a->n + b->n);
     Value **x = a->u.set.elems, **y = b->u.set.elems, **out = r->u.set.elems;
     int i = 0, j = 0, k = 0;
     while (i < a->n && j < b->n) {
-        int c = vcmp(x[i], y[j]);
+        int c = -vcmp(y[j], x[i]);
         out[k++] = c <= 0 ? x[i] : y[j];
         i += c <= 0;
         j += c >= 0;
@@ -2047,7 +2075,15 @@ static Value *cup_merge(Value *s, Value *b) {
    keeps another as its definition, the enumerated first, unless that is
    empty. */
 static Value *set_union(Value *a, Value *b) {
-    if (reducible(a) && reducible(b)) return cup_merge(a, b);
+    if (reducible(a) && reducible(b)) {
+        Value *ea = enumerate(a), *eb = enumerate(b);
+        if (ea->n && eb->n && record_mismatch(ea, eb) < 0) {
+            for (int j = 0; j < eb->n; j++)
+                for (int i = 0; i < ea->n; i++) veq(ea->u.set.elems[i], eb->u.set.elems[j]);
+            return lazy_op(L_CUP, a, b);
+        }
+        return cup_merge(a, b);
+    }
     if (reducible(a) && !a->n) return b;
     if (reducible(b) && !b->n) return a;
     return reducible(b) ? lazy_op(L_CUP, b, a) : lazy_op(L_CUP, a, b);

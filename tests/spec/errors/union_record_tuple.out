@@ -1,0 +1,9 @@
+Error: Evaluating assumption line 5, col 8 to line 5, col 79 of module union_record_tuple failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.IntValue tlc2.module.FiniteSets.Cardinality(tlc2.value.impl.Value),
+but it produced the following error:
+Attempted to compare record:
+[a |-> 5, b |-> FALSE]
+with non-record
+<<-3>>
+exit 10
