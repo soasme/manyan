@@ -349,7 +349,7 @@ static int intern_n(const char *s, int len) {
 }
 
 static int intern(const char *s) { return intern_n(s, (int)strlen(s)); }
-#define S(id) (strs[id].s)
+static inline char *S(int id) { return strs[id].s; }
 
 /* Names TLC interns before it reads a module, in its order. */
 static const char *builtin_names[] = {
@@ -2757,7 +2757,8 @@ static int canonical(int id) {
 
 static const OpInfo *op_info(Tok *t, int fix) {
     if (t->kind != T_OP && t->kind != T_KW) return NULL;
-    const char *name = S(canonical(t->id));
+    int id = canonical(t->id);
+    const char *name = S(id);
     if (fix == PREFIX && strcmp(name, "-") == 0) name = "-.";
     for (int i = 0; op_table[i].name; i++)
         if (op_table[i].fix == fix && strcmp(op_table[i].name, name) == 0) return &op_table[i];
