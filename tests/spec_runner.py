@@ -48,7 +48,7 @@ NOISE = re.compile(
     r"Finished checking temporal properties|Implied-temporal checking|Finished in|"
     r"The average outdegree|  Estimates of the probability|  because two distinct states|"
     r"  calculated \(optimistic\)|  based on the actual fingerprints|Checking \d+ branches of temporal properties|"
-    r"Warning: Please run the Java VM|GuardMalloc\[|"
+    r"Warning: Please run the Java VM|GuardMalloc\[|Sysctl \(debug\.toggle_address_reuse\)|"
     r"Progress: \d+ states checked|The number of states generated: |Simulation using seed |"
     r"Linting of module|Trace exploration spec path: )")
 # TLC's warning that its heap is small depends on the machine.

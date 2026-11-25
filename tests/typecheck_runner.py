@@ -48,7 +48,7 @@ def run(command, path, oracle, memory):
             args = command + ["typecheck", f"--out-dir={directory}/out", path.name]
         else:
             args = command + ["-typecheck", path.stem]
-        _, output, code, killed = guarded(args, directory, 300, memory)
+        _, output, code, killed = guarded(args, directory, 300, memory, b"")
         return (f"{killed}\n" if killed else outcome(output, code)), output
 
 

@@ -104,6 +104,8 @@ $(OBJDIR)/manyan-again: tests/again.c $(SRC) $(HDR)
 test-again: $(OBJDIR)/manyan-again
 	python3 tests/spec_runner.py $(OBJDIR)/manyan-again --strict
 	python3 tests/spec_runner.py "$(OBJDIR)/manyan-again -workers 4" --strict
+	python3 tests/symbolic_runner.py $(OBJDIR)/manyan-again --strict
+	python3 tests/typecheck_runner.py $(OBJDIR)/manyan-again --strict
 	python3 tests/lint_runner.py $(OBJDIR)/manyan-again --strict
 	python3 tests/fmt_runner.py $(OBJDIR)/manyan-again --strict
 
@@ -190,6 +192,8 @@ $(OBJDIR)/manyan-sanitize: $(SRC) $(HDR)
 
 sanitize: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/manyan-sanitize --strict
+	$(SANITIZE_ENV) python3 tests/symbolic_runner.py $(OBJDIR)/manyan-sanitize --strict
+	$(SANITIZE_ENV) python3 tests/typecheck_runner.py $(OBJDIR)/manyan-sanitize --strict
 	$(SANITIZE_ENV) python3 tests/lint_runner.py $(OBJDIR)/manyan-sanitize --strict
 	$(SANITIZE_ENV) python3 tests/fmt_runner.py $(OBJDIR)/manyan-sanitize --strict
 

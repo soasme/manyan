@@ -127,7 +127,7 @@ def run(command, path, oracle, memory):
             args += ["-max-error", max_error] if max_error else []
             args += ["-run-dir", f"{directory}/run"] if path.with_suffix(".itf.json").exists() else []
             args += ["-config", cfg, path.stem]
-        _, output, code, killed = guarded(args, directory, 600, memory)
+        _, output, code, killed = guarded(args, directory, 600, memory, b"")
         if killed:
             return f"{killed}\n", output, None
         if oracle:

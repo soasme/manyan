@@ -24101,8 +24101,6 @@ static void tc_annotations(void) {
 
 /* ---------------------------------------------------------------- typing declarations */
 
-static TDecl *tc_cur_decl;
-
 static Type *tc_annotation(Def *d) {
     for (int i = 0; i < tc_ndecls; i++)
         if (tc_decls[i].def == d && tc_decls[i].frame == tc_frame) return tc_decls[i].has_annot ? ty_named(tc_decls[i].annot) : NULL;
@@ -24268,7 +24266,6 @@ static int typecheck(Module *m) {
         tc_annotations();
         for (int i = 0; i < tc_ndecls; i++) {
             TDecl *x = &tc_decls[i];
-            tc_cur_decl = x;
             tc_frame = x->frame;
             Def *d = x->def;
             if (x->assume) {   /* a definition of no parameters: (Bool) => Bool applied to it */
@@ -25952,7 +25949,7 @@ static void reset_check(void) {
     Z(tc_nentries); Z(tc_capentries); Z(tc_frames); Z(tc_nframes); Z(tc_solver); Z(tc_frame); Z(tc_env);
     Z(tc_nenv); Z(tc_cached); Z(tc_cached_path); Z(tc_at); Z(tc_made); Z(gen_types); Z(ngen_types);
     Z(call_insts); Z(ncall_insts); Z(tc_seen); Z(ntc_seen); Z(tc_quiet); Z(lib_parsed); Z(tc_decls);
-    Z(tc_ndecls); Z(tc_alias_names); Z(tc_alias_types); Z(tc_naliases); Z(tc_cur_decl); Z(atom_fresh);
+    Z(tc_ndecls); Z(tc_alias_names); Z(tc_alias_types); Z(tc_naliases); Z(atom_fresh);
     Z(mono_repeat); Z(mono_fcnsets); Z(sym_open_gens); Z(typed_mark);
     sym_ovf_guard = L_TRUE;
 #undef Z
