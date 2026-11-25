@@ -4586,9 +4586,9 @@ static Scope *push_label_bound(Scope *lb, int name, Def *d) {
 
 static void resolve_bounds(Expr *e, Scope **sc) {
     Scope *outer = *sc;
+    for (int i = 0; i < e->nb; i++) if (e->bounds[i].set) resolve_expr(e->bounds[i].set, outer);
     for (int i = 0; i < e->nb; i++) {
         Bound *b = &e->bounds[i];
-        if (b->set) resolve_expr(b->set, outer);
         b->defs = NEWN(Def *, b->n);
         for (int j = 0; j < b->n; j++) {
             Def *d = NEW(Def);
