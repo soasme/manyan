@@ -11362,7 +11362,9 @@ static int replay(Value **from, Value **to, int64_t level) {
    Returns whether an error did. */
 static int replay_error(Value **from) {
     sigjmp_buf here, *saved = handler;
+    int saved_lazy = keep_lazy;
     handler = &here;
+    keep_lazy = 0;
     tracking = 1;
     for (int i = 0; i <= K_WHILE; i++) eval_tracking[i] = eval_tracked;
     eval_fns = eval_tracking;
@@ -11376,6 +11378,7 @@ static int replay_error(Value **from) {
     tracking = 0;
     eval_fns = eval_kind;
     replay_checks = 0;
+    keep_lazy = saved_lazy;
     handler = saved;
     return failed;
 }
@@ -13201,6 +13204,7 @@ static int search(void) {
     handler = &here;
     if (sigsetjmp(here, 0)) {
         handler = NULL;
+        keep_lazy = 0;
         int status = eval_failure_status();
         int over = stackless;
         int nfp = fp_depth < 64 ? fp_depth : 64;
@@ -14329,11 +14333,12 @@ static int level_bound(Expr *e) {
 
 static Value *constant_value(Expr *e) {
     if (level_bound(e)) return NULL;
+    EvalState es = eval_save();
     sigjmp_buf here;
     handler = &here;
-    if (sigsetjmp(here, 0)) { handler = NULL; error_reset(); fp_depth = 0; return NULL; }
+    if (sigsetjmp(here, 0)) { eval_restore(es); error_reset(); return NULL; }
     Value *v = eval(e, root_ctx);
-    handler = NULL;
+    eval_restore(es);
     return v;
 }
 
@@ -14707,18 +14712,19 @@ static void evaluate_constants(Module *m) {
     for (int i = 0; i < m->ndecls; i++) {
         Def *c = m->decls[i];
         if (c->kind != D_CONST || !c->replacement || c->replacement->nparams) continue;
+        EvalState es = eval_save();
         sigjmp_buf here;
         handler = &here;
         if (sigsetjmp(here, 0)) {
-            handler = NULL;
+            eval_restore(es);
             /* A constant definition that fails is reported as the model is checked. */
-            if (level_bound(c->replacement->body) == 0) continue;
+            if (level_bound(c->replacement->body) == 0) { error_reset(); continue; }
             config_error("The configuration file substitutes constant %s with non-constant %s%s%s%s%s", S(c->name),
                          S(c->replacement->name), error_module == 1 ? "" : " - specifically: ",
                          error_module == 1 ? "" : error_message.s, error_expr ? "\n" : "", error_expr ? node_str(error_expr) : "");
         }
         call_def(c->replacement, NULL, 0, (Ctx){NULL, NULL}, NULL);
-        handler = NULL;
+        eval_restore(es);
     }
     for (int i = 0; i < m->nsyms; i++) {
         Def *d = m->syms[i].def;
@@ -17230,15 +17236,14 @@ static void grow_follow(void) {
 
 static void live_follow(int idx) {
     if (follow == -2 || (follow == -1 && !printed[idx])) return;
-    Arena *saved = arena;
+    EvalState es = eval_save();
     arena = &perm_arena;
-    sigjmp_buf here, *outer = handler;
+    sigjmp_buf here;
     handler = &here;
     if (sigsetjmp(here, 0)) {   /* the check after the search meets it */
         follow = -2;
         following = 0;
-        handler = outer;
-        arena = saved;
+        eval_restore(es);
         return;
     }
     if (follow == -1) {
@@ -17263,8 +17268,7 @@ static void live_follow(int idx) {
             break;
         }
     following = 0;
-    handler = outer;
-    arena = saved;
+    eval_restore(es);
 }
 
 /* Whether a temporal property fails on the state graph; if so, its

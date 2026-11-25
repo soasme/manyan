@@ -1,0 +1,17 @@
+Error: The second argument of \div is 0.
+Error: TLC was unable to fingerprint.
+
+Fingerprint Stack Trace:
+0. Line 6, column 9 to line 6, column 13 in const_tuple_error
+1. Line 9, column 6 to line 9, column 56 in const_tuple_error
+2. Line 9, column 17 to line 9, column 56 in const_tuple_error
+3. Line 9, column 24 to line 9, column 56 in const_tuple_error
+4. Line 9, column 41 to line 9, column 55 in const_tuple_error
+5. Line 9, column 41 to line 9, column 52 in const_tuple_error
+6. Line 9, column 43 to line 9, column 50 in const_tuple_error
+
+Reason:
+The second argument of \div is 0.
+1 states generated, 1 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 1.
+exit 75
