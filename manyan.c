@@ -17873,14 +17873,14 @@ static int live_violated(void) {
 /* As TLC does before it checks a model: a property that is no formula it
    can check, such as \EE x : F, is an error. Other errors are left for
    the check. */
-/* Whether a formula is FALSE whatever the behavior, its constants alone
-   deciding it. */
+/* Whether a formula is FALSE whatever the behavior, as TLC's simplify()
+   decides it: only conjunction and disjunction fold boolean constants,
+   not [] or <>. */
 static int tf_false(TF *t) {
     switch (t->op) {
     case TF_FALSE: return 1;
     case TF_AND: return tf_false(t->a) || tf_false(t->b);
     case TF_OR: return tf_false(t->a) && tf_false(t->b);
-    case TF_EVENTUALLY: return tf_false(t->a);   /* TLC does not fold []FALSE */
     default: return 0;
     }
 }
