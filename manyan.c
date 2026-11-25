@@ -15470,19 +15470,23 @@ static TF *to_tf(Expr *e, Ctx c, int neg) {
         return to_tf(synth(K_ALWAYS, e, 1, body, NULL), c, neg);
     }
     case X_WF: case X_SF: {
-        /* WF: []<>~ENABLED <<A>>_v \/ []<><<A>>_v; SF: <>[]~ENABLED <<A>>_v \/ []<><<A>>_v. */
+        /* As TLC (Liveness.java): WF is []<>(~ENABLED <<A>>_v \/ <<A>>_v), so
+           []WF simplifies to WF; SF is <>[]~ENABLED <<A>>_v \/ []<><<A>>_v. */
         Expr *angle = synth(X_ANGLEACT, e, 2, e->args[1], e->args[0]);
         Expr *en = synth(K_ENABLED, e, 1, angle, NULL);
+        if (e->kind == X_WF) {
+            if (!neg)
+                return tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_new(TF_OR, tf_atom(en, c, 1), tf_atom(angle, c, 0)), NULL), NULL);
+            return tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_new(TF_AND, tf_atom(en, c, 0), tf_atom(angle, c, 1)), NULL), NULL);
+        }
         if (!neg) {   /* built only so: its eventualities are the tableau's */
             TF *step = tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(angle, c, 0), NULL), NULL);
-            TF *off = e->kind == X_WF ? tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(en, c, 1), NULL), NULL)
-                                      : tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 1), NULL), NULL);
+            TF *off = tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 1), NULL), NULL);
             return tf_new(TF_OR, off, step);
         }
-        /* ~WF: <>[]ENABLED /\ <>[]~step; ~SF: []<>ENABLED /\ <>[]~step. */
+        /* ~SF: []<>ENABLED /\ <>[]~step. */
         TF *nostep = tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(angle, c, 1), NULL), NULL);
-        TF *on = e->kind == X_WF ? tf_new(TF_EVENTUALLY, tf_new(TF_ALWAYS, tf_atom(en, c, 0), NULL), NULL)
-                                 : tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(en, c, 0), NULL), NULL);
+        TF *on = tf_new(TF_ALWAYS, tf_new(TF_EVENTUALLY, tf_atom(en, c, 0), NULL), NULL);
         return tf_new(TF_AND, on, nostep);
     }
     case X_FORALL: case X_EXISTS: {
