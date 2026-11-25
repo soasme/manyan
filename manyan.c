@@ -2000,7 +2000,7 @@ static _Noreturn void sort_error(Value *a, Value *b) {
 static int elem_kind(Value *s) {
     for (int i = 0; i < s->n; i++) {
         Value *e = s->u.set.elems[i];
-        if (e->kind != V_MODEL) return is_fcn(e) ? V_FCN : is_set(e) ? V_SET : e->kind;
+        if (e->kind != V_MODEL) return is_fcn(e) || e->kind == V_LAMBDA ? V_FCN : is_set(e) ? V_SET : e->kind;
     }
     return -1;
 }
