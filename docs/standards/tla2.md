@@ -844,8 +844,11 @@ condition, checked without fairness, can fail on a finite path: one after
 which the negation holds whatever follows. TLC builds the product of the
 state graph and the negation's tableau as it expands each state, adding
 the edges of the state's nodes, and at once those of each new node whose
-state is expanded already. When such a node's tableau node has nothing
-left to require, TLC stops the search there and reports the shortest path
+state is expanded already. A tableau node is a particle (Manna and
+Pnueli's tableau, as TLC builds it), the set of formulas it holds, and
+nodes are one only when their sets are, so an initial node of `<>TRUE`
+holding `TRUE` is not the empty node it steps to. When such a node's
+tableau node is the empty one, TLC stops the search there and reports the shortest path
 to it, without its finite stuttering, as it reports an invariant
 violation: the behavior ends at its last state, the counts are those of
 that moment, and the exit status is 12. A path that ends at a state not
