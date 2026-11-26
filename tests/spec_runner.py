@@ -108,7 +108,10 @@ def guarded(command, directory, timeout, memory, input=None):
         elif shutil.disk_usage(directory).free < DISK_FLOOR:
             killed = f"under {DISK_FLOOR >> 30} GB of disk left"
         if killed:
-            os.killpg(process.pid, signal.SIGKILL)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:   # it ended meanwhile
+                pass
             break
     process.wait()
     reader.join()

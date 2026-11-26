@@ -11,6 +11,9 @@ endif
 ifeq ($(shell uname),Darwin)
 SANITIZERS = undefined
 SANITIZE_ENV = DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib
+# Guard Malloc gives each allocation pages of its own, never reused: the
+# solver's many small ones run past the runners' memory limits.
+SYM_ENV =
 else
 # Leaks are checked as manyan_check returns, not at an exit from an error;
 # AddressSanitizer's larger frames need more than 8 MB of stack for 5000
@@ -18,6 +21,7 @@ else
 SANITIZERS = address,undefined
 SANITIZE_DEFS = -DMANYAN_LEAK_CHECK
 SANITIZE_ENV = ulimit -s 65536 && ASAN_OPTIONS=leak_check_at_exit=0
+SYM_ENV = $(SANITIZE_ENV)
 endif
 PREFIX ?= /usr/local
 OBJDIR = .obj
@@ -45,7 +49,7 @@ APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-lint fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-fmt-oracle fuzz-lint fuzz-lint-oracle fuzz-typecheck fuzz-sym fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -192,7 +196,7 @@ $(OBJDIR)/manyan-sanitize: $(SRC) $(HDR)
 
 sanitize: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/spec_runner.py $(OBJDIR)/manyan-sanitize --strict
-	$(SANITIZE_ENV) python3 tests/symbolic_runner.py $(OBJDIR)/manyan-sanitize --strict
+	$(SYM_ENV) python3 tests/symbolic_runner.py $(OBJDIR)/manyan-sanitize --strict
 	$(SANITIZE_ENV) python3 tests/typecheck_runner.py $(OBJDIR)/manyan-sanitize --strict
 	$(SANITIZE_ENV) python3 tests/lint_runner.py $(OBJDIR)/manyan-sanitize --strict
 	$(SANITIZE_ENV) python3 tests/fmt_runner.py $(OBJDIR)/manyan-sanitize --strict
@@ -208,8 +212,20 @@ fuzz: $(OBJDIR)/manyan-sanitize
 fuzz-fmt: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/fuzz.py fmt $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
 
+fuzz-fmt-oracle: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/fuzz.py fmt ./manyan --sany "$(SANY)" --runs $(RUNS) --seed $(SEED)
+
 fuzz-lint: $(OBJDIR)/manyan-sanitize
 	$(SANITIZE_ENV) python3 tests/fuzz.py lint $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
+
+fuzz-lint-oracle: manyan $(TLA_JAR) $(COMMUNITY)
+	python3 tests/fuzz.py lint ./manyan --sany "$(SANY)" --runs $(RUNS) --seed $(SEED)
+
+fuzz-typecheck: $(OBJDIR)/manyan-sanitize
+	$(SANITIZE_ENV) python3 tests/fuzz.py typecheck $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
+
+fuzz-sym: $(OBJDIR)/manyan-sanitize
+	$(SYM_ENV) python3 tests/fuzz.py sym $(OBJDIR)/manyan-sanitize --runs $(RUNS) --seed $(SEED)
 
 # The same in Debian, with Docker, for a machine whose sanitizers find no
 # leaks, as macOS's; its build apart from this one's.
