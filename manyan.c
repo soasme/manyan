@@ -14580,6 +14580,9 @@ static int collect_ctx(Ctx c, void *data) {
 static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int *n) {
     Buf b = {0};
     switch (eval_depth < 5000 ? e->kind : -1) {
+    case X_BOOL:   /* as TLC, a part it finds TRUE is dropped, FALSE an error */
+        if (!e->num) config_error("The spec is trivially false because FALSE is false.");
+        return;
     case K_BOUND: {   /* a parameter of a call: its argument, where it was written */
         Env *p = env_find(c.env, e->def);
         if (p && !p->e && p->v) {   /* a value bound by \A, as TLC looks it up */

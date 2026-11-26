@@ -1,0 +1,2 @@
+Error: The spec is trivially false because FALSE is false.
+exit 151
