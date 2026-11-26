@@ -510,10 +510,16 @@ class Machine:
 
     TYPES = ["int", "int", "bool", "set", "fcn", "rec", "seq", "proc"]
 
-    def __init__(self, rng):
+    APALACHE = {"int": "Int", "bool": "Bool", "set": "Set(Int)", "fcn": "Int -> Int",
+                "rec": "{a: Int, b: Bool}", "seq": "Seq(Int)"}
+
+    def __init__(self, rng, symbolic=False):
+        """symbolic: typed for Apalache, and without what -symbolic refuses (RECURSIVE, model values)."""
         self.rng = rng
+        self.symbolic = symbolic
         names = ["x", "y", "z"][:rng.randint(1, 3)]
-        self.vars = {v: rng.choice(self.TYPES) for v in names}
+        types = [t for t in self.TYPES if t != "proc"] if symbolic else self.TYPES
+        self.vars = {v: rng.choice(types) for v in names}
         self.k = {v: rng.randint(2, 3) for v in names}
         self.constant = False   # no variables, as in Init
         self.lets = 0
@@ -522,7 +528,7 @@ class Machine:
     def domain(self, v):
         return {"int": f"0..{self.k[v] - 1}", "bool": "BOOLEAN", "set": "SUBSET {1, 2}",
                 "fcn": "[{1, 2} -> 0..1]", "rec": "[a : 0..1, b : BOOLEAN]",
-                "seq": "UNION {[1..n -> {1, 2}] : n \\in 0..2}", "proc": "Procs"}[self.vars[v]]
+                "seq": "{<<>>, <<1>>, <<2>>, <<1, 1>>, <<1, 2>>, <<2, 1>>, <<2, 2>>}", "proc": "Procs"}[self.vars[v]]
 
     def of(self, t):
         return [] if self.constant else [v for v, u in self.vars.items() if u == t]
@@ -534,8 +540,8 @@ class Machine:
         leaves += [lambda v=v: f"{v}[{r.randint(1, 2)}]" for v in self.of("fcn")]
         leaves += [lambda v=v: f"{v}.a" for v in self.of("rec")]
         leaves += [lambda v=v: f"Len({v})" for v in self.of("seq")]
-        leaves += [lambda v=v: f"(IF {v} = <<>> THEN 0 ELSE Head({v}))" for v in self.of("seq")]
-        leaves += [lambda v=v: f"Sum({v})" for v in self.of("set")]
+        leaves += [lambda v=v: f"(IF Len({v}) = 0 THEN 0 ELSE Head({v}))" for v in self.of("seq")]
+        leaves += [lambda v=v: f"Sum({v})" for v in ([] if self.symbolic else self.of("set"))]
         leaves += [lambda: "Lim"]
         if d > 2:
             return f"({r.choice(leaves)()} % {k})"
@@ -588,7 +594,8 @@ class Machine:
 
     def set(self, d=0):
         r = self.rng
-        leaves = [lambda: r.choice(["{}", "{1}", "{2}", "{1, 2}"])] + [lambda v=v: v for v in self.of("set")]
+        empty = "({1} \\ {1})" if self.symbolic else "{}"   # Apalache cannot type {} alone
+        leaves = [lambda: r.choice([empty, "{1}", "{2}", "{1, 2}"])] + [lambda v=v: v for v in self.of("set")]
         if d > 2:
             return r.choice(leaves)()
         s = lambda: self.set(d + 1)
@@ -615,10 +622,12 @@ class Machine:
                              f"[{base} EXCEPT ![{r.randint(1, 2)}] = (@ + 1) % 2]"])
         if t == "seq":
             k = r.randint(1, 2)
-            base = "<<>>" if self.constant else v
-            return r.choice([f"<<{k}>>", "<<>>", f"(IF Len({base}) < 2 THEN Append({base}, {k}) ELSE Tail({base}))",
-                             f"(IF {base} = <<>> THEN {base} ELSE Tail({base}))", f"(IF {base} = <<>> THEN {base} ELSE SubSeq({base}, 1, 1))",
-                             f"({base} \\o <<>>)", f"(IF Len({base}) = 2 THEN <<>> ELSE {base} \\o <<{k}>>)"])
+            nil = "SubSeq(<<1>>, 1, 0)" if self.symbolic else "<<>>"   # Apalache cannot type <<>> alone
+            base = nil if self.constant else v
+            return r.choice([f"Append({nil}, {k})", nil, f"(IF Len({base}) < 2 THEN Append({base}, {k}) ELSE Tail({base}))",
+                             f"(IF Len({base}) = 0 THEN {base} ELSE Tail({base}))",
+                             f"(IF Len({base}) = 0 THEN {base} ELSE SubSeq({base}, 1, 1))",
+                             f"({base} \\o {nil})", f"(IF Len({base}) = 2 THEN {nil} ELSE Append({base}, {k}))"])
         if t == "proc":
             return v   # which model value CHOOSE picks only TLC knows
         rec = f"[a |-> {self.int(2, d + 1)}, b |-> {self.bool(d + 1)}]"
@@ -673,10 +682,12 @@ class Machine:
         self.constant = False
         universe = "U == [" + ", ".join(f"{v} : {self.domain(v)}" for v in vs) + "]"
         # Manyan checks the behaviors stay in the universe: lean/ explores no other state.
-        props = "TypeOK == [" + ", ".join(f"{v} |-> {v}" for v in vs) + "] \\in U\n"
+        props = "TypeOK ==\n" + "\n".join(f"    /\\ {self.typed(v)}" for v in vs) + "\n"
         cfg = ["INVARIANT TypeOK"]
         tuple_ = f"<<{', '.join(vs)}>>"
         if r.random() < 0.4:
+            if self.symbolic:
+                props += f"\\* @type: <<{', '.join(self.APALACHE[self.vars[v]] for v in vs)}>>;\n"
             fair = " /\\ ".join(f"{r.choice('WS')}F_vars({a})" for a in r.sample(names + ["Next"], r.randint(0, 2)))
             if r.random() < 0.3:
                 fair += (" /\\ " if fair else "") + f"(\\A k \\in {{0, 1}} : {r.choice('WS')}F_vars(Step(k)))"
@@ -698,13 +709,25 @@ class Machine:
             props += f"AConstr == {self.action_short()}\n"
             cfg.append("ACTION_CONSTRAINT AConstr")
         cfg.append(f"CHECK_DEADLOCK {r.choice(['TRUE', 'FALSE'])}")
-        cfg.append(f"CONSTANTS Procs = {r.choice(['{p1}', '{p1, p2}'])} Lim = {r.randint(0, 1)}")
-        module = (f"---- MODULE M ----\nEXTENDS Integers, FiniteSets, Sequences\n"
-                  f"CONSTANTS Procs, Lim\nVARIABLES {', '.join(vs)}\n"
-                  f"Keep(a) == a' = a\nRECURSIVE Sum(_)\n"
-                  f"Sum(S) == IF S = {{}} THEN 0 ELSE LET e == CHOOSE e \\in S : \\A f \\in S : e <= f IN e + Sum(S \\ {{e}})\n"
-                  f"{init}\n" + "\n".join(acts) + f"\n{nxt}\nStep(k) == IF k = 0 THEN {names[0]} ELSE {names[-1]}\n{universe}\n{props}====\n")
+        procs = "" if self.symbolic else f"Procs = {r.choice(['{p1}', '{p1, p2}'])} "
+        cfg.append(f"CONSTANTS {procs}Lim = {r.randint(0, 1)}")
+        if self.symbolic:
+            decls = ("CONSTANT\n    \\* @type: Int;\n    Lim\nVARIABLES\n" +
+                     ",\n".join(f"    \\* @type: {self.APALACHE[self.vars[v]]};\n    {v}" for v in vs) + "\n")
+        else:
+            decls = (f"CONSTANTS Procs, Lim\nVARIABLES {', '.join(vs)}\nRECURSIVE Sum(_)\n"
+                     f"Sum(S) == IF S = {{}} THEN 0 ELSE LET e == CHOOSE e \\in S : \\A f \\in S : e <= f IN e + Sum(S \\ {{e}})\n")
+        module = (f"---- MODULE M ----\nEXTENDS Integers, FiniteSets, Sequences\n{decls}"
+                  f"Keep(a) == a' = a\n{init}\n" + "\n".join(acts) + f"\n{nxt}\nStep(k) == IF k = 0 THEN {names[0]} ELSE {names[-1]}\n{universe}\n{props}====\n")
         return module, "\n".join(cfg) + "\n"
+
+    def typed(self, v):
+        """That v is in its domain, as Apalache can type it."""
+        if self.vars[v] == "seq":
+            return self.bound("Len({}) <= 2 /\\ \\A {j} \\in 1..Len({}) : {}[{j}] \\in {{1, 2}}", v, v, v)
+        if self.vars[v] == "set":
+            return f"{v} \\subseteq {{1, 2}}"
+        return f"{v} \\in {self.domain(v)}"
 
     def action_short(self):
         v = self.rng.choice(list(self.vars))
@@ -783,8 +806,8 @@ def model_verdict(reference, directory, name, trace=None):
     return v
 
 
-def judge(out, code, ref, reference, directory, name, cfg):
-    """Why Manyan's verdict is not TLA+'s, or None."""
+def judge(out, code, ref, reference, directory, name, cfg, length=None):
+    """Why Manyan's verdict is not TLA+'s, or None. length: Manyan checked behaviors of up to that many steps."""
     m = VERDICT.search(out)
     states = re.search(r"(\d+) distinct states? found", out)
     depth = re.search(r"The depth of the complete state graph search is (\d+)", out)
@@ -792,10 +815,19 @@ def judge(out, code, ref, reference, directory, name, cfg):
         return None if m and m.group(0).startswith("Error: Assumption") else "an assumption is FALSE"
     first_inv = min(ref["invariants"].values(), default=None)
     dead = ref["deadlock"]
+    # -symbolic reads a deadlock as Apalache does, every behavior stuck, unless the verdict is TLC's.
+    apalache = length is not None and not (re.search(r"^(ACTION_)?CONSTRAINT", cfg, re.M) or (
+        re.search(r"^PROPERTY", cfg, re.M) and re.search(r"[WS]F_", (directory / f"{name}.tla").read_text())))
     violated = [p for p, h in ref["properties"].items() if not h]
     if m is None:
         if code != 0:
             return None   # Manyan refused, as TLC would: not a verdict
+        if length is not None:
+            within = lambda d: d is not None and d <= length + 1   # a state length steps from an initial one
+            # A deadlock lean/ sees may be a step out of the universe, which TypeOK shows a step later.
+            if any(map(within, ref["invariants"].values())) or (dead and within(dead + 1) and not apalache):
+                return f"no error in behaviors of up to {length} steps, but lean/ has {ref}"
+            return None
         if ref["invariants"] or dead or violated:
             return f"no error found, but lean/ has {ref}"
         if not states or int(states.group(1)) != ref["states"]:
@@ -821,7 +853,7 @@ def judge(out, code, ref, reference, directory, name, cfg):
     elif what.startswith("Deadlock"):
         if dead is None:
             return "a deadlock, but lean/ has none"
-        if len(trace) != dead:
+        if len(trace) != dead and not (apalache and len(trace) > dead):
             return f"a deadlock after {len(trace)} states, lean/ at depth {dead}"
         if first_inv is not None and first_inv <= dead:
             return f"a deadlock at depth {dead}, but lean/ has an invariant violated at {first_inv}"
@@ -834,7 +866,7 @@ def judge(out, code, ref, reference, directory, name, cfg):
         # TLC checks a state's invariants and safety properties as it finds it, deadlock as it expands it,
         # and temporal properties once the graph is complete.
         before = len(trace) if kind == "safety" else float("inf")
-        if (first_inv or before) < before or (dead or before) < before - 1:
+        if (first_inv or before) < before or (not apalache and (dead or before) < before - 1):
             return f"a violation of a property, but lean/ has another first: {ref}"
         if not violated:
             return f"{what}, but lean/ has every property hold"
@@ -846,11 +878,14 @@ def judge(out, code, ref, reference, directory, name, cfg):
     return None
 
 
-def models(engine, reference, runs, seed):
+def models(engine, reference, runs, seed, symbolic=False):
     rng = random.Random(seed)
-    failed = skipped = refused = 0
+    failed = skipped = refused = slow = 0
     for i in range(runs):
-        module, cfg, files = live_universe(rng) if i % 2 else Machine(rng).model() + ({},)
+        if symbolic:
+            module, cfg, files = Machine(rng, symbolic=True).model() + ({},)
+        else:
+            module, cfg, files = live_universe(rng) if i % 2 else Machine(rng).model() + ({},)
         name = re.search(r"MODULE (\w+)", module).group(1)
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -862,21 +897,26 @@ def models(engine, reference, runs, seed):
             if "skip" in ref_v:
                 skipped += 1
                 continue
-            workers = ["-workers", "4"] if rng.random() < 0.3 else []
-            _, out, code, killed = spec_runner.guarded(engine + workers + ["-config", f"{name}.cfg", name],
-                                                       directory, 120, MEMORY)
+            length = rng.randint(1, 8) if symbolic else None
+            options = (["-symbolic", "-length", str(length)] if symbolic else
+                       ["-workers", "4"] if rng.random() < 0.3 else [])
+            _, out, code, killed = spec_runner.guarded(engine + options + ["-config", f"{name}.cfg", name],
+                                                       directory, 30 if symbolic else 120, MEMORY)
+            if killed and symbolic and killed.endswith(" s"):
+                slow += 1   # -symbolic refines ENABLED a state at a time: slow, under fairness, with many states
+                continue
             if killed:
                 print(f"FAIL manyan {killed}\n{module}{cfg}")
                 failed += 1
                 continue
             if code not in (0, 10, 11, 12, 13):
                 refused += 1
-            why = judge(out, code, ref_v, reference, directory, name, cfg)
+            why = judge(out, code, ref_v, reference, directory, name, cfg, length)
         if why:
             failed += 1
             print(f"FAIL {why}\n{module}{cfg}--- manyan\n{out}")
-    print(f"{runs - failed - skipped}/{runs} random models have TLA+'s verdict by lean/, "
-          f"{failed} another; {skipped} left out, {refused} refused by manyan")
+    print(f"{runs - failed - skipped - slow}/{runs} random models have TLA+'s verdict by lean/, "
+          f"{failed} another; {skipped} left out, {refused} refused by manyan" + (f", {slow} too slow" if symbolic else ""))
     return failed
 
 
@@ -1491,6 +1531,7 @@ def main():
     parser.add_argument("--sany")
     parser.add_argument("--tlapm")
     parser.add_argument("--ref")
+    parser.add_argument("--symbolic", action="store_true", help="model: check with -symbolic")
     parser.add_argument("--runs", type=int, default=200)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
@@ -1512,7 +1553,10 @@ def main():
     if args.mode in ("ref", "model"):
         if not args.ref:
             parser.error(args.mode + " needs --ref")
-        return 1 if {"ref": ref, "model": models}[args.mode](engine, str(Path(args.ref).resolve()), args.runs, args.seed) else 0
+        reference = str(Path(args.ref).resolve())
+        if args.mode == "model":
+            return 1 if models(engine, reference, args.runs, args.seed, args.symbolic) else 0
+        return 1 if ref(engine, reference, args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
     return 1 if {"sim": sim, "check": check, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0
