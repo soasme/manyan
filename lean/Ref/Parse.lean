@@ -1,11 +1,12 @@
 import Ref.Syntax
 
 /-!
-# Reading a constant expression
+# Reading TLA⁺
 
-The expressions of TLA⁺ that `tests/fuzz.py` makes and the values TLC
-prints: operators bind as in the table of precedence in *Specifying
-Systems* (section 15.2.1); a binder's body reaches as far right as it can.
+Expressions, modules and model configurations. Operators bind as in the
+table of precedence in *Specifying Systems* (section 15.2.1); a binder's
+body reaches as far right as it can; a junction list (`/\` or `\/` items
+aligned in a column) ends at a token in or left of its column.
 -/
 namespace Ref
 
@@ -16,64 +17,96 @@ inductive Tok where
   | sym (s : String)
   deriving BEq, Repr, Inhabited
 
+structure Token where
+  tok : Tok
+  col : Nat
+  deriving Inhabited
+
 /-- Symbols longest first, each with the name the parser knows it by. -/
 def symbols : List (String × String) :=
   [("<=>", "<=>"), ("|->", "|->"), ("<<", "<<"), (">>", ">>"), ("==", "=="), ("/\\", "/\\"),
-   ("\\/", "\\/"), ("=>", "=>"), ("->", "->"), ("<=", "<="), ("=<", "<="), (">=", ">="),
-   ("/=", "#"), ("..", ".."), (":>", ":>"), ("@@", "@@"), ("[]", "[]")]
+   ("\\/", "\\/"), ("=>", "=>"), ("->", "->"), ("<-", "<-"), ("<=", "<="), ("=<", "<="), (">=", ">="),
+   ("/=", "#"), ("..", ".."), (":>", ":>"), ("@@", "@@"), ("[]", "[]"), ("<>", "<>"), ("~>", "~>")]
 
 def words : List (String × String) :=
   [("lnot", "~"), ("neg", "~"), ("land", "/\\"), ("lor", "\\/"), ("leq", "<="), ("geq", ">="),
-   ("union", "\\cup"), ("intersect", "\\cap"), ("circ", "\\o"), ("times", "\\X")]
+   ("union", "\\cup"), ("intersect", "\\cap"), ("circ", "\\o"), ("times", "\\X"), ("equiv", "<=>"),
+   ("neq", "#")]
 
-partial def tokenize (s : String) : Except String (Array Tok) :=
-  go s.toList #[]
+partial def tokenize (s : String) : Except String (Array Token) :=
+  go s.toList 1 #[]
 where
-  go : List Char → Array Tok → Except String (Array Tok)
-  | [], out => pure out
-  | c :: cs, out =>
-    if c.isWhitespace then go cs out
+  push (out : Array Token) (t : Tok) (col : Nat) := out.push { tok := t, col }
+  go : List Char → Nat → Array Token → Except String (Array Token)
+  | [], _, out => pure out
+  | '\n' :: cs, _, out => go cs 1 out
+  | '\\' :: '*' :: cs, col, out => go (cs.dropWhile (· != '\n')) col out
+  | '(' :: '*' :: cs, col, out => comment cs 1 (col + 2) out
+  | c :: cs, col, out =>
+    let all := c :: cs
+    if c.isWhitespace then go cs (col + 1) out
     else if c.isDigit then
-      let ds := (c :: cs).takeWhile Char.isDigit
-      go ((c :: cs).drop ds.length) (out.push (.num (String.ofList ds).toNat!))
+      let ds := all.takeWhile Char.isDigit
+      go (all.drop ds.length) (col + ds.length) (push out (.num (String.ofList ds).toNat!) col)
     else if c.isAlpha || c == '_' then
-      let w := (c :: cs).takeWhile fun d => d.isAlphanum || d == '_'
-      go ((c :: cs).drop w.length) (out.push (.id (String.ofList w)))
-    else if c == '"' then str cs [] out
+      let w := all.takeWhile fun d => d.isAlphanum || d == '_'
+      go (all.drop w.length) (col + w.length) (push out (.id (String.ofList w)) col)
+    else if c == '"' then str cs [] (col + 1) col out
+    else if c == '-' && all.take 4 == ['-', '-', '-', '-'] then
+      let n := (all.takeWhile (· == '-')).length
+      go (all.drop n) (col + n) (push out (.sym "----") col)
+    else if c == '=' && all.take 4 == ['=', '=', '=', '='] then
+      let n := (all.takeWhile (· == '=')).length
+      go (all.drop n) (col + n) (push out (.sym "====") col)
     else if c == '\\' && (cs.head?.map Char.isAlpha).getD false then
       let w := String.ofList (cs.takeWhile Char.isAlpha)
-      let name := ((words.lookup w).getD ("\\" ++ w))
-      go (cs.drop w.length) (out.push (.sym name))
+      let name := (words.lookup w).getD ("\\" ++ w)
+      go (cs.drop w.length) (col + 1 + w.length) (push out (.sym name) col)
     else
-      let rest := String.ofList (c :: cs)
+      let rest := String.ofList all
       match symbols.find? (fun (t, _) => rest.startsWith t) with
-      | some (t, name) => go ((c :: cs).drop t.length) (out.push (.sym name))
-      | none => go cs (out.push (.sym (String.singleton c)))
-  str : List Char → List Char → Array Tok → Except String (Array Tok)
-  | '"' :: cs, acc, out => go cs (out.push (.str (String.ofList acc.reverse)))
-  | '\\' :: e :: cs, acc, out =>
+      | some (t, name) => go (all.drop t.length) (col + t.length) (push out (.sym name) col)
+      | none => go cs (col + 1) (push out (.sym (String.singleton c)) col)
+  str : List Char → List Char → Nat → Nat → Array Token → Except String (Array Token)
+  | '"' :: cs, acc, col, start, out => go cs (col + 1) (push out (.str (String.ofList acc.reverse)) start)
+  | '\\' :: e :: cs, acc, col, start, out =>
     let d := match e with | 'n' => '\n' | 't' => '\t' | 'r' => '\r' | c => c
-    str cs (d :: acc) out
-  | c :: cs, acc, out => str cs (c :: acc) out
-  | [], _, _ => throw "a string without its closing quote"
+    str cs (d :: acc) (col + 2) start out
+  | c :: cs, acc, col, start, out => str cs (c :: acc) (col + 1) start out
+  | [], _, _, _, _ => throw "a string without its closing quote"
+  comment : List Char → Nat → Nat → Array Token → Except String (Array Token)
+  | '*' :: ')' :: cs, 1, col, out => go cs (col + 2) out
+  | '*' :: ')' :: cs, n, col, out => comment cs (n - 1) (col + 2) out
+  | '(' :: '*' :: cs, n, col, out => comment cs (n + 1) (col + 2) out
+  | '\n' :: cs, n, _, out => comment cs n 1 out
+  | _ :: cs, n, col, out => comment cs n (col + 1) out
+  | [], _, _, _ => throw "a comment without its closing *)"
 
 /-- Infix operators and their precedence; all associate to the left. -/
 def infixes : List (String × Nat) :=
-  [("=>", 1), ("<=>", 2), ("/\\", 3), ("\\/", 3),
+  [("=>", 1), ("<=>", 2), ("~>", 2), ("/\\", 3), ("\\/", 3),
    ("=", 5), ("#", 5), ("<", 5), (">", 5), ("<=", 5), (">=", 5),
-   ("\\in", 5), ("\\notin", 5), ("\\subseteq", 5),
+   ("\\in", 5), ("\\notin", 5), ("\\subseteq", 5), ("\\subset", 5), ("\\supseteq", 5), ("\\supset", 5),
    ("@@", 6), (":>", 7), ("\\cup", 8), ("\\cap", 8), ("\\", 8), ("..", 9),
    ("+", 10), ("-", 10), ("%", 10), ("\\X", 10), ("*", 13), ("\\div", 13), ("\\o", 13), ("^", 14)]
 
 structure Parser where
-  toks : Array Tok
+  toks : Array Token
   pos : Nat := 0
+  /-- The column of the junction list being read: a token in or left of it ends an item. -/
+  fence : Nat := 0
 
 abbrev P := StateT Parser (Except String)
 
+def peekToken (k : Nat := 0) : P (Option Token) := do
+  let s ← get
+  pure s.toks[s.pos + k]?
+
 def peek (k : Nat := 0) : P Tok := do
   let s ← get
-  pure (s.toks[s.pos + k]?.getD (.sym "end"))
+  match s.toks[s.pos + k]? with
+  | some t => pure (if t.col ≤ s.fence then .sym "end" else t.tok)
+  | none => pure (.sym "end")
 
 def next : P Tok := do
   let t ← peek
@@ -81,6 +114,7 @@ def next : P Tok := do
   pure t
 
 def isSym (t : String) : P Bool := return (← peek) == .sym t
+def isId (t : String) : P Bool := return (← peek) == .id t
 
 def expect (t : String) : P Unit := do
   let got ← next
@@ -96,6 +130,17 @@ def bound? : Expr → Option (String × Expr)
   | .op "\\in" [.name x, s] => some (x, s)
   | _ => none
 
+/-- `a \supseteq b` is `b \subseteq a`. -/
+def infixExpr (o : String) (a b : Expr) : Expr :=
+  match o with
+  | "\\supseteq" => .op "\\subseteq" [b, a]
+  | "\\supset" => .op "\\subset" [b, a]
+  | _ => .op o [a, b]
+
+def isSubscript : Tok → Bool
+  | .id s => s.startsWith "_"
+  | _ => false
+
 mutual
 partial def expr (min : Nat := 0) : P Expr := do
   let mut lhs ← primary
@@ -109,7 +154,7 @@ partial def expr (min : Nat := 0) : P Expr := do
     let rhs ← expr (prec + 1)
     lhs := match o, lhs with
       | "\\X", .op "\\X" fs => .op "\\X" (fs ++ [rhs])  -- A \X B \X C has three factors
-      | _, _ => .op o [lhs, rhs]
+      | _, _ => infixExpr o lhs rhs
   pure lhs
 
 partial def list (close : String) : P (List Expr) := do
@@ -121,23 +166,66 @@ partial def list (close : String) : P (List Expr) := do
   expect close
   pure out.toList
 
+/-- `x, y \in S, z \in T`, the bounds of a quantifier, and its body. -/
 partial def binder (b : Binder) : P Expr := do
-  let x ← ident
-  expect "\\in"
-  let s ← expr 6
+  let mut bounds := #[]
+  repeat
+    let mut names := #[← ident]
+    while ← isSym "," do
+      let _ ← next
+      names := names.push (← ident)
+    if ← isSym "\\in" then
+      let _ ← next
+      let s ← expr 6
+      bounds := bounds ++ names.map (·, s)
+    else bounds := bounds ++ names.map (·, Expr.name "$any")   -- unbounded
+    if !(← isSym ",") then break
+    let _ ← next
   expect ":"
-  pure (.bind b x s (← expr))
+  let body ← expr
+  pure (bounds.foldr (fun (x, s) e => .bind b x s e) body)
+
+/-- The subscript of `[A]_v`, `<<A>>_v`, `WF_v(A)`. -/
+partial def subscript : P Expr := do
+  match ← next with
+  | .id "_" => primary
+  | .id s => pure (.name (s.drop 1).toString)
+  | t => throw s!"expected a subscript, not {repr t}"
+
+/-- An aligned list of `/\` or `\/` items, starting at its first bullet. -/
+partial def junction (bullet : String) (col : Nat) : P Expr := do
+  let saved := (← get).fence
+  modify fun s => { s with fence := col }
+  let mut items := #[← expr]
+  repeat
+    let some t ← peekToken | break
+    if t.tok != .sym bullet || t.col != col then break
+    modify fun s => { s with pos := s.pos + 1 }
+    items := items.push (← expr)
+  modify fun s => { s with fence := saved }
+  pure (items.toList.tail.foldl (fun a b => .op bullet [a, b]) items[0]!)
 
 partial def primary : P Expr := do
+  let col := ((← peekToken).map (·.col)).getD 0
   match ← next with
   | .num n => suffix (.int n)
   | .str s => suffix (.str s)
   | .sym "(" => do let e ← expr; expect ")"; suffix e
+  | .sym "/\\" => junction "/\\" col
+  | .sym "\\/" => junction "\\/" col
   | .sym "-" => pure (.op "-." [← expr 12])
   | .sym "~" => pure (.op "~" [← expr 4])
+  | .sym "[]" => pure (.op "[]" [← expr 4])
+  | .sym "<>" => pure (.op "<>" [← expr 4])
   | .sym "\\A" => binder .all
   | .sym "\\E" => binder .ex
-  | .sym "<<" => suffix (.op "<<>>" (← list ">>"))
+  | .sym "<<" => do
+    let es ← list ">>"
+    if isSubscript (← peek) then
+      match es with
+      | [a] => return .op "<<A>>_" [a, ← subscript]
+      | _ => throw "<<A>>_v with more than one action"
+    suffix (.op "<<>>" es)
   | .sym "{" => suffix (← braces)
   | .sym "[" => suffix (← brackets)
   | .id "TRUE" => suffix (.bool true)
@@ -146,6 +234,8 @@ partial def primary : P Expr := do
   | .id "DOMAIN" => pure (.op "DOMAIN" [← expr 9])
   | .id "SUBSET" => pure (.op "SUBSET" [← expr 8])
   | .id "UNION" => pure (.op "UNION" [← expr 8])
+  | .id "ENABLED" => pure (.op "ENABLED" [← expr 16])
+  | .id "UNCHANGED" => pure (.op "UNCHANGED" [← expr 16])
   | .id "IF" => do
     let p ← expr
     expect "THEN"
@@ -156,7 +246,7 @@ partial def primary : P Expr := do
     let mut arms := #[]
     let mut other := none
     repeat
-      if (← peek) == .id "OTHER" then
+      if ← isId "OTHER" then
         let _ ← next
         expect "->"
         other := some (← expr)
@@ -168,11 +258,19 @@ partial def primary : P Expr := do
       let _ ← next
     pure (.case arms.toList other)
   | .id "LET" => do
-    let x ← ident
-    expect "=="
-    let d ← expr
+    let mut defs := #[]
+    while !(← isId "IN") do
+      defs := defs.push (← definition)
     expect "IN"
-    pure (.letIn x d (← expr))
+    let body ← expr
+    pure (defs.foldr (fun (x, ps, d) e => .letIn x ps d e) body)
+  | .id "LAMBDA" => do
+    let mut ps := #[← ident]
+    while ← isSym "," do
+      let _ ← next
+      ps := ps.push (← ident)
+    expect ":"
+    pure (.lambda ps.toList (← expr))
   | .id "SelectSeq" => do
     expect "("
     let s ← expr
@@ -183,7 +281,14 @@ partial def primary : P Expr := do
     let p ← expr
     expect ")"
     suffix (.bind .select x s p)
-  | .id f => if ← isSym "(" then do let _ ← next; suffix (.op f (← list ")")) else suffix (.name f)
+  | .id f =>
+    if f.startsWith "WF_" || f.startsWith "SF_" then do
+      let v ← if f.length > 3 then pure (.name (f.drop 3).toString) else primary
+      expect "("
+      let a ← expr
+      expect ")"
+      return .op (f.take 3).toString [v, a]
+    if ← isSym "(" then do let _ ← next; suffix (.op f (← list ")")) else suffix (.name f)
   | .sym "@" => suffix (.name "@")
   | t => throw s!"unexpected {repr t}"
 
@@ -191,10 +296,13 @@ partial def suffix (e : Expr) : P Expr := do
   if ← isSym "[" then
     let _ ← next
     let args ← list "]"
-    suffix (.op "[]" [e, match args with | [a] => a | _ => .op "<<>>" args])
+    suffix (.op "app" [e, match args with | [a] => a | _ => .op "<<>>" args])
   else if ← isSym "." then
     let _ ← next
-    suffix (.op "[]" [e, .str (← ident)])
+    suffix (.op "app" [e, .str (← ident)])
+  else if ← isSym "'" then
+    let _ ← next
+    suffix (.op "'" [e])
   else pure e
 
 /-- `{a, b}`, `{x \in S : P}` or `{e : x \in S}`. -/
@@ -219,13 +327,14 @@ partial def braces : P Expr := do
     expect "}"
     pure (.op "{}" out.toList)
 
-/-- `[a |-> e]`, `[a : S]`, `[x \in S |-> e]`, `[S -> T]` or `[f EXCEPT ...]`. -/
+/-- `[a |-> e]`, `[a : S]`, `[x \in S |-> e]`, `[S -> T]`, `[f EXCEPT ...]`
+or `[A]_v`. -/
 partial def brackets : P Expr := do
   if let .id _ := ← peek then
     if (← peek 1) == .sym "|->" then return .record (← fields "|->")
     if (← peek 1) == .sym ":" then return .recordSet (← fields ":")
   let e ← expr
-  if (← peek) == .id "EXCEPT" then
+  if ← isId "EXCEPT" then
     let _ ← next
     let mut updates := #[]
     repeat
@@ -252,6 +361,9 @@ partial def brackets : P Expr := do
     let body ← expr
     expect "]"
     return .bind .fcn x s body
+  if ← isSym "]" then
+    let _ ← next
+    return .op "[A]_" [e, ← subscript]
   expect "->"
   let t ← expr
   expect "]"
@@ -267,12 +379,157 @@ partial def fields (sep : String) : P (List (String × Expr)) := do
     let _ ← next
   expect "]"
   pure out.toList
+
+/-- `F == e`, `F(p, Op(_)) == e` or `f[x \in S] == e`. -/
+partial def definition : P (String × List String × Expr) := do
+  let f ← ident
+  if ← isSym "(" then
+    let _ ← next
+    let mut ps := #[]
+    repeat
+      ps := ps.push (← ident)
+      if ← isSym "(" then   -- Op(_, _): an operator parameter
+        while !(← isSym ")") do let _ ← next
+        let _ ← next
+      if !(← isSym ",") then break
+      let _ ← next
+    expect ")"
+    expect "=="
+    return (f, ps.toList, ← expr)
+  if ← isSym "[" then
+    let _ ← next
+    let x ← ident
+    expect "\\in"
+    let s ← expr
+    expect "]"
+    expect "=="
+    -- The function, `$self` in its body, is recursive.
+    return (f, [], .bind .recfcn x s (.letIn f [] (.name "$self") (← expr)))
+  expect "=="
+  pure (f, [], ← expr)
 end
 
-def parse (s : String) : Except String Expr := do
+def runP {α} (p : P α) (s : String) : Except String α := do
   let toks ← tokenize s
-  let (e, st) ← (expr 0).run { toks }
-  if st.pos < toks.size then throw s!"unexpected {repr toks[st.pos]!}"
-  pure e
+  let (a, st) ← p.run { toks }
+  if st.pos < toks.size then throw s!"unexpected {repr toks[st.pos]!.tok}"
+  pure a
+
+def parse (s : String) : Except String Expr := runP (expr 0) s
+
+/-! ## Modules and models -/
+
+structure Module where
+  name : String := ""
+  extends_ : List String := []
+  consts : List String := []
+  vars : List String := []
+  defs : List (String × List String × Expr) := []
+  assumes : List Expr := []
+
+def skipArity : P Unit := do
+  if ← isSym "(" then   -- CONSTANT Op(_, _)
+    while !(← isSym ")") do let _ ← next
+    let _ ← next
+
+def names : P (List String) := do
+  let mut out := #[← ident]
+  skipArity
+  while ← isSym "," do
+    let _ ← next
+    out := out.push (← ident)
+    skipArity
+  pure out.toList
+
+partial def moduleP : P Module := do
+  while !(← isId "MODULE") do let _ ← next
+  let _ ← next
+  let mut m : Module := { name := ← ident }
+  repeat
+    match ← peek with
+    | .sym "====" | .sym "end" => break
+    | .sym "----" => let _ ← next
+    | .id "EXTENDS" => let _ ← next; m := { m with extends_ := ← names }
+    | .id "CONSTANT" | .id "CONSTANTS" => let _ ← next; m := { m with consts := m.consts ++ (← names) }
+    | .id "VARIABLE" | .id "VARIABLES" => let _ ← next; m := { m with vars := m.vars ++ (← names) }
+    | .id "ASSUME" | .id "ASSUMPTION" | .id "AXIOM" =>
+      let _ ← next
+      if (← peek 1) == .sym "==" then let _ ← next; let _ ← next
+      m := { m with assumes := m.assumes ++ [← expr] }
+    | .id "THEOREM" | .id "LEMMA" | .id "PROPOSITION" | .id "COROLLARY" =>
+      let _ ← next
+      if (← peek 1) == .sym "==" then let _ ← next; let _ ← next
+      let _ ← expr
+    | .id "LOCAL" => let _ ← next
+    | .id "RECURSIVE" => let _ ← next; let _ ← names
+    | .id "INSTANCE" => throw "INSTANCE is not supported"
+    | _ =>
+      let d ← definition
+      if let (_, _, .name "INSTANCE") := d then throw "INSTANCE is not supported"
+      m := { m with defs := m.defs ++ [d] }
+  pure m
+
+def parseModule (s : String) : Except String Module := do
+  let toks ← tokenize s
+  let (m, _) ← moduleP.run { toks }
+  pure m
+
+/-- A model configuration: what TLC's `.cfg` file says. -/
+structure Config where
+  init : Option String := none
+  next : Option String := none
+  spec : Option String := none
+  invariants : List String := []
+  properties : List String := []
+  constraints : List String := []
+  actionConstraints : List String := []
+  /-- `C = e`, a value whose other names are model values; `C <- D`. -/
+  consts : List (String × Expr) := []
+  substs : List (String × String) := []
+  deadlock : Bool := true
+  /-- What the reference does not model: SYMMETRY, VIEW, ... -/
+  other : List String := []
+
+def sections : List String :=
+  ["INIT", "NEXT", "SPECIFICATION", "INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES",
+   "CONSTANT", "CONSTANTS", "CONSTRAINT", "CONSTRAINTS", "ACTION_CONSTRAINT", "ACTION_CONSTRAINTS",
+   "CHECK_DEADLOCK", "SYMMETRY", "VIEW", "ALIAS", "POSTCONDITION"]
+
+partial def configP : P Config := do
+  let mut c : Config := {}
+  let mut part := ""
+  repeat
+    match ← peek with
+    | .sym "end" => break
+    | .id w =>
+      let _ ← next
+      if sections.contains w then
+        part := w
+        if w == "CHECK_DEADLOCK" then c := { c with deadlock := (← ident) == "TRUE" }
+        if ["SYMMETRY", "VIEW", "ALIAS", "POSTCONDITION"].contains w then
+          let _ ← ident
+          c := { c with other := c.other ++ [w] }
+        continue
+      match part with
+      | "INIT" => c := { c with init := some w }
+      | "NEXT" => c := { c with next := some w }
+      | "SPECIFICATION" => c := { c with spec := some w }
+      | "INVARIANT" | "INVARIANTS" => c := { c with invariants := c.invariants ++ [w] }
+      | "PROPERTY" | "PROPERTIES" => c := { c with properties := c.properties ++ [w] }
+      | "CONSTRAINT" | "CONSTRAINTS" => c := { c with constraints := c.constraints ++ [w] }
+      | "ACTION_CONSTRAINT" | "ACTION_CONSTRAINTS" =>
+        c := { c with actionConstraints := c.actionConstraints ++ [w] }
+      | "CONSTANT" | "CONSTANTS" =>
+        if ← isSym "<-" then
+          let _ ← next
+          c := { c with substs := c.substs ++ [(w, ← ident)] }
+        else
+          expect "="
+          c := { c with consts := c.consts ++ [(w, ← expr 6)] }
+      | _ => throw s!"{w} outside a section of the configuration"
+    | t => throw s!"unexpected {repr t} in the configuration"
+  pure c
+
+def parseConfig (s : String) : Except String Config := runP configP s
 
 end Ref

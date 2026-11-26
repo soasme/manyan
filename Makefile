@@ -55,7 +55,7 @@ TLAPS_URL = https://github.com/tlaplus/tlapm/releases/download/1.6.0-pre/tlapm-1
 TLAPS = $(OBJDIR)/tlaps-1.6.0-pre/tlapm/bin/tlapm
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-fmt-oracle fuzz-lint fuzz-lint-oracle fuzz-typecheck fuzz-sym fuzz-oracle fuzz-sim fuzz-check fuzz-live fuzz-prove fuzz-ref bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-fmt-oracle fuzz-lint fuzz-lint-oracle fuzz-typecheck fuzz-sym fuzz-oracle fuzz-sim fuzz-check fuzz-live fuzz-prove fuzz-ref fuzz-model bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -254,6 +254,9 @@ $(REF): lean/Main.lean lean/Ref/*.lean lean/lakefile.toml
 
 fuzz-ref: manyan $(REF)
 	python3 tests/fuzz.py ref ./manyan --ref $(REF) --runs $(RUNS) --seed $(SEED)
+
+fuzz-model: manyan $(REF)
+	python3 tests/fuzz.py model ./manyan --ref $(REF) --runs $(RUNS) --seed $(SEED)
 
 fuzz-oracle: manyan $(TLA_JAR) $(COMMUNITY)
 	python3 tests/fuzz.py diff ./manyan --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)

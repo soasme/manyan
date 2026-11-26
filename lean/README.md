@@ -1,8 +1,8 @@
 # A reference semantics of TLA⁺
 
 TLC is the de facto interpreter of TLA⁺, and Manyan prints what TLC
-prints. But TLC can be wrong. This is a definition of what constant
-expressions mean that does not depend on TLC, in Lean 4, for any tool
+prints. But TLC can be wrong. This is a definition of what expressions,
+actions and temporal formulas mean that does not depend on TLC, in Lean 4, for any tool
 to be tested against. It follows *Specifying Systems* (chapter 16) and
 the definitions of the standard modules.
 
@@ -17,6 +17,28 @@ undefined: a function applied outside its domain
 A line `EXPR<TAB>VALUE` asks whether `EXPR` equals `VALUE`: `same`, or
 `differs: ` and its value. `make fuzz-ref` sends it random expressions
 with the values Manyan prints for them.
+
+## Models
+
+```sh
+.lake/build/bin/ref model M.tla M.cfg U [TRACE]
+```
+
+checks the model `M.tla` with `M.cfg` as TLA⁺ means it, `U` a
+definition of `M` naming the universe, a set of records of the variables
+that every behavior stays in (`Ref/Check.lean`). Its initial states are
+those of `U` that the initial predicate holds of. A step is a pair of
+them that the specification's `[][N]_v` allows, so `ENABLED`, `x' \in S`
+and a subscript that leaves a variable out mean what they mean in TLA⁺.
+It prints the distinct reachable states, the depth, the least depth of
+each violated invariant and of a deadlock, and whether each temporal
+property holds. A property is decided as a formula of linear-time
+temporal logic over the state graph: its negation's tableau and the
+graph have a product with a fair cycle, or not. With `TRACE`, a
+behavior Manyan prints, it also says whether that is a behavior of the
+specification that shows the error. `CONSTRAINT` is TLC's, not TLA⁺'s:
+a state outside it is checked against the invariants, and not
+explored.
 
 ## One definition, two oracles
 

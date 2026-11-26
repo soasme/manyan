@@ -218,6 +218,14 @@ class Gen:
             lambda: f"(IF AssertError(\"bad\", [i \\in {{1, 2}} |-> i][0]) THEN {n()} ELSE {n()})",
         )
 
+    def bound(self, form, *parts):
+        """form with parts, {j} a fresh bound name: nested binders may not share one."""
+        self.lets += 1
+        return form.format(*parts, j=f"j{self.lets}")
+
+    def let(self, e, k):
+        return self.bound("(LET w{j} == {} IN (w{j} + 1) % {})", e, k)
+
     def bool(self, d=0):
         r = self.rng
         if d > 2:
@@ -497,6 +505,343 @@ def ref(engine, reference, runs, seed):
     return failed
 
 
+class Machine:
+    """A random state machine over bounded types, its universe their product."""
+
+    TYPES = ["int", "int", "bool", "set", "fcn", "rec"]
+
+    def __init__(self, rng):
+        self.rng = rng
+        names = ["x", "y", "z"][:rng.randint(1, 3)]
+        self.vars = {v: rng.choice(self.TYPES) for v in names}
+        self.k = {v: rng.randint(2, 3) for v in names}
+        self.constant = False   # no variables, as in Init
+        self.lets = 0
+
+    def domain(self, v):
+        return {"int": f"0..{self.k[v] - 1}", "bool": "BOOLEAN", "set": "SUBSET {1, 2}",
+                "fcn": "[{1, 2} -> 0..1]", "rec": "[a : 0..1, b : BOOLEAN]"}[self.vars[v]]
+
+    def of(self, t):
+        return [] if self.constant else [v for v, u in self.vars.items() if u == t]
+
+    def int(self, k, d=0):
+        r = self.rng
+        leaves = [lambda: str(r.randrange(k))] + [lambda v=v: v for v in self.of("int")]
+        leaves += [lambda v=v: f"Cardinality({v})" for v in self.of("set")]
+        leaves += [lambda v=v: f"{v}[{r.randint(1, 2)}]" for v in self.of("fcn")]
+        leaves += [lambda v=v: f"{v}.a" for v in self.of("rec")]
+        if d > 2:
+            return f"({r.choice(leaves)()} % {k})"
+        n = lambda: self.int(k, d + 1)
+        return r.choice(leaves + [
+            lambda: f"(({n()} + {n()}) % {k})",
+            lambda: f"(({n()} * {n()} + 1) % {k})",
+            lambda: f"(IF {self.bool(d + 1)} THEN {n()} ELSE {n()})",
+            lambda: f"(CASE {self.bool(d + 1)} -> {n()} [] OTHER -> {n()})",
+            lambda: self.let(n(), k),
+            lambda: self.bound("(CHOOSE {j} \\in 0..{} : {j} = {})", k - 1, n()),
+        ])() if d else f"({r.choice(leaves)()} % {k})" if r.random() < 0.3 else r.choice([
+            lambda: f"(({n()} + {n()}) % {k})",
+            lambda: f"(IF {self.bool(d + 1)} THEN {n()} ELSE {n()})",
+            lambda: f"(({n()} + 1) % {k})",
+        ])()
+
+    def bound(self, form, *parts):
+        """form with parts, {j} a fresh bound name: nested binders may not share one."""
+        self.lets += 1
+        return form.format(*parts, j=f"j{self.lets}")
+
+    def let(self, e, k):
+        return self.bound("(LET w{j} == {} IN (w{j} + 1) % {})", e, k)
+
+    def bool(self, d=0):
+        r = self.rng
+        leaves = [lambda: r.choice(["TRUE", "FALSE"])] + [lambda v=v: v for v in self.of("bool")]
+        leaves += [lambda v=v: f"{v}.b" for v in self.of("rec")]
+        if d > 2:
+            return r.choice(leaves)()
+        b = lambda: self.bool(d + 1)
+        i = lambda: self.int(3, d + 1)
+        return r.choice(leaves + [
+            lambda: f"({i()} < {i()})",
+            lambda: f"({i()} = {i()})",
+            lambda: f"(~{b()})",
+            lambda: f"({b()} /\\ {b()})",
+            lambda: f"({b()} \\/ {b()})",
+            lambda: f"({b()} => {b()})",
+            lambda: f"({r.randint(1, 2)} \\in {self.set(d + 1)})",
+            lambda: f"({self.set(d + 1)} \\subseteq {self.set(d + 1)})",
+            lambda: self.bound("(\\E {j} \\in 0..2 : {j} = {})", i()),
+            lambda: self.bound("(\\A {j} \\in {} : {j} > {})", self.set(d + 1), r.randint(0, 2)),
+        ] + [lambda v=v: f"({v} = {self.value(v, d + 1)})" for v in self.vars if not self.constant])()
+
+    def set(self, d=0):
+        r = self.rng
+        leaves = [lambda: r.choice(["{}", "{1}", "{2}", "{1, 2}"])] + [lambda v=v: v for v in self.of("set")]
+        if d > 2:
+            return r.choice(leaves)()
+        s = lambda: self.set(d + 1)
+        return r.choice(leaves + [
+            lambda: f"({s()} \\cup {s()})",
+            lambda: f"({s()} \\cap {s()})",
+            lambda: f"({s()} \\ {s()})",
+            lambda: self.bound("{{{j} \\in {{1, 2}} : {}}}", self.bool(d + 1)),
+            lambda: f"({{{self.int(2, d + 1)} + 1}})",
+        ])()
+
+    def value(self, v, d=0):
+        """An expression of v's type, in its domain."""
+        t, r = self.vars[v], self.rng
+        if t == "int":
+            return f"({self.int(self.k[v], d)} % {self.k[v]})"
+        if t == "bool":
+            return self.bool(d)
+        if t == "set":
+            return self.set(d)
+        if t == "fcn":
+            base = v if r.random() < 0.6 and not self.constant else self.bound("[{j} \\in {{1, 2}} |-> {}]", self.int(2, d + 1))
+            return r.choice([base, f"[{base} EXCEPT ![{r.randint(1, 2)}] = {self.int(2, d + 1)}]",
+                             f"[{base} EXCEPT ![{r.randint(1, 2)}] = (@ + 1) % 2]"])
+        rec = f"[a |-> {self.int(2, d + 1)}, b |-> {self.bool(d + 1)}]"
+        if self.constant:
+            return rec
+        return r.choice([v, rec, f"[{v} EXCEPT !.a = {self.int(2, d + 1)}]", f"[{v} EXCEPT !.b = ~@]"])
+
+    def assign(self, v):
+        r = self.rng
+        return r.choice([
+            lambda: f"{v}' = {self.value(v)}",
+            lambda: f"{v}' = {self.value(v)}",
+            lambda: f"{v}' \\in {{{self.value(v)}, {self.value(v)}}}",
+            lambda: f"UNCHANGED {v}",
+            lambda: f"{v}' \\in {self.domain(v)}",
+            lambda: f"\\E q \\in {{{self.value(v)}, {self.value(v)}}} : {v}' = q",
+        ])()
+
+    def action(self):
+        conj = [self.bool()] if self.rng.random() < 0.7 else []
+        conj += [self.assign(v) for v in self.vars]
+        if self.rng.random() < 0.2:   # a second constraint on one's next value
+            v = self.rng.choice(list(self.vars))
+            conj.append(f"{v}' = {self.value(v)}")
+        self.rng.shuffle(conj)
+        return "\n".join(("    /\\ " if i else "    /\\ ") + c for i, c in enumerate(conj))
+
+    def model(self):
+        r = self.rng
+        vs = list(self.vars)
+        acts = [f"A{i} ==\n{self.action()}" for i in range(r.randint(1, 3))]
+        names = [a.split(" ")[0] for a in acts]
+        nxt = "Next ==\n" + "\n".join(f"    \\/ {a}" for a in names)
+        self.constant = True
+        init = "Init ==\n" + "\n".join(
+            f"    /\\ {v} " + r.choice([f"= {self.value(v)}", f"\\in {self.domain(v)}",
+                                    f"\\in {{{self.value(v)}, {self.value(v)}}}"]) for v in vs)
+        self.constant = False
+        universe = "U == [" + ", ".join(f"{v} : {self.domain(v)}" for v in vs) + "]"
+        # Manyan checks the behaviors stay in the universe: lean/ explores no other state.
+        props = "TypeOK == [" + ", ".join(f"{v} |-> {v}" for v in vs) + "] \\in U\n"
+        cfg = ["INVARIANT TypeOK"]
+        tuple_ = f"<<{', '.join(vs)}>>"
+        if r.random() < 0.4:
+            fair = " /\\ ".join(f"{r.choice('WS')}F_vars({a})" for a in r.sample(names + ["Next"], r.randint(0, 2)))
+            props += f"vars == {tuple_}\nSpec == Init /\\ [][Next]_vars{' /\\ ' + fair if fair else ''}\n"
+            p = r.choice([f"[]{self.bool()}", f"<>{self.bool()}", f"({self.bool()} ~> {self.bool()})",
+                          f"[]<>{self.bool()}", f"<>[]{self.bool()}", f"[][{self.action_short()}]_vars",
+                          f"[]<><<{r.choice(names)}>>_vars"])
+            props += f"Prop == {p}\n"
+            cfg += ["SPECIFICATION Spec", "PROPERTY Prop"]
+        else:
+            cfg += ["INIT Init", "NEXT Next"]
+        if r.random() < 0.7:
+            props += f"Inv == {self.bool()}\n"
+            cfg.append("INVARIANT Inv")
+        if r.random() < 0.15:
+            props += f"Constr == {self.bool()}\n"
+            cfg.append("CONSTRAINT Constr")
+        cfg.append(f"CHECK_DEADLOCK {r.choice(['TRUE', 'FALSE'])}")
+        module = (f"---- MODULE M ----\nEXTENDS Integers, FiniteSets\nVARIABLES {', '.join(vs)}\n"
+                  f"{init}\n" + "\n".join(acts) + f"\n{nxt}\n{universe}\n{props}====\n")
+        return module, "\n".join(cfg) + "\n"
+
+    def action_short(self):
+        v = self.rng.choice(list(self.vars))
+        return f"{v}' = {self.value(v)} \\/ {self.bool()}"
+
+
+def live_universe(rng):
+    """A model of live_model, with its universe, or None for one with INSTANCE."""
+    module, files = live_model(rng)
+    if files:
+        return None
+    n = module.count("{") and int(re.search(r"Succ == <<(.*)>>", module).group(1).count("{"))
+    module = module.replace("\n====\n", f"\nU == [s : 1..{n}]\n====\n")
+    text, cfg = module.split("====\n")
+    return text + "====\n", cfg
+
+
+VERDICT = re.compile(r"^Error: (Invariant (\w+) is violated\.|Deadlock reached\.|Action property (\w+) is violated\.|"
+                     r"Temporal propert(?:y (\w+) was|ies (.*) were) violated\.|Assumption .* is false\.)", re.M)
+
+
+def manyan_trace(out):
+    """The states of the behavior Manyan prints, as records, and the state its last goes back to."""
+    blocks = re.split(r"^State \d+: ", out, flags=re.M)[1:]
+    states, loop = [], None
+    for b in blocks:
+        head, _, body = b.partition("\n")
+        if head.startswith("Stuttering"):
+            loop = len(states) - 1
+            break
+        body = body.split("\n\n")[0]
+        back = re.search(r"^Back to state (\d+)", body, re.M)
+        body = re.split(r"^(?:Back to state|\d+ states generated)", body, flags=re.M)[0]
+        lines = [l for l in body.splitlines() if l.strip()]
+        joined, cur = [], ""
+        for l in lines:
+            if l.startswith("/\\ ") or (not cur and re.match(r"\w+ = ", l)):
+                if cur:
+                    joined.append(cur)
+                cur = l[3:] if l.startswith("/\\ ") else l
+            else:
+                cur += " " + l.strip()
+        if cur:
+            joined.append(cur)
+        fields = [j.split(" = ", 1) for j in joined]
+        states.append("[" + ", ".join(f"{n} |-> {v}" for n, v in fields) + "]")
+        if back:
+            loop = int(back.group(1)) - 1
+            break
+    tail = re.search(r"^Back to state (\d+)", out, re.M)
+    if loop is None and tail:
+        loop = int(tail.group(1)) - 1
+    return states, loop
+
+
+def model_verdict(reference, directory, trace=None):
+    name = next(directory.glob("*.tla")).stem
+    command = [reference, "model", f"{name}.tla", f"{name}.cfg", "U"] + (["T"] if trace else [])
+    if trace:
+        (directory / "T").write_text(trace)
+    _, out, code, killed = spec_runner.guarded(command, directory, 300, MEMORY)
+    if killed:
+        return {"skip": f"ref {killed}"}
+    if re.match(r"(unknown|undefined|error):", out):
+        return {"skip": out.strip()}
+    v = {"invariants": {}, "deadlock": None, "properties": {}, "assume": "assume FALSE" in out}
+    for line in out.splitlines():
+        w = line.split()
+        if w[0] in ("states", "init", "depth"):
+            v[w[0]] = int(w[1])
+        elif w[0] == "invariant":
+            v["invariants"][w[1]] = int(w[2])
+        elif w[0] == "deadlock":
+            v["deadlock"] = int(w[1])
+        elif w[0] == "property":
+            v["properties"][w[1]] = w[2] == "holds"
+        elif w[0] == "trace":
+            v["trace"] = w[1] == "valid"
+    return v
+
+
+def judge(out, code, ref, reference, directory, cfg):
+    """Why Manyan's verdict is not TLA+'s, or None."""
+    m = VERDICT.search(out)
+    states = re.search(r"(\d+) distinct states? found", out)
+    depth = re.search(r"The depth of the complete state graph search is (\d+)", out)
+    if ref["assume"]:
+        return None if m and m.group(0).startswith("Error: Assumption") else "an assumption is FALSE"
+    first_inv = min(ref["invariants"].values(), default=None)
+    dead = ref["deadlock"]
+    violated = [p for p, h in ref["properties"].items() if not h]
+    if m is None:
+        if code != 0:
+            return None   # Manyan refused, as TLC would: not a verdict
+        if ref["invariants"] or dead or violated:
+            return f"no error found, but lean/ has {ref}"
+        if not states or int(states.group(1)) != ref["states"]:
+            return f"{states and states.group(1)} distinct states, lean/ {ref['states']}"
+        if depth and ref["states"] and int(depth.group(1)) != ref["depth"]:   # TLC's is 1 with no state
+            return f"depth {depth.group(1)}, lean/ {ref['depth']}"
+        return None
+    what = m.group(1)
+    trace, loop = manyan_trace(out[m.end():])
+    if what.startswith("Invariant") and not re.search(rf"^INVARIANT {m.group(2)}$", cfg, re.M):
+        what = "Action property"   # TLC reports a violated []P, or a LET's, as an invariant
+    if what.startswith("Invariant"):
+        name = m.group(2)
+        if name == "TypeOK":
+            return None   # a behavior leaves the universe: lean/ cannot say
+        if name not in ref["invariants"]:
+            return f"{name} violated, but lean/ has it hold"
+        if len(trace) != first_inv:
+            return f"a trace of {len(trace)} states, lean/ a violation at depth {first_inv}"
+        if dead is not None and dead < len(trace) - 1:
+            return f"an invariant violated at depth {len(trace)}, but lean/ has a deadlock at {dead}"
+        check = f"invariant {name}"
+    elif what.startswith("Deadlock"):
+        if dead is None:
+            return "a deadlock, but lean/ has none"
+        if len(trace) != dead:
+            return f"a deadlock after {len(trace)} states, lean/ at depth {dead}"
+        if first_inv is not None and first_inv <= dead:
+            return f"a deadlock at depth {dead}, but lean/ has an invariant violated at {first_inv}"
+        check = "deadlock"
+    elif what.startswith("Assumption"):
+        return "an assumption FALSE, but lean/ has them hold"
+    else:
+        names = [n for n in (m.group(2), m.group(3), m.group(4)) if n] or [n.strip() for n in (m.group(5) or "").split(",") if n.strip()]
+        kind = "safety" if what.startswith("Action") else "property"
+        # TLC checks a state's invariants and safety properties as it finds it, deadlock as it expands it,
+        # and temporal properties once the graph is complete.
+        before = len(trace) if kind == "safety" else float("inf")
+        if (first_inv or before) < before or (dead or before) < before - 1:
+            return f"a violation of a property, but lean/ has another first: {ref}"
+        if not violated:
+            return f"{what}, but lean/ has every property hold"
+        check = f"{kind} {(set(names) & set(violated) or set(violated)).pop()}"
+    text = check + "\n" + "\n".join(trace) + "\n" + (f"loop {loop}\n" if loop is not None and check.startswith("property") else "")
+    validated = model_verdict(reference, directory, text)
+    if validated.get("trace") is not True:
+        return f"Manyan's trace is not a behavior that shows it: {validated}\n{text}"
+    return None
+
+
+def models(engine, reference, runs, seed):
+    rng = random.Random(seed)
+    failed = skipped = refused = 0
+    for i in range(runs):
+        made = live_universe(rng) if i % 2 else Machine(rng).model()
+        if made is None:
+            skipped += 1
+            continue
+        module, cfg = made
+        name = re.search(r"MODULE (\w+)", module).group(1)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / f"{name}.tla").write_text(module)
+            (directory / f"{name}.cfg").write_text(cfg)
+            ref_v = model_verdict(reference, directory)
+            if "skip" in ref_v:
+                skipped += 1
+                continue
+            _, out, code, killed = spec_runner.guarded(engine + ["-config", f"{name}.cfg", name], directory, 120, MEMORY)
+            if killed:
+                print(f"FAIL manyan {killed}\n{module}{cfg}")
+                failed += 1
+                continue
+            if code not in (0, 10, 11, 12, 13):
+                refused += 1
+            why = judge(out, code, ref_v, reference, directory, cfg)
+        if why:
+            failed += 1
+            print(f"FAIL {why}\n{module}{cfg}--- manyan\n{out}")
+    print(f"{runs - failed - skipped}/{runs} random models have TLA+'s verdict by lean/, "
+          f"{failed} another; {skipped} left out, {refused} refused by manyan")
+    return failed
+
+
 def diff_model(rng):
     """Small state-machine specs covering action errors, CONSTANT errors, SYMMETRY+V_LAMBDA, and TLCSet."""
     kind_id = rng.randrange(5)
@@ -648,7 +993,7 @@ def live_model(rng):
     sets = lambda xs: "{" + ", ".join(map(str, sorted(xs))) + "}"
     some = lambda p: {m for m in range(1, n + 1) if rng.random() < p}
     succ = [some(0.4) for _ in range(n)]
-    sub = rng.choice(["s", "s", "<<s>>", "TRUE", "FALSE", "BOOLEAN", "STRING"])
+    sub = rng.choice(["s", "<<s>>"])   # any other lets s change as it likes
     actions, spec = "", f"Init /\\ [][Next]_{sub}"
     for i in range(rng.randint(0, 2)):
         steps = [{k for k in x if rng.random() < 0.5} for x in succ]
@@ -1102,7 +1447,7 @@ def fuzz_sym(engine, runs, seed):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["crash", "fmt", "lint", "typecheck", "sym", "diff", "sim", "check", "live", "prove", "ref"])
+    parser.add_argument("mode", choices=["crash", "fmt", "lint", "typecheck", "sym", "diff", "sim", "check", "live", "prove", "ref", "model"])
     parser.add_argument("engine")
     parser.add_argument("--tlc")
     parser.add_argument("--sany")
@@ -1126,10 +1471,10 @@ def main():
         if not args.tlapm:
             parser.error("prove needs --tlapm")
         return 1 if prove(engine, str(Path(args.tlapm).resolve()), args.runs, args.seed) else 0
-    if args.mode == "ref":
+    if args.mode in ("ref", "model"):
         if not args.ref:
-            parser.error("ref needs --ref")
-        return 1 if ref(engine, str(Path(args.ref).resolve()), args.runs, args.seed) else 0
+            parser.error(args.mode + " needs --ref")
+        return 1 if {"ref": ref, "model": models}[args.mode](engine, str(Path(args.ref).resolve()), args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
     return 1 if {"sim": sim, "check": check, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0

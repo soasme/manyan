@@ -189,7 +189,8 @@ Java (they download tla2tools 1.8.0 and Apalache 0.63.0 themselves):
   options, and `make fuzz-live` for random temporal properties
   under fairness, to find differences. `make fuzz-prove` (TLAPS) and
   `make fuzz-ref` (`lean/`, a reference semantics in Lean 4) check
-  Manyan's values against TLA⁺'s semantics, which wins over TLC on a
+  Manyan's values against TLA⁺'s semantics, and `make fuzz-model` its
+  verdicts and traces, which wins over TLC on a
   verdict. What they find becomes a test.
 - `tests/tla` models parts of `manyan`'s algorithms in TLA⁺, for TLC and `manyan` to
   check.

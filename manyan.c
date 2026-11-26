@@ -14437,9 +14437,10 @@ static Expr *conjoin(Expr **parts, int n) {
    missing: in tuples and the definitions they call, through instances;
    an operator's parameter stands for its argument, and an instance's
    variable for what it substitutes, which TLC reads as if in the root
-   module: through two instances, it finds the middle one's variables. */
+   module: through two instances, it finds the middle one's variables.
+   exact: read each substitution in the module of its instance instead. */
 typedef struct Args { Def *d; Expr **args; struct Args *up; } Args;
-static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, char *in, int depth) {
+static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, char *in, int exact, int depth) {
     if (depth > 1000) {   /* a cycle through substitutions: TLC's stack overflows */
         printf("Error: %s\n", stack_overflow);
         stop(MANYAN_ERROR);
@@ -14451,31 +14452,32 @@ static void subscript_vars(Expr *e, Args *a, Def **path, Seg *segs, int npath, c
             for (int j = 0; j < path[k]->nsubst; j++)
                 if (path[k]->subst_decl[j] == e->def) {
                     Args b = {path[k], segs[k].args, NULL};   /* a parameter of the instance stands for its argument */
-                    subscript_vars(path[k]->subst_expr[j], path[k]->nparams ? &b : NULL, NULL, NULL, 0, in, depth + 1);
+                    subscript_vars(path[k]->subst_expr[j], path[k]->nparams ? &b : NULL, exact ? path : NULL, exact ? segs : NULL,
+                                   exact ? k : 0, in, exact, depth + 1);
                     return;
                 }
         return;
     case X_TUPLE:
-        for (int i = 0; i < e->n; i++) subscript_vars(e->args[i], a, path, segs, npath, in, depth + 1);
+        for (int i = 0; i < e->n; i++) subscript_vars(e->args[i], a, path, segs, npath, in, exact, depth + 1);
         return;
     case X_LET:
-        subscript_vars(e->args[0], a, path, segs, npath, in, depth + 1);
+        subscript_vars(e->args[0], a, path, segs, npath, in, exact, depth + 1);
         return;
     case K_BOUND:
         for (; a; a = a->up)
             for (int i = 0; i < a->d->nparams; i++)
-                if (a->d->params[i] == e->def) { subscript_vars(a->args[i], a->up, path, segs, npath, in, depth + 1); return; }
+                if (a->d->params[i] == e->def) { subscript_vars(a->args[i], a->up, path, segs, npath, in, exact, depth + 1); return; }
         return;
     case K_CALL: {
         Def *d = e->def->replacement ? e->def->replacement : e->def;
         if (d->kind != D_OP || d->native || d->nparams != e->n) return;
         Args b = {d, e->args, a};
-        subscript_vars(d->body, &b, path, segs, npath, in, depth + 1);
+        subscript_vars(d->body, &b, path, segs, npath, in, exact, depth + 1);
         return;
     }
     case K_INSTCALL:
         if (e->def->kind == D_OP && !e->def->native && !e->n && !npath)
-            subscript_vars(e->def->body, NULL, e->defs, e->segs, e->ndefs, in, depth + 1);
+            subscript_vars(e->def->body, NULL, e->defs, e->segs, e->ndefs, in, exact, depth + 1);
         return;
     default: return;
     }
@@ -14527,8 +14529,9 @@ static void use_specification(Expr *spec) {
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
             Expr *sq = unfold(e->args[0]);
             next_expr = in_instance(call, sq->args[0]);
+            Expr *sub = in_instance(call, sq->args[1]);
             char *in = xcalloc((size_t)nvars + 1, 1);
-            subscript_vars(in_instance(call, sq->args[1]), NULL, NULL, NULL, 0, in, 0);
+            subscript_vars(sub, NULL, NULL, NULL, 0, in, 0, 0);
             if (!nowarning) {
                 for (int v = 0; v < nvars; v++)
                     if (!in[v]) {
@@ -14538,6 +14541,15 @@ static void use_specification(Expr *spec) {
                         warning(text);
                     }
             }
+            /* [N]_v allows any step that keeps v: one that misses a variable
+               lets it change as it likes, which TLC, warning, does not explore.
+               Only a tuple of every variable makes those steps stuttering. */
+            memset(in, 0, (size_t)nvars);
+            subscript_vars(sub, NULL, NULL, NULL, 0, in, 1, 0);
+            for (int v = 0; v < nvars; v++)
+                if (!in[v])
+                    config_error("[][Next]_v lets %s change in a step that leaves v unchanged, as Manyan\n"
+                                 "cannot explore: make v a tuple of all the variables.", S(vars[v]->name));
             xfree(in);
             if (nnext++)   /* as TLC, once it has warned of this one's subscript */
                 config_error("The specification contains more than one conjunct of the form [][Next]_v,\n"

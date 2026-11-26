@@ -10,7 +10,9 @@ staged in a temporary directory and run as `ENGINE OPTIONS -config
 NAME.cfg NAME`, OPTIONS being those of a line `\\* options: ...` in it (which may give
 its own -config; the configuration is also the engine's standard input, or
 NAME.in where a test has one). The
-oracle does not run a test with an option in ORACLE_SKIPS.
+oracle does not run a test with an option in ORACLE_SKIPS, nor one with a
+line `\\* semantics: WHY`: there TLC's verdict is wrong, and NAME.out is
+Manyan's (docs/manual.md says where).
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
 numbered in order of appearance, as fingerprints differ; then the
 behaviors it writes (`-simulate file=FILE`) and the counterexample
@@ -259,6 +261,11 @@ def options(path):
     return shlex.split(found.group(1)) if found else []
 
 
+def semantic(path):
+    """Whether a test's expected output is the semantics' and not TLC's."""
+    return re.search(r"^\\\* semantics: ", path.read_text(), flags=re.M) is not None
+
+
 def place(command, options):
     """command with options: TLC takes Java's -Dk=v before its class."""
     if "tlc2.TLC" not in command:
@@ -316,7 +323,7 @@ def main():
     def check(path):
         expected_path = path.with_suffix(".out")
         notes = []
-        if args.oracle and not ORACLE_SKIPS & set(options(path)):
+        if args.oracle and not ORACLE_SKIPS & set(options(path)) and not semantic(path):
             reference = run(oracle_command(args.oracle), path, memory)
             if args.bless:
                 expected_path.write_text(reference)

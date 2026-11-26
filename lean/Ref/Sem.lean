@@ -3,9 +3,10 @@ import Ref.Syntax
 /-!
 # The meaning of a constant expression
 
-`sem O n ρ e` is the value of `e` where the names are bound as `ρ` says,
-following *Specifying Systems* (chapter 16) and the definitions of the
-standard modules. Evaluation nests at most `n` deep.
+`sem O w n σ ρ e` is the value of `e` in the states `σ`, where the
+names are bound as `ρ` says and the module's as `w` says, following
+*Specifying Systems* (chapter 16) and the definitions of the standard
+modules. Evaluation nests at most `n` deep.
 
 Where TLA⁺ does not say what a value is (`<<>>[1]`, `1 = "a"`,
 `CHOOSE x \in {} : TRUE`), the result is `undef`: any value is right.
@@ -143,9 +144,18 @@ The steps are given the functions that evaluate one level deeper as a
 `Ctx`; `tie` ties them, so no definition is recursive but `tie`, on the
 depth. -/
 
+/-- What a module and its model give: the definitions (constants
+included), the variables, and the universe, the states a behavior may
+take, which `ENABLED` ranges over. -/
+structure World where
+  defs : Env := []
+  vars : List String := []
+  states : List State := []
+
 structure Ctx where
   O : Oracle
-  ev : Env → Expr → M Val
+  w : World
+  ev : St → Env → Expr → M Val
   mem : Val → Val → M Bool
   eq : Val → Val → M Bool
   app : Val → Val → M Val
@@ -172,7 +182,7 @@ def mkFcn (g : List (Val × Val)) : M Val := do
 def all (S : Val) (p : Val → M Bool) : M Bool :=
   match S with
   | .set l => strictAll (l.map p)
-  | .lazy (.fcn ..) | .bool _ | .int _ | .str _ | .fcn _ => undef "a quantifier over a value that is not a set"
+  | .lazy (.fcn ..) | .bool _ | .int _ | .str _ | .model _ | .fcn _ => undef "a quantifier over a value that is not a set"
   | .lazy _ => c.O.all (c.mem · S) p
 
 def any (S : Val) (p : Val → M Bool) : M Bool :=
@@ -225,13 +235,13 @@ def recordSet (fields : List (String × Val)) : M Val := do
 
 /-- `[f EXCEPT !path = e]`, with `@` the value it replaces. Outside the
 domain the function is unchanged: `[x \in DOMAIN f |-> IF x = k ...]`. -/
-def update (ρ : Env) (f : Val) : List Val → Expr → M Val
-  | [], e => c.ev (("@", .val f) :: ρ) e
+def update (σ : St) (ρ : Env) (f : Val) : List Val → Expr → M Val
+  | [], e => c.ev σ (("@", .val f) :: ρ) e
   | k :: path, e => match f with
     | .fcn g => do
       let mut out := #[]
       for (k', v) in g do
-        if ← c.eq k k' then out := out.push (k', ← update ρ v path e)
+        if ← c.eq k k' then out := out.push (k', ← update σ ρ v path e)
         else out := out.push (k', v)
       pure (.fcn out.toList)
     | _ => unknown "EXCEPT of a function not enumerated"
@@ -241,10 +251,13 @@ def constant : String → M Val
   | "Int" => pure (.lazy .int)
   | "STRING" => pure (.lazy .string)
   | "BOOLEAN" => pure (.set [.bool false, .bool true])
+  | "TRUE" => pure (.bool true)
+  | "FALSE" => pure (.bool false)
+  | "$any" => unknown "a quantifier or CHOOSE over all values"
   | x => unknown s!"the name {x}"
 
-def binder (ρ : Env) (b : Binder) (x : String) (S : Val) (body : Expr) : M Val :=
-  let at_ (v : Val) := c.ev ((x, .val v) :: ρ) body
+def binder (σ : St) (ρ : Env) (b : Binder) (x : String) (S : Val) (body : Expr) : M Val :=
+  let at_ (v : Val) := c.ev σ ((x, .val v) :: ρ) body
   let test (v : Val) := at_ v >>= asBool
   match b with
   | .all => .bool <$> c.all S test
@@ -257,11 +270,12 @@ def binder (ρ : Env) (b : Binder) (x : String) (S : Val) (body : Expr) : M Val 
            else undef "CHOOSE from a value that is not a set"
   | .filter => match S with
     | .set l => do c.mkSet (← l.filterM test)
-    | _ => if S.isSet then pure (.lazy (.filter S x body ρ)) else undef "{x \\in S : P} of a value that is not a set"
+    | _ => if S.isSet then pure (.lazy (.filter S x body ρ σ)) else undef "{x \\in S : P} of a value that is not a set"
   | .map => do c.mkSet (← (← asSet S).mapM at_)
   | .fcn => match S with
     | .set l => do c.mkFcn (← l.mapM fun v => do pure (v, ← at_ v))
-    | _ => if S.isSet then pure (.lazy (.fcn S x body ρ)) else undef "[x \\in S |-> e] of a value that is not a set"
+    | _ => if S.isSet then pure (.lazy (.fcn S x body ρ σ)) else undef "[x \\in S |-> e] of a value that is not a set"
+  | .recfcn => if S.isSet then pure (.lazy (.fcn S x body ρ σ)) else undef "f[x \\in S] == e of a value that is not a set"
   | .select => match S.seq? with
     | some l => tuple <$> l.filterM test
     | none => undef "SelectSeq of a value that is not a sequence"
@@ -303,9 +317,10 @@ def strict (o : String) (vs : List Val) : M Val :=
   | "\\in", [a, S] => .bool <$> c.mem a S
   | "\\notin", [a, S] => .bool <$> (! ·) <$> c.mem a S
   | "\\subseteq", [A, B] => .bool <$> c.subseteq A B
+  | "\\subset", [A, B] => do pure (.bool ((← c.subseteq A B) && !(← c.eq A B)))
   | "{}", _ => c.mkSet vs
   | "<<>>", _ => pure (tuple vs)
-  | "[]", [f, a] => c.app f a
+  | "app", [f, a] => c.app f a
   | "DOMAIN", [f] => domain f
   | "\\cup", [A, B] => match A, B with
     | .set a, .set b => c.mkSet (a ++ b)
@@ -374,37 +389,97 @@ def strict (o : String) (vs : List Val) : M Val :=
     | none => unknown s!"the operator {o}"
   | _, _ => unknown s!"the operator {o} with {vs.length} arguments"
 
-def op (ρ : Env) : String → List Expr → M Val
-  -- IF evaluates only the branch it takes.
-  | "IF", [p, a, b] => do c.ev ρ (if ← (c.ev ρ p >>= asBool) then a else b)
-  | o, args => do c.strict o (← args.mapM (c.ev ρ))
+/-- A state variable's value: in the next state, under a prime. -/
+def var (σ : St) (x : String) : M Val :=
+  if σ.primed then match σ.nxt with
+    | some t => match t.lookup x with
+      | some v => pure v
+      | none => unknown s!"the variable {x} in the next state"
+    | none => undef s!"{x}' where there is no next state"
+  else match σ.cur.lookup x with
+    | some v => pure v
+    | none => undef s!"the variable {x} where there is no state"
 
-def eval (ρ : Env) : Expr → M Val
+/-- An argument for a parameter: an operator for `LAMBDA` or an
+operator's name, else the expression, evaluated where it is used. -/
+def arg (ρ : Env) : Expr → Def
+  | .lambda ps e => .op ps e ρ
+  | e@(.name g) => match ρ.lookup g <|> c.w.defs.lookup g with
+    | some d@(.op (_ :: _) _ _) => d
+    | _ => .expr e ρ
+  | e => .expr e ρ
+
+/-- What a name stands for, or `none` for a variable or a built-in. -/
+def lookup (ρ : Env) (x : String) : Option Def := ρ.lookup x <|> c.w.defs.lookup x
+
+/-- `UNCHANGED e`, that is `e' = e`. -/
+def unchanged (σ : St) (ρ : Env) (e : Expr) : M Bool := do
+  if σ.primed then undef "UNCHANGED under a prime" else
+  c.eq (← c.ev (.mk σ.cur σ.nxt true) ρ e) (← c.ev σ ρ e)
+
+/-- A function of a recursive definition on a finite domain, enumerated
+for an operator that needs its graph. -/
+def force (v : Val) : M Val :=
+  match v with
+  | .lazy (.fcn (.set ks) ..) => do c.mkFcn (← ks.mapM fun k => do pure (k, ← c.app v k))
+  | v => pure v
+
+def op (σ : St) (ρ : Env) (o : String) (args : List Expr) : M Val :=
+  match c.lookup ρ o, args with
+  | some (.op ps body ρ'), _ =>
+    if ps.length != args.length then undef s!"{o} applied to {args.length} arguments"
+    else c.ev σ (ps.zip (args.map (c.arg ρ)) ++ ρ') body
+  | some _, _ => undef s!"{o} applied to arguments, though it takes none"
+  -- IF evaluates only the branch it takes.
+  | none, [p, a, b] => if o == "IF" then do c.ev σ ρ (if ← (c.ev σ ρ p >>= asBool) then a else b)
+                       else strictOp
+  | none, [e] => match o with
+    | "'" => if σ.primed then undef "a primed expression primed again"
+             else c.ev (.mk σ.cur σ.nxt true) ρ e
+    | "UNCHANGED" => do .bool <$> c.unchanged σ ρ e
+    -- ENABLED A: some state of the universe is a next state A allows.
+    | "ENABLED" => if σ.primed then undef "ENABLED under a prime" else
+      .bool <$> anyOf (c.w.states.map fun t => c.ev (.mk σ.cur (some t) false) ρ e >>= asBool)
+    | "[]" | "<>" => unknown "a temporal formula where a value is needed"
+    | _ => strictOp
+  | none, [a, v] => match o with
+    | "[A]_" => do let x ← c.ev σ ρ a >>= asBool; let u ← c.unchanged σ ρ v; pure (.bool (x || u))
+    | "<<A>>_" => do let x ← c.ev σ ρ a >>= asBool; let u ← c.unchanged σ ρ v; pure (.bool (x && !u))
+    | "~>" | "WF_" | "SF_" => unknown "a temporal formula where a value is needed"
+    | _ => strictOp
+  | none, _ => strictOp
+where
+  strictOp := do c.strict o (← (← args.mapM (c.ev σ ρ)).mapM c.force)
+
+def eval (σ : St) (ρ : Env) : Expr → M Val
   | .bool b => pure (.bool b)
   | .int n => pure (.int n)
   | .str s => pure (.str s)
-  | .name x => match ρ.lookup x with
+  | .name x => match c.lookup ρ x with
     | some (.val v) => pure v
-    | some (.expr d ρ') => c.ev ρ' d
-    | none => constant x
-  | .op o args => c.op ρ o args
-  | .bind b x s body => do c.binder ρ b x (← c.ev ρ s) body
-  | .record fields => do c.mkFcn (← fields.mapM fun (f, e) => do pure (.str f, ← c.ev ρ e))
-  | .recordSet fields => do recordSet (← fields.mapM fun (f, e) => do pure (f, ← c.ev ρ e))
+    | some (.expr d ρ') => c.ev σ ρ' d
+    | some (.op [] d ρ') => c.ev σ ρ' d
+    | some (.op ..) => undef s!"the operator {x} without its arguments"
+    | none => if c.w.vars.contains x then var σ x else constant x
+  | .op o args => c.op σ ρ o args
+  | .lambda .. => undef "LAMBDA where a value is needed"
+  | .bind b x s body => do c.binder σ ρ b x (← c.ev σ ρ s >>= c.force) body
+  | .record fields => do c.mkFcn (← fields.mapM fun (f, e) => do pure (.str f, ← c.ev σ ρ e))
+  | .recordSet fields => do recordSet (← fields.mapM fun (f, e) => do pure (f, ← c.ev σ ρ e))
   | .except f updates => do
-    updates.foldlM (fun v (path, e) => do c.update ρ v (← path.mapM (c.ev ρ)) e) (← c.ev ρ f)
-  | .letIn x d body => c.ev ((x, .expr d ρ) :: ρ) body
+    updates.foldlM (fun v (path, e) => do c.update σ ρ v (← path.mapM (c.ev σ ρ)) e) (← c.ev σ ρ f >>= c.force)
+  | .letIn x ps d body => c.ev σ ((x, if ps.isEmpty then .expr d ρ else .op ps d ρ) :: ρ) body
   | .case arms other => do
-    let guards ← arms.mapM fun (p, _) => c.ev ρ p >>= asBool
+    let guards ← arms.mapM fun (p, _) => c.ev σ ρ p >>= asBool
     let taken := (arms.zip guards).filter (·.2) |>.map (·.1.2)
     match taken, other with
-    | [], some e => c.ev ρ e
+    | [], some e => c.ev σ ρ e
     | [], none => undef "CASE with no true guard"
-    | [e], _ => c.ev ρ e
+    | [e], _ => c.ev σ ρ e
     | e :: es, _ => do
       -- CASE is a CHOOSE among the values of the true arms.
-      let v ← c.ev ρ e
-      if ← allOf ((← es.mapM (c.ev ρ)).map (c.eq v)) then pure v
+      let v ← c.ev σ ρ e
+      if ← allOf ((← es.mapM (c.ev σ ρ)).map (c.eq v)) then pure v
       else unknown "CASE among true arms of different values: that is the choice function's"
 
 /-- `v \in S`. -/
@@ -414,9 +489,9 @@ def member (v : Val) : Val → M Bool
     | .nat => pure (match v with | .int n => n ≥ 0 | _ => false)
     | .int => pure (match v with | .int _ => true | _ => false)
     | .string => pure (match v with | .str _ => true | _ => false)
-    | .filter S x p ρ => do
+    | .filter S x p ρ σ => do
       if !(← c.mem v S) then return false
-      c.ev ((x, .val v) :: ρ) p >>= asBool
+      c.ev σ ((x, .val v) :: ρ) p >>= asBool
     | .cup A B => anyOf [c.mem v A, c.mem v B]
     | .diff A B => do pure ((← c.mem v A) && !(← c.mem v B))
     | .union sets => anyOf (sets.map (c.mem v))
@@ -445,6 +520,7 @@ def equal (a b : Val) : M Bool :=
   | .bool x, .bool y => pure (x == y)
   | .int x, .int y => pure (x == y)
   | .str x, .str y => pure (x == y)
+  | .model x, .model y => pure (x == y)
   | .set x, .set y => allOf ((x.map (c.mem · b)) ++ (y.map (c.mem · a)))
   | .fcn x, .fcn y => do
     if !(← c.eq (.set (x.map Prod.fst)) (.set (y.map Prod.fst))) then return false
@@ -455,6 +531,7 @@ def equal (a b : Val) : M Bool :=
       c.all (← domain a) fun k => do c.eq (← c.app a k) (← c.app b k)
     else if a.isSet && b.isSet then
       match a, b with
+      | .lazy .nat, .lazy .nat | .lazy .int, .lazy .int | .lazy .string, .lazy .string => pure true
       | .lazy s, .set _ | .set _, .lazy s => if s.infinite then pure false else c.O.same (c.mem · a) (c.mem · b)
       | _, _ => c.O.same (c.mem · a) (c.mem · b)
     else undef "= between values of different kinds"
@@ -466,21 +543,22 @@ def apply (f a : Val) : M Val :=
     for (k, v) in g do
       if ← c.eq a k then return v
     undef "a function applied outside its domain"
-  | .lazy (.fcn S x e ρ) => do
-    if ← c.mem a S then c.ev ((x, .val a) :: ρ) e
+  | .lazy (.fcn S x e ρ σ) => do
+    -- `$self` is the function, in the body of a recursive definition.
+    if ← c.mem a S then c.ev σ ((x, .val a) :: ("$self", .val f) :: ρ) e
     else undef "a function applied outside its domain"
   | _ => undef "application of a value that is not a function"
 
 end Ctx
 
-def tie (O : Oracle) : Nat → Ctx
+def tie (O : Oracle) (w : World) : Nat → Ctx
   | 0 =>
     let deep {α} : M α := unknown "an expression nested too deep"
-    { O, ev := fun _ _ => deep, mem := fun _ _ => deep, eq := fun _ _ => deep, app := fun _ _ => deep }
+    { O, w, ev := fun _ _ _ => deep, mem := fun _ _ => deep, eq := fun _ _ => deep, app := fun _ _ => deep }
   | n + 1 =>
-    let c := tie O n
-    { O, ev := c.eval, mem := c.member, eq := c.equal, app := c.apply }
+    let c := tie O w n
+    { O, w, ev := c.eval, mem := c.member, eq := c.equal, app := c.apply }
 
-def sem (O : Oracle) (n : Nat) (ρ : Env) (e : Expr) : M Val := (tie O n).ev ρ e
+def sem (O : Oracle) (w : World) (n : Nat) (σ : St) (ρ : Env) (e : Expr) : M Val := (tie O w n).ev σ ρ e
 
 end Ref

@@ -3,8 +3,6 @@ does not seem to contain the state variable a
 (Use the -nowarning option to disable this warning.)
 Warning: The subscript of the next-state relation specified by the specification
 does not seem to contain the state variable b
-Finished computing initial states: 1 distinct state generated.
-Model checking completed. No error has been found.
-3 states generated, 2 distinct states found, 0 states left on queue.
-The depth of the complete state graph search is 2.
-exit 0
+Error: [][Next]_v lets a change in a step that leaves v unchanged, as Manyan
+cannot explore: make v a tuple of all the variables.
+exit 151

@@ -116,6 +116,12 @@ temporal properties are checked under.
 ## What is checked
 
 - **Assumptions.** Each `ASSUME` must be true, or the run stops (exit 10).
+- **The next-state relation.** In `SPECIFICATION`, `[][Next]_v` allows
+  every step that leaves `v` unchanged. Manyan explores `Next`'s steps,
+  and that is the whole specification only when `v` is a tuple (through
+  definitions) of all the variables. TLC warns of a variable missing from
+  `v` and then explores `Next` anyway, which leaves behaviors out and can
+  report no error where there is one. Manyan stops instead (exit 151).
 - **Safety.** Every invariant holds in every reachable state (exit 12 with
   the shortest trace to a violation); every action property `[][A]_v`
   holds on every step.
@@ -376,6 +382,7 @@ make fuzz-check        # tests/spec models checked with random options, by Manya
 make fuzz-live         # random temporal properties under fairness, by Manyan and by TLC
 make fuzz-prove        # random expressions: TLAPS proves Manyan's value, or proves it wrong (downloads TLAPS)
 make fuzz-ref          # random expressions, Manyan's value against lean/'s semantics of TLA⁺ (needs Lean 4)
+make fuzz-model        # random models, Manyan's verdict, counts and traces against lean/'s
 make bench             # times Manyan against TLC; writes docs/benchmark.md
 make test-symbolic     # tests/symbolic with -symbolic
 make test-symbolic-oracle  # also runs Apalache 0.63.0 on every test (downloads it)
@@ -435,10 +442,16 @@ What TLAPS proves neither way is left out. `make fuzz-ref` asks
 leaves out what TLA⁺ leaves unspecified, as `<<>>[1]` or `1 = "a"`, and
 what it cannot compute, as a quantifier over `Nat`. Where the semantics
 and TLC disagree on a verdict, the semantics wins; what Manyan prints
-stays TLC's.
+stays TLC's. `make fuzz-model` checks random models, each with a
+universe (a set of records of its variables that its behaviors stay
+in), with Manyan and with `lean/`: their verdicts, their distinct
+states and depth, and that each trace Manyan prints is a behavior of
+the specification that shows the error.
 
-All seven take `RUNS=` (1000) and `SEED=` (1); a run with a seed is
+All eight take `RUNS=` (1000) and `SEED=` (1); a run with a seed is
 repeatable. A case any of them finds becomes a test in `tests/spec`.
+A test where TLC's verdict is wrong has a line `\* semantics: WHY`; its
+expected output is Manyan's, and the oracle does not run it.
 
 ## Limitations
 
