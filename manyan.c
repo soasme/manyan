@@ -16853,8 +16853,10 @@ static void warn_stuttering(void);
    negative its last state stuttering, by back for a CounterExample; cyc
    is where the properties are evaluated to loop back. */
 /* TLC rebuilds the n states ls of a counterexample from Init, each from
-   the one before (replay): what that evaluates prints again. */
+   the one before (replay): what that evaluates prints again. A simulation
+   prints the behavior it kept. */
 static void replay_lasso(int *ls, int n) {
+    if (simulating) return;
     for (int i = 0; i < n; i++) replay(i ? state_values(ls[i - 1]) : NULL, state_values(ls[i]), i);
 }
 

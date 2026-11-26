@@ -1,0 +1,23 @@
+<<"init">>
+Finished computing initial states: 1 distinct state generated.
+<<"step", 1>>
+<<"step", 2>>
+<<"step", 3>>
+Error: Temporal property P was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Init line 7, col 9 to line 7, col 35 of module reprint_counterexample_simulate>
+l = 1
+
+State 2: <Next line 8, col 9 to line 8, col 52 of module reprint_counterexample_simulate>
+l = 2
+
+State 3: <Next line 8, col 9 to line 8, col 52 of module reprint_counterexample_simulate>
+l = 3
+
+State 4: <Next line 8, col 9 to line 8, col 52 of module reprint_counterexample_simulate>
+l = 4
+
+State 5: Stuttering
+exit 13
