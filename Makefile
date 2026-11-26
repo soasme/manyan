@@ -248,10 +248,10 @@ sanitize-linux:
 fuzz-prove: manyan $(TLAPS)
 	python3 tests/fuzz.py prove ./manyan --tlapm $(TLAPS) --runs $(RUNS) --seed $(SEED)
 
-# The reference, and the proof that it agrees with the definition.
+# The reference, and the proofs about it.
 REF = lean/.lake/build/bin/ref
 $(REF): lean/Main.lean lean/Ref/*.lean lean/lakefile.toml
-	cd lean && lake build && lake build Ref.Sound
+	cd lean && lake build && lake build Ref.Sound Ref.Choice
 
 fuzz-ref: manyan $(REF)
 	python3 tests/fuzz.py ref ./manyan --ref $(REF) --runs $(RUNS) --seed $(SEED)

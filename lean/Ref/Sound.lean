@@ -154,7 +154,8 @@ theorem exec_classical (χ) : OAgree Oracle.exec (Oracle.classical χ) where
     | some [w] =>
       simp only [Oracle.exec, Oracle.classical, pure, Except.pure] at h1 h2
       cases h1; cases h2
-      split <;> simp_all
+      simp only [List.find?]
+      split <;> rfl
     | some [] => simp [Oracle.exec] at h1
     | some (_ :: _ :: _) => simp [Oracle.exec] at h1
     | none => simp [Oracle.exec] at h1

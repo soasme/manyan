@@ -45,6 +45,31 @@ def Oracle.exec : Oracle where
     | some _ => unknown "CHOOSE among several values: that is the choice function's"
     | none => unknown "CHOOSE from a set not enumerated"
 
+/-- `=` between values with nothing kept unevaluated, as the evaluator
+computes it where it answers (`Ref/Choice.lean`): sets with the same
+elements, functions with the same graph, and values of different kinds
+apart. -/
+def Val.feq : Val → Val → Bool
+  | .bool x, .bool y => x == y
+  | .int x, .int y => x == y
+  | .str x, .str y => x == y
+  | .model x, .model y => x == y
+  | .set x, .set y =>
+    x.attach.all (fun ⟨a, _⟩ => y.attach.any fun ⟨b, _⟩ => feq a b) &&
+    y.attach.all (fun ⟨b, _⟩ => x.attach.any fun ⟨a, _⟩ => feq a b)
+  | .fcn x, .fcn y =>
+    x.attach.all (fun ⟨p, _⟩ => y.attach.any fun ⟨q, _⟩ => feq p.1 q.1) &&
+    y.attach.all (fun ⟨q, _⟩ => x.attach.any fun ⟨p, _⟩ => feq p.1 q.1) &&
+    x.attach.all (fun ⟨p, _⟩ => y.attach.all fun ⟨q, _⟩ => !feq p.1 q.1 || feq p.2 q.2)
+  | _, _ => false
+termination_by a b => sizeOf a + sizeOf b
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | (have := List.sizeOf_lt_of_mem ‹_ ∈ x›; have := List.sizeOf_lt_of_mem ‹_ ∈ y›; omega)
+    | (have := List.sizeOf_lt_of_mem ‹p ∈ x›; have := List.sizeOf_lt_of_mem ‹q ∈ y›
+       cases p; cases q; simp at *; omega)
+
 /-- A total answer to a question: `ok` for every value, or `undef`. -/
 def total (f : Val → M Bool) : Prop := ∀ v, f v = .ok true ∨ f v = .ok false
 
@@ -67,11 +92,12 @@ noncomputable def Oracle.classical (χ : (Val → Prop) → Val) : Oracle where
       -- Every such list has the same length.
       pure (Classical.choose h.2)
     else undef "the cardinality of an infinite set"
-  -- From an enumerated set, χ's choice among its elements that satisfy
-  -- P, each value once, as the enumeration has them.
+  -- From an enumerated set, the elements that satisfy P: χ's choice of
+  -- a value equal to one of them, as the enumeration has it.
   choose sat
     | some [] => undef "CHOOSE with no value that satisfies it"
-    | some l@(w :: _) => pure (if χ (· ∈ l) ∈ l then χ (· ∈ l) else w)
+    | some l@(w :: _) =>
+      pure ((l.find? (Val.feq (χ fun v => ∃ u ∈ l, v.feq u = true))).getD w)
     | none =>
       if total sat ∧ ∃ v, sat v = .ok true then pure (χ (fun v => sat v = .ok true))
       else undef "CHOOSE with no value that satisfies it"

@@ -8,7 +8,7 @@ the definitions of the standard modules.
 
 ```sh
 lake build                       # .lake/build/bin/ref
-lake build Ref.Sound             # checks the proof below
+lake build Ref.Sound Ref.Choice  # checks the proofs below
 echo '{x \in 1..5 : x % 2 = 1}' | .lake/build/bin/ref
 {1, 3, 5}
 printf '<<>>[1]\n' | .lake/build/bin/ref
@@ -63,10 +63,15 @@ value, `sem (Oracle.classical χ)` has no other, for every `χ`
 `exec` answers only where every choice function answers alike: `CHOOSE`
 among the elements of an enumerated set when exactly one satisfies it.
 
-`CHOOSE` in an enumerated set is χ's choice among the elements that
-satisfy it, as the enumeration has them, each value once. That this is
-TLA⁺'s choice rests on the evaluator respecting `=` (a value equal to
-another evaluates as it does), which is not proved.
+`CHOOSE` in an enumerated set is χ's choice of a value equal to one of
+the elements that satisfy it. `Ref/Choice.lean` proves that this depends
+on those elements as a set, not on how the enumeration lists them:
+`Val.feq` (the same elements, the same graph) is an equivalence, the
+evaluator's `=` is `Val.feq` wherever it answers, at every depth and
+with any oracle (`eqSound_tie`), and sets it has equal give equal
+choices (`choose_eq`). Not proved: that `P` answers alike on equal
+values, the evaluator respecting `=`. It needs values without duplicate
+elements, as `Cardinality` and the enumeration limit count them.
 
 ## What it decides
 

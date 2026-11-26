@@ -36,7 +36,7 @@ from TLC.
   and `make fuzz-model` Manyan's verdicts, counts and traces; `lean/`
   proves that its computable oracle agrees with the classical one. Next:
   INSTANCE with parameters in `lean/`, and a proof that its evaluator
-  respects `=`.
+  respects `=` (its `=` and `CHOOSE` are proved to).
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle, the tableau, level checking and
