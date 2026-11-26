@@ -513,7 +513,9 @@ compares or fingerprints it, which it does as it goes. Real numbers
 (`Reals`, decimals) and `\AA`/`\EE` give TLC's errors, as TLC cannot
 check them either. `RandomElement`, `RandomSubset` and
 `RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
-and constants when model checking.
+and constants when model checking. A temporal property's counterexample
+whose cycle comes back into the state it starts in goes back to it;
+TLC prints it stuttering there, a behavior fairness may rule out.
 
 Known gaps, not decisions, each to be closed:
 

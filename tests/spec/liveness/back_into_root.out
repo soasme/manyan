@@ -1,0 +1,22 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Temporal property P was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+s = 2
+
+State 2: <Next line 8, col 9 to line 8, col 56 of module back_into_root>
+s = 4
+
+State 3: <Next line 8, col 9 to line 8, col 56 of module back_into_root>
+s = 3
+
+State 4: <Next line 8, col 9 to line 8, col 56 of module back_into_root>
+s = 1
+
+Back to state 2: <Next line 8, col 9 to line 8, col 56 of module back_into_root>
+
+10 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 13

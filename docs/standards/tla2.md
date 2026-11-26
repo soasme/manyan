@@ -790,7 +790,10 @@ conjunct of the property's negation (in disjunctive normal form) is
 `[]` in `F`, TLC then warns that the stuttering may come of no
 `SPECIFICATION` (with `INIT` and `NEXT`), or of a specification `Spec`
 without fairness, `... the behavior specification Spec defined at line
-..., col ... of module M. ...` (its whole definition). A conjunct with an
+..., col ... of module M. ...` (its whole definition). A counterexample
+whose cycle comes back into the state it starts in after others ends
+`Back to state i`, where TLC prints it stuttering, a behavior fairness
+may rule out. A conjunct with an
 action that is neither is TLC's `Error: Temporal formulas containing
 actions must be of forms <>[]A or []<>A.` (exit 255). TLC builds the
 tableaux as its checker starts, before the assumptions, evaluating the

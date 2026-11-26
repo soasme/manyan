@@ -17221,7 +17221,8 @@ static int sim_search(int *roots, int nroots) {
             la[n] = edge_act(cyc.v[i - 1], cyc.v[i]), ls[n++] = pnodes[cyc.v[i]].state;
     xfree(parent);
     xfree(queue);
-    if (ls[n - 1] == pnodes[sim_hit].state) print_lasso(ls, la, n, -1, -2, entry);   /* by no action, as TLC's simulator */
+    if (n - 1 == entry) print_lasso(ls, la, n, -1, -2, entry);   /* by no action, as TLC's simulator */
+    else if (ls[n - 1] == pnodes[sim_hit].state) print_lasso(ls, la, n - 1, entry, la[n - 1], entry);   /* back into it */
     else print_lasso(ls, la, n, entry, edge_act(cyc.v[cyc.n - 1], sim_hit), entry);
     return 1;
 }
@@ -18029,8 +18030,9 @@ static void pem_back(int from, int root, Ints *post) {
 }
 
 /* TLC's printTrace: the shortest path to the root, then the cycle of the
-   walk and the way back, each state once in a row; the last state, if
-   the root's, stutters. */
+   walk and the way back, each state once in a row; a cycle of the root's
+   state alone stutters, and one back into its state goes back to it
+   (TLC prints that it stutters, a behavior fairness may rule out). */
 static void pem_print(int root, int *roots, int nroots) {
     List path = {0}, acts = {0};
     product_path(roots, nroots, root, NULL, 0, &path, &acts);
@@ -18050,7 +18052,8 @@ static void pem_print(int root, int *roots, int nroots) {
         la[k++] = act;
         if (i < path.n) at = k - 1;
     }
-    if (ls[k - 1] == pnodes[root].state) print_lasso(ls, la, k, -1, la[k - 1], k - 1);
+    if (k - 1 == at) print_lasso(ls, la, k, -1, la[k - 1], k - 1);   /* the cycle is the root's state */
+    else if (ls[k - 1] == pnodes[root].state) print_lasso(ls, la, k - 1, at, la[k - 1], at);   /* back into it */
     else print_lasso(ls, la, k, at, edge_act(prev, root), at);
 }
 
