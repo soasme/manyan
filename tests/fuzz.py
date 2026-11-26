@@ -517,6 +517,7 @@ class Machine:
         self.k = {v: rng.randint(2, 3) for v in names}
         self.constant = False   # no variables, as in Init
         self.lets = 0
+        self.actions = []       # those an ENABLED may name
 
     def domain(self, v):
         return {"int": f"0..{self.k[v] - 1}", "bool": "BOOLEAN", "set": "SUBSET {1, 2}",
@@ -559,6 +560,7 @@ class Machine:
         r = self.rng
         leaves = [lambda: r.choice(["TRUE", "FALSE"])] + [lambda v=v: v for v in self.of("bool")]
         leaves += [lambda v=v: f"{v}.b" for v in self.of("rec")]
+        leaves += [lambda a=a: f"(ENABLED {a})" for a in ([] if self.constant else self.actions)]
         if d > 2:
             return r.choice(leaves)()
         b = lambda: self.bool(d + 1)
@@ -617,27 +619,40 @@ class Machine:
             lambda: f"UNCHANGED {v}",
             lambda: f"{v}' \\in {self.domain(v)}",
             lambda: f"\\E q \\in {{{self.value(v)}, {self.value(v)}}} : {v}' = q",
+            lambda: f"Keep({v})",
+            lambda: f"(IF {self.bool()} THEN {v}' = {self.value(v)} ELSE {self.assign(v)})",
+            lambda: f"(CASE {self.bool()} -> {v}' = {self.value(v)} [] OTHER -> {v}' \\in {self.domain(v)})",
+            lambda: f"({v}' = {self.value(v)} \\/ ({self.bool()} /\\ {v}' = {self.value(v)}))",
         ])()
 
     def action(self):
-        conj = [self.bool()] if self.rng.random() < 0.7 else []
-        conj += [self.assign(v) for v in self.vars]
-        if self.rng.random() < 0.2:   # a second constraint on one's next value
-            v = self.rng.choice(list(self.vars))
-            conj.append(f"{v}' = {self.value(v)}")
-        self.rng.shuffle(conj)
-        return "\n".join(("    /\\ " if i else "    /\\ ") + c for i, c in enumerate(conj))
+        r = self.rng
+        conj = [self.bool()] if r.random() < 0.7 else []
+        vs = list(self.vars)
+        if len(vs) > 1 and r.random() < 0.2:
+            kept = r.sample(vs, 2)
+            conj.append(f"UNCHANGED <<{', '.join(kept)}>>")
+            vs = [v for v in vs if v not in kept]
+        conj += [self.assign(v) for v in vs]
+        r.shuffle(conj)
+        # After the assignments, as TLC reads them: a guard on the next state.
+        if r.random() < 0.25:
+            v = r.choice(list(self.vars))
+            conj.append(r.choice([f"{v}' = {self.value(v)}", f"{v}' # {self.value(v)}", f"{v}' = {v}"]))
+        return "\n".join("    /\\ " + c for c in conj)
 
     def model(self):
         r = self.rng
         vs = list(self.vars)
         acts = [f"A{i} ==\n{self.action()}" for i in range(r.randint(1, 3))]
         names = [a.split(" ")[0] for a in acts]
+        self.actions = names   # ENABLED in invariants and properties: in a guard, lean/ is cubic
         nxt = "Next ==\n" + "\n".join(f"    \\/ {a}" for a in names)
         self.constant = True
         init = "Init ==\n" + "\n".join(
-            f"    /\\ {v} " + r.choice([f"= {self.value(v)}", f"\\in {self.domain(v)}",
-                                    f"\\in {{{self.value(v)}, {self.value(v)}}}"]) for v in vs)
+            "    /\\ " + r.choice([f"{v} = {self.value(v)}", f"{v} \\in {self.domain(v)}",
+                                 f"{v} \\in {{{self.value(v)}, {self.value(v)}}}",
+                                 f"(\\E q \\in {self.domain(v)} : {v} = q /\\ q # {self.value(v)})"]) for v in vs)
         self.constant = False
         universe = "U == [" + ", ".join(f"{v} : {self.domain(v)}" for v in vs) + "]"
         # Manyan checks the behaviors stay in the universe: lean/ explores no other state.
@@ -660,9 +675,12 @@ class Machine:
         if r.random() < 0.15:
             props += f"Constr == {self.bool()}\n"
             cfg.append("CONSTRAINT Constr")
+        if r.random() < 0.1:
+            props += f"AConstr == {self.action_short()}\n"
+            cfg.append("ACTION_CONSTRAINT AConstr")
         cfg.append(f"CHECK_DEADLOCK {r.choice(['TRUE', 'FALSE'])}")
         module = (f"---- MODULE M ----\nEXTENDS Integers, FiniteSets\nVARIABLES {', '.join(vs)}\n"
-                  f"{init}\n" + "\n".join(acts) + f"\n{nxt}\n{universe}\n{props}====\n")
+                  f"Keep(a) == a' = a\n{init}\n" + "\n".join(acts) + f"\n{nxt}\n{universe}\n{props}====\n")
         return module, "\n".join(cfg) + "\n"
 
     def action_short(self):
@@ -821,7 +839,9 @@ def models(engine, reference, runs, seed):
             if "skip" in ref_v:
                 skipped += 1
                 continue
-            _, out, code, killed = spec_runner.guarded(engine + ["-config", f"{name}.cfg", name], directory, 120, MEMORY)
+            workers = ["-workers", "4"] if rng.random() < 0.3 else []
+            _, out, code, killed = spec_runner.guarded(engine + workers + ["-config", f"{name}.cfg", name],
+                                                       directory, 120, MEMORY)
             if killed:
                 print(f"FAIL manyan {killed}\n{module}{cfg}")
                 failed += 1

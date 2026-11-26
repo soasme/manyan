@@ -391,11 +391,13 @@ def mkModel (m : Module) (cfg : Config) (univ : String) : M Model := do
          constraints := cfg.constraints.map .name, actionConstraints := cfg.actionConstraints.map .name,
          univ := states }
 
-/-- The states of the universe a step from `s` may go to. -/
+/-- The states of the universe a step from `s` may go to. TLC's
+`ACTION_CONSTRAINT` leaves a behavior free to stutter. -/
 def Model.steps (md : Model) (s : State) : M (List State) :=
   md.univ.filterM fun t => do
     for (e, ρ) in md.box do
       if !(← holds md.c s (some t) ρ e) then return false
+    if stateKey t == stateKey s then return true
     for e in md.actionConstraints do
       if !(← holds md.c s (some t) [] e) then return false
     pure true
