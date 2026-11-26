@@ -8,7 +8,7 @@ the definitions of the standard modules.
 
 ```sh
 lake build                       # .lake/build/bin/ref
-lake build Ref.Sound Ref.Choice  # checks the proofs below
+lake build Ref.Sound Ref.Choice Ref.Canon  # checks the proofs below
 echo '{x \in 1..5 : x % 2 = 1}' | .lake/build/bin/ref
 {1, 3, 5}
 printf '<<>>[1]\n' | .lake/build/bin/ref
@@ -69,9 +69,17 @@ on those elements as a set, not on how the enumeration lists them:
 `Val.feq` (the same elements, the same graph) is an equivalence, the
 evaluator's `=` is `Val.feq` wherever it answers, at every depth and
 with any oracle (`eqSound_tie`), and sets it has equal give equal
-choices (`choose_eq`). Not proved: that `P` answers alike on equal
-values, the evaluator respecting `=`. It needs values without duplicate
-elements, as `Cardinality` and the enumeration limit count them.
+choices (`choose_eq`).
+
+That `P` answers alike on equal values follows from how the evaluator
+keeps them. Every value it computes has its sets and functions sorted by
+a code, each element once (`Val.canon`), so a value with nothing kept
+unevaluated is written one way. `Ref/Canon.lean` proves it: two such
+values the evaluator computes are the same if they are equal
+(`computed_eq`, `computed_eq_eval`), so nothing it computes from them
+can differ, and sorting does not change what a value is (`canon_feq`).
+Not proved: the same of a value kept unevaluated, as `{x \in Nat : x <
+2}`, which equals `{0, 1}` though it is written otherwise.
 
 ## What it decides
 

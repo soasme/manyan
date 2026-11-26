@@ -339,7 +339,8 @@ theorem tie_agree (χ w) : ∀ n, CAgree (tie .exec w n) (tie (.classical χ) w 
           fun _ _ => Agree.err_left, fun _ _ => Agree.err_left⟩
   | n + 1 =>
     have h := tie_agree χ w n
-    ⟨_root_.rfl, exec_classical χ, Ctx.eval_agree h, Ctx.member_agree h, Ctx.equal_agree h, Ctx.apply_agree h⟩
+    ⟨_root_.rfl, exec_classical χ, fun σ ρ e => Agree.map _ (Ctx.eval_agree h σ ρ e), Ctx.member_agree h,
+     Ctx.equal_agree h, Ctx.apply_agree h⟩
 
 /-- Where the reference to run has a value, the definition has no other,
 whatever the choice function. -/

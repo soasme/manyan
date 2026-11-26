@@ -38,17 +38,9 @@ partial def Expr.names : Expr → List String
   | .case arms o => arms.flatMap (fun (p, e) => p.names ++ e.names) ++ (o.map Expr.names).getD []
   | _ => []
 
-/-- A value written canonically: equal finite values, the same string. -/
-partial def Val.key : Val → String
-  | .bool b => toString b
-  | .int n => toString n
-  | .str s => s!"\"{s}\""
-  | .model m => "@" ++ m
-  | .set l => "{" ++ ",".intercalate ((l.map Val.key).toArray.qsort (· < ·)).toList ++ "}"
-  | .fcn g => "(" ++ ",".intercalate ((g.map fun (k, v) => k.key ++ ":>" ++ v.key).toArray.qsort (· < ·)).toList ++ ")"
-  | .lazy _ => "<lazy>"
-
-def stateKey (s : State) : String := ";".intercalate (s.map (·.2.key))
+/-- A state as a key: the evaluator keeps each value one way
+(`Ref/Canon.lean`), so equal finite states have the same key. -/
+def stateKey (s : State) : List (List Int) := s.map (·.2.enc)
 
 def asState (vars : List String) (v : Val) : M State :=
   match v with
@@ -413,7 +405,7 @@ TLC checks each state's invariants as it finds it, and keeps only those
 its constraints allow. -/
 def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) := do
   let mut states : Array State := #[]
-  let mut ids : Std.HashMap String Nat := {}
+  let mut ids : Std.HashMap (List (List Int)) Nat := {}
   let mut depth : Array Nat := #[]
   let mut outside : List (State × Nat) := []
   for s in md.univ do

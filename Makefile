@@ -251,7 +251,7 @@ fuzz-prove: manyan $(TLAPS)
 # The reference, and the proofs about it.
 REF = lean/.lake/build/bin/ref
 $(REF): lean/Main.lean lean/Ref/*.lean lean/lakefile.toml
-	cd lean && lake build && lake build Ref.Sound Ref.Choice
+	cd lean && lake build && lake build Ref.Sound Ref.Choice Ref.Canon
 
 fuzz-ref: manyan $(REF)
 	python3 tests/fuzz.py ref ./manyan --ref $(REF) --runs $(RUNS) --seed $(SEED)

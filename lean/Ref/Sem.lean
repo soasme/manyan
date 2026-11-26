@@ -133,6 +133,67 @@ def Val.seq? : Val → Option (List Val)
       (g.find? fun (k, _) => match k with | .int j => j == i + 1 | _ => false).map Prod.snd
   | _ => none
 
+/-- Whether nothing in a value is kept unevaluated. -/
+def Val.ground : Val → Bool
+  | .set l => l.attach.all fun ⟨a, _⟩ => a.ground
+  | .fcn g => g.attach.all fun ⟨p, _⟩ => p.1.ground && p.2.ground
+  | .lazy _ => false
+  | _ => true
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | (have := List.sizeOf_lt_of_mem ‹_ ∈ l›; omega)
+    | (have := List.sizeOf_lt_of_mem ‹p ∈ g›; cases p; simp at *; omega)
+
+/-- A code for a value with nothing kept unevaluated, which no other
+such value has, ordered as TLC orders them where it can: numbers by
+size, strings by their characters, sets and functions by their elements
+in order. Each starts with a code of its kind, from 0 to 5, and ends
+before -1, which no code starts with. -/
+def Val.enc : Val → List Int
+  | .bool b => [0, if b then 1 else 0]
+  | .int n => [1, n]
+  | .str s => 2 :: s.toList.map (fun ch => (ch.toNat : Int)) ++ [-1]
+  | .model s => 3 :: s.toList.map (fun ch => (ch.toNat : Int)) ++ [-1]
+  | .set l => 4 :: (l.attach.map fun ⟨a, _⟩ => a.enc).flatten ++ [-1]
+  | .fcn g => 5 :: (g.attach.map fun ⟨p, _⟩ => p.1.enc ++ p.2.enc).flatten ++ [-1]
+  | .lazy _ => [6]
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | (have := List.sizeOf_lt_of_mem ‹_ ∈ l›; omega)
+    | (have := List.sizeOf_lt_of_mem ‹p ∈ g›; cases p; simp at *; omega)
+
+/-- What a set's elements and a function's arguments are kept in order
+of: the code of a value with nothing kept unevaluated, else `[6]`,
+after every such code. -/
+def Val.code (v : Val) : List Int := if v.ground then v.enc else [6]
+
+/-- The list in order of `k`, each key but `[6]` once. -/
+def sortBy {α} (k : α → List Int) (l : List α) : List α :=
+  (nub ((l.map fun a => (k a, a)).mergeSort fun p q => decide (p.1 ≤ q.1))).map Prod.snd
+where
+  nub : List (List Int × α) → List (List Int × α)
+    | [] => []
+    | p :: l => p :: nub (l.dropWhile fun q => q.1 == p.1 && p.1 != [6])
+  termination_by l => l.length
+  decreasing_by
+    simp_wf
+    exact Nat.lt_succ_of_le ((List.dropWhile_suffix _).length_le)
+
+/-- A value with its sets and functions in order of `Val.code`, as the
+evaluator gives each, so that a value with nothing kept unevaluated is
+kept one way. -/
+def Val.canon : Val → Val
+  | .set l => .set (sortBy Val.code (l.attach.map fun ⟨a, _⟩ => a.canon))
+  | .fcn g => .fcn (sortBy (·.1.code) (g.attach.map fun ⟨p, _⟩ => (p.1.canon, p.2.canon)))
+  | v => v
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | (have := List.sizeOf_lt_of_mem ‹_ ∈ l›; omega)
+    | (have := List.sizeOf_lt_of_mem ‹p ∈ g›; cases p; simp at *; omega)
+
 /-- How many elements an enumeration may have. -/
 def limit : Nat := 100000
 
@@ -252,6 +313,7 @@ def funSet (A B : Val) : M Val := do
   | _, _ => pure (.lazy (.funSet A B))
 
 def recordSet (fields : List (String × Val)) : M Val := do
+  if !decide (fields.map Prod.fst).Nodup then undef "a record set that names a field twice" else
   let p ← product (fields.map Prod.snd)
   match p with
   | .set ts => pure (.set (ts.map fun
@@ -592,7 +654,7 @@ def tie (O : Oracle) (w : World) : Nat → Ctx
     { O, w, ev := fun _ _ _ => deep, mem := fun _ _ => deep, eq := fun _ _ => deep, app := fun _ _ => deep }
   | n + 1 =>
     let c := tie O w n
-    { O, w, ev := c.eval, mem := c.member, eq := c.equal, app := c.apply }
+    { O, w, ev := fun σ ρ e => Val.canon <$> c.eval σ ρ e, mem := c.member, eq := c.equal, app := c.apply }
 
 def sem (O : Oracle) (w : World) (n : Nat) (σ : St) (ρ : Env) (e : Expr) : M Val := (tie O w n).ev σ ρ e
 
