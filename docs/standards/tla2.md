@@ -815,7 +815,12 @@ steps on each step to a successor and on the stuttering step, then
 `ENABLED` predicates, fairness's enabledness and, for a property without
 a tableau, the other state predicates on the state, then a tableau's
 state predicates on each successor. An error there is an unexpected exception, with
-the counts as the state is expanded and the depth (exit 255).
+the counts as the state is expanded and the depth (exit 255), or, for a
+successor of `ENABLED` TLC cannot fingerprint, the trace alone. It comes
+before an error or violation met expanding a later state. When Next
+fails on a state on which an `ENABLED` predicate or one evaluated on the
+state also fails, other than for a successor it cannot fingerprint, TLC
+reports the error in Next with exit 255.
 
 ### 10.6 Fairness
 

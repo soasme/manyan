@@ -12157,11 +12157,15 @@ static int continued_trace(const char *check, int name, Value **st) {
     return failed;
 }
 
+static int live_fails(int own);
+static void live_first(void);
+
 /* Whether a step to st violates an action property, which TLC checks
    for every step. */
 static int action_violated(Value **st) {
     int bad = check_actions(action_props, naction_props, cur_state, st);
     if (bad < 0) return 0;
+    live_first();
     printf("Error: Action property %s is violated.\n", S(action_props[bad].name)), found_violated(action_props[bad].name);
     if (keep_going) {
         if (!continued_trace("action property", action_props[bad].name, st)) return 0;
@@ -12184,6 +12188,7 @@ static int next_emit(void) {
     int unassigned = 0;
     for (int i = 0; i < nvars; i++) unassigned += !succ[i];
     if (unassigned) {
+        live_first();
         /* TLC looks the successor up among its workers' states for the
            postconditions, to an ArrayIndexOutOfBoundsException; it reports
            it with -continue, and the error again as it replays it. */
@@ -12207,6 +12212,7 @@ static int next_emit(void) {
         int bad = check_list(invariants, ninvariants, st);
         violation_fresh = 0;
         if (bad >= 0) {
+            live_first();
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
             if (keep_going) {
                 if (continued_trace("invariant", invariants[bad].name, st)) return 1;
@@ -12234,6 +12240,7 @@ static int next_emit(void) {
         int bad = check_list(invariants, ninvariants, st);
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
         if (bad >= 0) {
+            live_first();
             printf("Error: Invariant %s is violated.\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
             if (keep_going) {
                 if (continued_trace("invariant", invariants[bad].name, st)) return 1;
@@ -12536,6 +12543,7 @@ static int expand_state(int idx) {
         }
     }
     if (succ_count == 0 && check_deadlock) {
+        live_first();
         /* TLC stops at a finite counterexample before the deadlocked state;
            it adds that state to its temporal checks after reporting it. */
         if (ntemporal_props && live_cut_in(idx)) return cut_reported(MANYAN_VIOLATION_SAFETY);
@@ -13261,6 +13269,7 @@ static int search(void) {
         Expr *fps[64];
         memcpy(fps, fp_trace, sizeof(Expr *) * (size_t)nfp);
         fp_depth = 0;
+        live_first();
         if (expanding < 0) {
             if (!live_init_failed) print_error_message();
             if (error_state && error_module != 1 && !live_init_failed) {
@@ -13361,7 +13370,7 @@ static int search(void) {
         } else xfree(first.msg.s);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
-        if (status == MANYAN_FAILURE_EVAL && error_module == 1) status = MANYAN_ERROR;
+        if (status == MANYAN_FAILURE_EVAL && (error_module == 1 || live_fails(1))) status = MANYAN_ERROR;
         return status;
     }
     gen_target = succ;
@@ -13768,7 +13777,7 @@ static void report_exception(int in_behavior) {
 /* A simulated behavior: its states and the actions into them. */
 static int *sim_order, *sim_acts, sim_n;
 
-static void live_eval(void);
+static void live_eval(int n, int own);
 
 /* Whether a temporal property fails on the behavior, as TLC checks one:
    without its finite stuttering, each state may stutter or take its
@@ -13802,7 +13811,7 @@ static int sim_violates(States *trace) {
     if (sigsetjmp(here, 0)) {   /* the error TLC meets first */
         handler = outer;
         ErrorState first = error_save();
-        live_eval();
+        live_eval(nstates, 0);
         error_restore(&first);
         raise_error();
     }
@@ -17408,7 +17417,19 @@ static void live_init(Value **st) {
 static int live_at;   /* the state live_eval is at; read after an error jumps back */
 
 static char *eval_on_state;   /* each atom: of a property without a tableau */
-static void live_eval(void) {
+
+/* The predicates TLC evaluates on state s itself. */
+static void live_eval_on(int s) {
+    for (int i = 0; i < natoms; i++)
+        if (atoms[i]->atom->kind == K_ENABLED) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
+    for (int i = 0; i < nfairs; i++) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
+    for (int i = 0; i < natoms; i++)
+        if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && eval_on_state[i])
+            holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
+}
+
+/* TLC's evaluation on the first n states, then on state n's own if own. */
+static void live_eval(int n, int own) {
     tf_reset();
     for (int p = 0; p < ntemporal_props; p++) {
         int from = natoms;
@@ -17416,7 +17437,7 @@ static void live_eval(void) {
         eval_on_state = xrealloc(eval_on_state, (size_t)natoms + 1);
         memset(eval_on_state + from, flat, (size_t)(natoms - from));
     }
-    for (live_at = 0; live_at < nstates; live_at++) {
+    for (live_at = 0; live_at < n; live_at++) {
         int s = live_at;
         Edges *r = &state_edges[s];
         for (int e = 0; e <= r->nedges; e++) {
@@ -17428,33 +17449,73 @@ static void live_eval(void) {
                 holds_in(fairs[i].step, fairs[i].c, state_values(s), state_values(t));
             }
         }
-        for (int i = 0; i < natoms; i++)
-            if (atoms[i]->atom->kind == K_ENABLED) holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
-        for (int i = 0; i < nfairs; i++) holds_in(fairs[i].enabled, fairs[i].c, state_values(s), NULL);
-        for (int i = 0; i < natoms; i++)
-            if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && eval_on_state[i])
-                holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
+        live_eval_on(s);
         for (int e = 0; e <= r->nedges; e++)
             for (int i = 0; i < natoms; i++)
                 if (!atoms[i]->action && atoms[i]->atom->kind != K_ENABLED && !eval_on_state[i])
                     holds_in(atoms[i]->atom, atoms[i]->c, state_values(e < r->nedges ? r->edges[2 * e] : s), NULL);
     }
+    if (own) live_eval_on(n);
+}
+
+/* TLC's report of the error live_eval met at live_at: of a value it
+   cannot fingerprint (fp), only the behavior. */
+static int live_report(int fp) {
+    handler = NULL;
+    if (!fp) {
+        printf("\n");
+        if (eval_failure_status() == MANYAN_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
+        else printf("Error: ");
+        print_error_text();
+    }
+    print_trace(live_at, NULL, 0);
+    print_counts_after(live_at);
+    return MANYAN_ERROR;
+}
+
+/* Whether TLC, which evaluates the temporal properties as it expands each
+   state, fails there before the error the search meets expanding a state:
+   on a state expanded before it, or (own) on its own predicates, which TLC
+   evaluates first as it replays an error in Next, but for a value it cannot
+   fingerprint. Live_at is where, and 2 is returned for a value it cannot
+   fingerprint; the error is the one met first but for one of the states
+   expanded before. Not with -continue, which goes on with the properties
+   as they are. */
+static int live_fails(int own) {
+    if (!ntemporal_props || simulating || keep_going || expanding < 0) return 0;
+    EvalState es = eval_save();
+    ErrorState first = error_save();
+    const char *java = error_java;
+    fp_depth = 0;
+    Arena *saved = arena;
+    arena = &perm_arena;
+    collect_fairnesses();
+    decoded_reset();
+    sigjmp_buf here, *outer = handler;
+    handler = &here;
+    volatile int failed = sigsetjmp(here, 0) != 0;
+    if (failed) failed += fp_depth > 0;
+    else live_eval(expanding, own);
+    handler = outer;
+    arena = saved;
+    eval_restore(es);
+    if (failed && live_at < expanding) xfree(first.msg.s);
+    else error_restore(&first), error_java = java;
+    return live_at < expanding || failed == 1 ? failed : 0;
+}
+
+/* Before the search reports what it meets expanding a state: an error
+   TLC met before it, which it reports instead. */
+static void live_first(void) {
+    int failed = live_fails(0);
+    if (failed) stop(live_report(failed == 2));
 }
 
 static int live_error(void) {
     sigjmp_buf here;
     handler = &here;
-    if (sigsetjmp(here, 0)) {
-        handler = NULL;
-        printf("\n");
-        if (eval_failure_status() == MANYAN_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
-        else printf("Error: ");
-        print_error_text();
-        print_trace(live_at, NULL, 0);
-        print_counts_after(live_at);
-        return MANYAN_ERROR;
-    }
-    live_eval();
+    if (sigsetjmp(here, 0)) return live_report(fp_depth > 0);
+    live_eval(nstates, 0);
     /* Not found so: as it came. */
     handler = NULL;
     print_error_message();
