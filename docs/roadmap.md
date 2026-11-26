@@ -57,13 +57,13 @@ from TLC.
 - A browser playground, where anyone can paste a spec and check it with
   nothing installed. Done in 0.14.0.
 
-## Next: 0.18.0
+## Next: 0.19.0
 
-0.17.0 added `-lint` and `-fmt` (`ManyanOptions.lint` / `fmt`), both fast
-enough to run on save (~3–4 ms median across all 433 tlaplus/Examples
-modules), verified against SANY and modeled in `tests/tla/LevelCheck.tla`
-and `tests/tla/Fmt.tla`, closed SANY semantic gaps, and fixed `(ENABLED A)'`
-in explicit and symbolic checking (#10).
+0.18.0 hardened what 0.17.0 had: the fixes for a red-team pass and
+tlaplus/model-checker-hardening, and fuzzers that reach where those bugs
+were (`fuzz-typecheck`, `fuzz-sym`, SANY oracles for `-fmt` and `-lint`,
+richer values, models and temporal formulas). It agrees with TLC on all
+2000 entries of a model-checker-hardening pbt campaign.
 
 1. **Liveness on every core.** A property of state atoms alone is
    checked on one process, where forking the workers costs more than

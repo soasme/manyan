@@ -1,3 +1,36 @@
+2026-11-26 0.18.0:
+
+A hardening release: the fixes for what a red-team pass and
+tlaplus/model-checker-hardening found, and a fuzz harness that reaches
+where those bugs were. Manyan at this release agrees with TLC on all 2000
+entries of a model-checker-hardening pbt campaign.
+
+- fixed, memory safety: buffer overflows, NULL dereferences, undefined
+  behaviour and `-stack` bypasses in the core and `manyan-std.c`
+- fixed, values: `EXCEPT` and `@` scoping, lazy empty sets and functions
+  (`SYMMETRY`, set unions, comparisons), a record compared with a tuple or
+  function in a set union fails as TLC's does
+- fixed, liveness: `TRUE`, `FALSE`, `BOOLEAN` and `STRING` as action and
+  fairness subscripts; `[]WF_v(A)`; `LET` in temporal formulas; `INSTANCE`d
+  properties; temporal constants folded without hiding TLC's tautology
+  and trivially-false checks; an error formatting cascade that took
+  exponential time
+- fixed, configuration: an invariant or property `LET ... IN e` whose
+  definitions use a variable is checked on the states, as TLC bounds a
+  `LET`'s level; a property part that is `FALSE` makes the spec trivially
+  false, as TLC's
+- fixed, simulation: a temporal counterexample prints the behavior kept,
+  without what Init and Next print again
+- fixed: parser, resolver, lexer and formatter edge cases; symbolic
+  checker and typechecker bugs (#14, #15, #21, #26-#31, #39)
+- fuzzing: `fuzz.py diff` draws lazy and mixed values, `EXCEPT` out of
+  the domain, `AssertError` and small CONSTANT/SYMMETRY/TLCSet models; `live`
+  draws `~`, `LET`, constants, keyword subscripts, nested fairness and `~>`
+  and `INSTANCE`; new `make fuzz-typecheck`, `fuzz-sym` (`-symbolic` against
+  the explicit search), `fuzz-fmt-oracle` and `fuzz-lint-oracle` (against
+  SANY); `make sanitize` and `test-again` cover symbolic and typecheck;
+  `tests/tla/Tableau.tla` models the temporal simplification
+
 2026-11-24 0.17.0:
 
 - `-lint` (`ManyanOptions.lint`): runs SANY's parsing, module resolution,
