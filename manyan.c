@@ -5923,7 +5923,8 @@ static int expr_level(Expr *e) {
         for (int i = 0; i < e->nseg; i++) { int a = max_level(e->segs[i].args, e->segs[i].n); if (a > d) d = a; }
         return d > l ? d : l;
     }
-    case X_LET:
+    case X_LET:   /* SANY's is its body's; TLC bounds it by its definitions' too */
+        for (int i = 0; every_argument && i < e->ndefs; i++) { int d = def_level(e->defs[i]); if (d > l) l = d; }
         return l;
     case X_EXCEPT:
         for (int i = 0; i < e->n - 1; i++) { int k = max_level(e->paths[i].keys, e->paths[i].n); if (k > l) l = k; }
