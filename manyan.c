@@ -1443,7 +1443,7 @@ static int each_product(Value *s, Value **sets, int (*fn)(Value *, void *), void
 
 static Value *enumerate_functions(Value **dom, int nd, Value *rng, int range) {
     int64_t total = 1;
-    Value *r = enumerate(rng);
+    Value *r = nd ? enumerate(rng) : rng;   /* [{} -> T] is {<<>>}, whatever T is */
     for (int i = 0; i < nd; i++) {
         total *= r->n;
         if (total > 100000000) fail("Attempted to enumerate a set of functions with too many elements.");
