@@ -67,9 +67,14 @@ noncomputable def Oracle.classical (χ : (Val → Prop) → Val) : Oracle where
       -- Every such list has the same length.
       pure (Classical.choose h.2)
     else undef "the cardinality of an infinite set"
-  choose sat _ :=
-    if total sat ∧ ∃ v, sat v = .ok true then pure (χ (fun v => sat v = .ok true))
-    else undef "CHOOSE with no value that satisfies it"
+  -- From an enumerated set, χ's choice among its elements that satisfy
+  -- P, each value once, as the enumeration has them.
+  choose sat
+    | some [] => undef "CHOOSE with no value that satisfies it"
+    | some l@(w :: _) => pure (if χ (· ∈ l) ∈ l then χ (· ∈ l) else w)
+    | none =>
+      if total sat ∧ ∃ v, sat v = .ok true then pure (χ (fun v => sat v = .ok true))
+      else undef "CHOOSE with no value that satisfies it"
 
 /-! ## Values -/
 
@@ -164,20 +169,15 @@ namespace Ctx
 variable (c : Ctx)
 
 /-- `{vs}`, each value once. -/
-def mkSet (vs : List Val) : M Val := do
+def mkSet (vs : List Val) : M Val :=
   if vs.length > limit then unknown "a set too large to enumerate" else
-  let mut out : Array Val := #[]
-  for v in vs do
-    if !(← anyOf (out.toList.map (c.eq v))) then out := out.push v
-  pure (.set out.toList)
+  .set <$> vs.foldlM (fun out v => do
+    pure (if ← anyOf (out.map (c.eq v)) then out else out ++ [v])) []
 
-def mkFcn (g : List (Val × Val)) : M Val := do
-  let mut out : Array (Val × Val) := #[]
-  for (k, v) in g do
-    if ← anyOf (out.toList.map fun (k', _) => c.eq k k') then
-      undef "a function that maps a value twice"
-    out := out.push (k, v)
-  pure (.fcn out.toList)
+def mkFcn (g : List (Val × Val)) : M Val :=
+  .fcn <$> g.foldlM (fun out (k, v) => do
+    if ← anyOf (out.map fun (k', _) => c.eq k k') then undef "a function that maps a value twice"
+    pure (out ++ [(k, v)])) []
 
 def all (S : Val) (p : Val → M Bool) : M Bool :=
   match S with
@@ -238,12 +238,8 @@ domain the function is unchanged: `[x \in DOMAIN f |-> IF x = k ...]`. -/
 def update (σ : St) (ρ : Env) (f : Val) : List Val → Expr → M Val
   | [], e => c.ev σ (("@", .val f) :: ρ) e
   | k :: path, e => match f with
-    | .fcn g => do
-      let mut out := #[]
-      for (k', v) in g do
-        if ← c.eq k k' then out := out.push (k', ← update σ ρ v path e)
-        else out := out.push (k', v)
-      pure (.fcn out.toList)
+    | .fcn g => .fcn <$> g.mapM fun (k', v) => do
+      if ← c.eq k k' then pure (k', ← update σ ρ v path e) else pure (k', v)
     | _ => unknown "EXCEPT of a function not enumerated"
 
 def constant : String → M Val
@@ -303,90 +299,101 @@ def seqArg (v : Val) : M (List Val) :=
   | some l => pure l
   | none => undef "a sequence operand that is not a sequence"
 
-/-- An operator applied to the values of its arguments. -/
-def strict (o : String) (vs : List Val) : M Val :=
-  match o, vs with
-  | "~", [a] => .bool <$> (! ·) <$> asBool a
-  | "/\\", [a, b] => .bool <$> strictAll [asBool a, asBool b]
-  | "\\/", [a, b] => do let x ← asBool a; let y ← asBool b; pure (.bool (x || y))
-  | "=>", [a, b] => do let x ← asBool a; let y ← asBool b; pure (.bool (!x || y))
-  | "<=>", [a, b] => do let x ← asBool a; let y ← asBool b; pure (.bool (x == y))
-  | "=", [a, b] => .bool <$> c.eq a b
-  | "#", [a, b] => .bool <$> (! ·) <$> c.eq a b
-  | "-.", [a] => do pure (.int (- (← asInt a)))
-  | "\\in", [a, S] => .bool <$> c.mem a S
-  | "\\notin", [a, S] => .bool <$> (! ·) <$> c.mem a S
-  | "\\subseteq", [A, B] => .bool <$> c.subseteq A B
-  | "\\subset", [A, B] => do pure (.bool ((← c.subseteq A B) && !(← c.eq A B)))
-  | "{}", _ => c.mkSet vs
-  | "<<>>", _ => pure (tuple vs)
-  | "app", [f, a] => c.app f a
-  | "DOMAIN", [f] => domain f
-  | "\\cup", [A, B] => match A, B with
-    | .set a, .set b => c.mkSet (a ++ b)
-    | _, _ => if A.isSet && B.isSet then pure (.lazy (.cup A B)) else undef "\\cup of a value that is not a set"
-  | "\\cap", [A, B] => match A, B with
-    | .set a, _ => do c.mkSet (← a.filterM (c.mem · B))
-    | _, .set b => do c.mkSet (← b.filterM (c.mem · A))
-    | _, _ => if A.isSet && B.isSet then pure (.lazy (.diff A (.lazy (.diff A B))))
-              else undef "\\cap of a value that is not a set"
-  | "\\", [A, B] => match A with
-    | .set a => do if !B.isSet then undef "\\ of a value that is not a set" else c.mkSet (← a.filterM fun v => (! ·) <$> c.mem v B)
-    | _ => if A.isSet && B.isSet then pure (.lazy (.diff A B)) else undef "\\ of a value that is not a set"
-  | "UNION", [S] => do
+/-- An operator of one argument applied to its value. -/
+def strict1 (o : String) (S : Val) : M Val :=
+  match o with
+  | "~" => .bool <$> (! ·) <$> asBool S
+  | "-." => do pure (.int (- (← asInt S)))
+  | "DOMAIN" => domain S
+  | "UNION" => do
     let members ← asSet S
     if !members.all Val.isSet then undef "UNION of a set of values that are not sets" else
     match members.mapM (fun m => match m with | .set l => some l | _ => none) with
     | some ls => c.mkSet ls.flatten
     | none => pure (.lazy (.union members))
-  | "SUBSET", [S] => match S with
+  | "SUBSET" => match S with
     | .set l => if l.length > 16 then pure (.lazy (.subset S))
                 else pure (.set (l.foldr (fun v acc => acc ++ acc.map (fun s => match s with
                   | .set m => .set (v :: m) | s => s)) [.set []]))
     | _ => if S.isSet then pure (.lazy (.subset S)) else undef "SUBSET of a value that is not a set"
-  | "\\X", _ => product vs
-  | "->", [A, B] => funSet A B
-  | "Seq", [S] => match S with
+  | "Seq" => match S with
     | .set [] => pure (.set [tuple []])
     | _ => if S.isSet then pure (.lazy (.seq S)) else undef "Seq of a value that is not a set"
-  | "Cardinality", [S] => match S with
+  | "Cardinality" => match S with
     | .set l => pure (.int l.length)
     | .lazy s => if s.infinite then undef "the cardinality of an infinite set"
                  else if S.isSet then .int <$> c.O.card c.eq (c.mem · S)
                  else undef "Cardinality of a value that is not a set"
     | _ => undef "Cardinality of a value that is not a set"
-  | "IsFiniteSet", [S] => match S with
+  | "IsFiniteSet" => match S with
     | .set _ => pure (.bool true)
     | .lazy s => if s.infinite then pure (.bool false)
                  else if S.isSet then .bool <$> c.O.finite c.eq (c.mem · S)
                  else undef "IsFiniteSet of a value that is not a set"
     | _ => undef "IsFiniteSet of a value that is not a set"
   -- Sequences.
-  | "Len", [s] => do pure (.int (← seqArg s).length)
-  | "Head", [s] => c.app s (.int 1)
-  | "Tail", [s] => do
-    match ← seqArg s with
+  | "Len" => do pure (.int (← seqArg S).length)
+  | "Head" => c.app S (.int 1)
+  | "Tail" => do
+    match ← seqArg S with
     | [] => undef "Tail of the empty sequence"
     | _ :: rest => pure (tuple rest)
-  | "Append", [s, e] => do pure (tuple ((← seqArg s) ++ [e]))
-  | "\\o", [s, t] => do pure (tuple ((← seqArg s) ++ (← seqArg t)))
+  | _ => unknown s!"the operator {o} with 1 arguments"
+
+/-- An operator of two arguments applied to their values. -/
+def strict2 (o : String) (A B : Val) : M Val :=
+  match o with
+  | "/\\" => .bool <$> strictAll [asBool A, asBool B]
+  | "\\/" => do let x ← asBool A; let y ← asBool B; pure (.bool (x || y))
+  | "=>" => do let x ← asBool A; let y ← asBool B; pure (.bool (!x || y))
+  | "<=>" => do let x ← asBool A; let y ← asBool B; pure (.bool (x == y))
+  | "=" => .bool <$> c.eq A B
+  | "#" => .bool <$> (! ·) <$> c.eq A B
+  | "\\in" => .bool <$> c.mem A B
+  | "\\notin" => .bool <$> (! ·) <$> c.mem A B
+  | "\\subseteq" => .bool <$> c.subseteq A B
+  | "\\subset" => do pure (.bool ((← c.subseteq A B) && !(← c.eq A B)))
+  | "app" => c.app A B
+  | "\\cup" => match A, B with
+    | .set a, .set b => c.mkSet (a ++ b)
+    | _, _ => if A.isSet && B.isSet then pure (.lazy (.cup A B)) else undef "\\cup of a value that is not a set"
+  | "\\cap" => match A, B with
+    | .set a, _ => do c.mkSet (← a.filterM (c.mem · B))
+    | _, .set b => do c.mkSet (← b.filterM (c.mem · A))
+    | _, _ => if A.isSet && B.isSet then pure (.lazy (.diff A (.lazy (.diff A B))))
+              else undef "\\cap of a value that is not a set"
+  | "\\" => match A with
+    | .set a => do if !B.isSet then undef "\\ of a value that is not a set" else c.mkSet (← a.filterM fun v => (! ·) <$> c.mem v B)
+    | _ => if A.isSet && B.isSet then pure (.lazy (.diff A B)) else undef "\\ of a value that is not a set"
+  | "->" => funSet A B
+  | "Append" => do pure (tuple ((← seqArg A) ++ [B]))
+  | "\\o" => do pure (tuple ((← seqArg A) ++ (← seqArg B)))
+  -- TLC: d :> e == [x \in {d} |-> e], and f @@ g, f's where both map.
+  | ":>" => pure (.fcn [(A, B)])
+  | "@@" => match A, B with
+    | .fcn a, .fcn b => do
+      let rest ← b.filterM fun (k, _) => (! ·) <$> anyOf (a.map fun (k', _) => c.eq k k')
+      pure (.fcn (a ++ rest))
+    | _, _ => if A.isFcn && B.isFcn then unknown "@@ of a function not enumerated"
+              else undef "@@ of a value that is not a function"
+  | _ => match arith o with
+    | some f => do f (← asInt A) (← asInt B)
+    | none => unknown s!"the operator {o}"
+
+/-- An operator applied to the values of its arguments. -/
+def strict (o : String) (vs : List Val) : M Val :=
+  match o, vs with
+  | "{}", _ => c.mkSet vs
+  | "<<>>", _ => pure (tuple vs)
+  | "\\X", _ => product vs
+  | _, [a] => c.strict1 o a
+  | _, [a, b] => c.strict2 o a b
   | "SubSeq", [s, m, n] => do
     let m ← asInt m
     let n ← asInt n
     let _ ← seqArg s
     let k := (1 + n - m).toNat
     tuple <$> (List.range k).mapM fun (i : Nat) => c.app s (.int (i + m))
-  -- TLC: d :> e == [x \in {d} |-> e], and f @@ g, f's where both map.
-  | ":>", [d, e] => pure (.fcn [(d, e)])
-  | "@@", [f, g] => match f, g with
-    | .fcn a, .fcn b => do
-      let rest ← b.filterM fun (k, _) => (! ·) <$> anyOf (a.map fun (k', _) => c.eq k k')
-      pure (.fcn (a ++ rest))
-    | _, _ => if f.isFcn && g.isFcn then unknown "@@ of a function not enumerated"
-              else undef "@@ of a value that is not a function"
-  | _, [a, b] => match arith o with
-    | some f => do f (← asInt a) (← asInt b)
-    | none => unknown s!"the operator {o}"
   | _, _ => unknown s!"the operator {o} with {vs.length} arguments"
 
 /-- A state variable's value: in the next state, under a prime. -/
@@ -536,13 +543,15 @@ def equal (a b : Val) : M Bool :=
       | _, _ => c.O.same (c.mem · a) (c.mem · b)
     else undef "= between values of different kinds"
 
+/-- The value a function's graph maps `a` to. -/
+def lookupIn (a : Val) : List (Val × Val) → M Val
+  | [] => undef "a function applied outside its domain"
+  | (k, v) :: g => do if ← c.eq a k then pure v else lookupIn a g
+
 /-- `f[a]`. -/
 def apply (f a : Val) : M Val :=
   match f with
-  | .fcn g => do
-    for (k, v) in g do
-      if ← c.eq a k then return v
-    undef "a function applied outside its domain"
+  | .fcn g => c.lookupIn a g
   | .lazy (.fcn S x e ρ σ) => do
     -- `$self` is the function, in the body of a recursive definition.
     if ← c.mem a S then c.ev σ ((x, .val a) :: ("$self", .val f) :: ρ) e

@@ -33,9 +33,10 @@ from TLC.
 - Check Manyan against the semantics of TLA⁺, not only TLC: `make
   fuzz-prove` asks TLAPS to prove the value Manyan prints, `make
   fuzz-ref` compares it with `lean/`, a reference semantics in Lean 4,
-  and `make fuzz-model` Manyan's verdicts, counts and traces. Next:
-  INSTANCE, RECURSIVE operators and model values in `lean/`, and a proof
-  that its computable oracle refines the classical one.
+  and `make fuzz-model` Manyan's verdicts, counts and traces; `lean/`
+  proves that its computable oracle agrees with the classical one. Next:
+  INSTANCE with parameters in `lean/`, and a proof that its evaluator
+  respects `=`.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle, the tableau, level checking and

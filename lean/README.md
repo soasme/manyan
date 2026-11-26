@@ -8,6 +8,7 @@ the definitions of the standard modules.
 
 ```sh
 lake build                       # .lake/build/bin/ref
+lake build Ref.Sound             # checks the proof below
 echo '{x \in 1..5 : x % 2 = 1}' | .lake/build/bin/ref
 {1, 3, 5}
 printf '<<>>[1]\n' | .lake/build/bin/ref
@@ -55,9 +56,17 @@ or which value `CHOOSE` picks. The oracle `O` answers them:
   rest. `sem Oracle.exec` is the reference that runs, specialized to
   finite values the way TLC is.
 
-Both are the same `sem`, so the two cannot drift apart. What is not
-proved yet is that `Oracle.exec` refines `Oracle.classical χ` for every
-`χ`, and so that every value `ref` prints is TLA⁺'s.
+Both are the same `sem`, so the two cannot drift apart, and
+`Ref/Sound.lean` proves that they agree: where `sem Oracle.exec` has a
+value, `sem (Oracle.classical χ)` has no other, for every `χ`
+(`sem_agree`). The proof follows the evaluator one level at a time, as
+`exec` answers only where every choice function answers alike: `CHOOSE`
+among the elements of an enumerated set when exactly one satisfies it.
+
+`CHOOSE` in an enumerated set is χ's choice among the elements that
+satisfy it, as the enumeration has them, each value once. That this is
+TLA⁺'s choice rests on the evaluator respecting `=` (a value equal to
+another evaluates as it does), which is not proved.
 
 ## What it decides
 
