@@ -1,0 +1,3 @@
+Error: Invariant x is violated by the initial state:
+b = FALSE
+exit 12

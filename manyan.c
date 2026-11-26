@@ -14668,7 +14668,11 @@ static void property_parts(Expr *e, Expr *call, Ctx c, int name, Part **out, int
         return;
     }
     }
-    if (e->kind == K_ALWAYS && e->args[0]->kind == K_CALL && e->args[0]->n == 0) name = e->args[0]->def->name;
+    if (e->kind == K_ALWAYS) {   /* as TLC, []N with N a name is named N */
+        Expr *b = e->args[0];
+        if ((b->kind == K_CALL || b->kind == K_DECL || b->kind == K_BOUND) && b->n == 0) name = b->def->name;
+        else if (b->kind == X_BOOL) name = intern(b->num ? "TRUE" : "FALSE");
+    }
     *out = xrealloc(*out, sizeof(Part) * (size_t)(*n + 1));
     (*out)[(*n)++] = (Part){e, call, c, name};
 }
@@ -15455,8 +15459,9 @@ static TF *tf_new(int op, TF *a, TF *b) {
     return t;
 }
 
-/* Simplifies temporal constants ([]TRUE, []FALSE, <>TRUE, <>FALSE) before
-   tableau construction, after tautology checking has run. */
+/* Simplifies temporal constants ([]FALSE, <>TRUE, <>FALSE) before tableau
+   construction, after tautology checking has run; as TLC, []TRUE stays, a
+   node's requirement for every next state. */
 static TF *tf_simplify(TF *t) {
     switch (t->op) {
     case TF_TRUE: case TF_FALSE: case TF_ATOM: return t;
@@ -15466,7 +15471,7 @@ static TF *tf_simplify(TF *t) {
     }
     case TF_ALWAYS: case TF_EVENTUALLY: {
         TF *a = tf_simplify(t->a);
-        if (a->op == TF_TRUE || a->op == TF_FALSE) return a;
+        if ((a->op == TF_TRUE && t->op == TF_EVENTUALLY) || a->op == TF_FALSE) return a;
         return a == t->a ? t : tf_new(t->op, a, NULL);
     }
     }

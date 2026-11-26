@@ -768,7 +768,9 @@ of its argument, and an operator parameter applied that of the operator
 and of every argument. A part of several is named in messages by
 its location, as `Invariant line 3, col 7 to line 3, col 15 of module M is
 violated.`, the body of `\A` likewise, and a call's parts by the
-definition called. A state whose step violates an action property is not left on
+definition called; `[]N`, with `N` a name without arguments (a
+definition, constant, variable, parameter, `TRUE` or `FALSE`), is named
+`N`. A state whose step violates an action property is not left on
 the queue. In a temporal formula, `IF p THEN A ELSE
 B` is `A` or `B` when `p` evaluates to a Boolean with no state (so a
 `RECURSIVE` property can end), else `(p /\ A) \/ (~p /\ B)`. As TLC checks the negation of a property,
