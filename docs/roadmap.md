@@ -31,8 +31,9 @@ from TLC.
   order of their index, so its product may have other nodes and edges
   than Manyan's.
 - Check Manyan against the semantics of TLA⁺, not only TLC: `make
-  fuzz-prove` asks TLAPS to prove the value Manyan prints. Next: a
-  reference semantics to run, then actions and states (a successor Manyan computes satisfies `Next`),
+  fuzz-prove` asks TLAPS to prove the value Manyan prints, `make
+  fuzz-ref` compares it with `lean/`, a reference semantics in Lean 4.
+  Next: actions and states (a successor Manyan computes satisfies `Next`),
   then temporal formulas.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of

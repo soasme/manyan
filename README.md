@@ -187,9 +187,10 @@ Java (they download tla2tools 1.8.0 and Apalache 0.63.0 themselves):
   random expressions, `make fuzz-sim` for random simulations of the
   suite's models, `make fuzz-check` for its models checked with random
   options, and `make fuzz-live` for random temporal properties
-  under fairness, to find differences. `make fuzz-prove` asks TLAPS
-  to prove Manyan's values by TLA⁺'s semantics, which wins over TLC on
-  a verdict. What they find becomes a test.
+  under fairness, to find differences. `make fuzz-prove` (TLAPS) and
+  `make fuzz-ref` (`lean/`, a reference semantics in Lean 4) check
+  Manyan's values against TLA⁺'s semantics, which wins over TLC on a
+  verdict. What they find becomes a test.
 - `tests/tla` models parts of `manyan`'s algorithms in TLA⁺, for TLC and `manyan` to
   check.
 - `tests/symbolic`: 290 models for `-symbolic`, 226 of them from Apalache's

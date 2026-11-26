@@ -10,6 +10,7 @@ usage: fuzz.py crash ENGINE [--runs N] [--seed S]
        fuzz.py check ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py live ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py prove ENGINE --tlapm TLAPM [--runs N] [--seed S]
+       fuzz.py ref ENGINE --ref REF [--runs N] [--seed S]
 
 crash: mutates the models of tests/spec and runs the engine (a sanitizer
 build) on each, half of them as random simulations (-simulate or
@@ -54,6 +55,11 @@ and asks TLAPS (--tlapm) to prove that the expression equals the value
 printed, or else that it does not. A proof of the negation is a finding:
 the engine's value contradicts TLA+'s semantics, whatever TLC prints.
 What TLAPS proves neither way is inconclusive and left out.
+
+ref: makes the expressions of prove and asks REF, the reference semantics
+of lean/, whether each equals the value the engine prints. Another value
+is a finding; an expression whose value TLA+ leaves unspecified, or the
+reference cannot compute, is left out.
 
 diff: makes random constant expressions (including lazy functions in
 sets, out-of-domain EXCEPT, nested @, empty lazy sets, and AssertError
@@ -401,7 +407,7 @@ d :> e == [x \\in {d} |-> e]
 f @@ g == [x \\in (DOMAIN f) \\cup (DOMAIN g) |-> IF x \\in DOMAIN f THEN f[x] ELSE g[x]]
 """
 PROVE_BY = "BY SMTT(3), Zenon, IsaT(20) DEF :>, @@"
-NONSTANDARD = re.compile(r"AssertError|SortSeq")   # operators TLAPS does not define
+NONSTANDARD = re.compile(r"AssertError|SortSeq")   # operators TLAPS and lean/ do not define
 
 
 def values(engine, exprs):
@@ -470,6 +476,24 @@ def prove(engine, tlapm, runs, seed):
                 failed += 1
                 print(f"FAIL TLAPS proves {e} # {v}, the value manyan prints")
     print(f"{proved}/{runs} random expressions proved equal to manyan's value, {failed} proved unequal")
+    return failed
+
+
+def ref(engine, reference, runs, seed):
+    rng = random.Random(seed)
+    exprs = standard(rng, runs)
+    pairs = [(e, v) for e, v in zip(exprs, values(engine, exprs)) if v is not None]
+    done = subprocess.run([reference], input="".join(f"{e}\t{v}\n" for e, v in pairs),
+                          stdout=subprocess.PIPE, text=True, timeout=600, check=True)
+    answers = done.stdout.splitlines()
+    assert len(answers) == len(pairs), done.stdout
+    failed = 0
+    for (e, v), a in zip(pairs, answers):
+        if not a.startswith(("same", "undefined:", "unknown:")):
+            failed += 1
+            print(f"FAIL {e}\n--- manyan\n{v}\n--- lean/\n{a}")
+    same = sum(a == "same" for a in answers)
+    print(f"{same}/{runs} random expressions have manyan's value by lean/, {failed} another")
     return failed
 
 
@@ -1078,11 +1102,12 @@ def fuzz_sym(engine, runs, seed):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["crash", "fmt", "lint", "typecheck", "sym", "diff", "sim", "check", "live", "prove"])
+    parser.add_argument("mode", choices=["crash", "fmt", "lint", "typecheck", "sym", "diff", "sim", "check", "live", "prove", "ref"])
     parser.add_argument("engine")
     parser.add_argument("--tlc")
     parser.add_argument("--sany")
     parser.add_argument("--tlapm")
+    parser.add_argument("--ref")
     parser.add_argument("--runs", type=int, default=200)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
@@ -1101,6 +1126,10 @@ def main():
         if not args.tlapm:
             parser.error("prove needs --tlapm")
         return 1 if prove(engine, str(Path(args.tlapm).resolve()), args.runs, args.seed) else 0
+    if args.mode == "ref":
+        if not args.ref:
+            parser.error("ref needs --ref")
+        return 1 if ref(engine, str(Path(args.ref).resolve()), args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
     return 1 if {"sim": sim, "check": check, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0
