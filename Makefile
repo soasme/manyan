@@ -47,9 +47,15 @@ APALACHE_VERSION = 0.63.0
 APALACHE_URL = https://github.com/apalache-mc/apalache/releases/download/v$(APALACHE_VERSION)/apalache-$(APALACHE_VERSION).tgz
 APALACHE_SHA256 = a756e96af249bf33cd7629667a49472cb26ac8227c48583da139b414834d59df
 APALACHE = $(OBJDIR)/apalache-$(APALACHE_VERSION)/bin/apalache-mc
+# TLAPS, the oracle of `fuzz.py prove`: the binaries of its rolling
+# 1.6.0 pre-release, which have no checksum to pin (tlapm --version names
+# the commit).
+TLAPS_ARCH = $(if $(findstring Darwin,$(shell uname)),arm64-darwin,x86_64-linux-gnu)
+TLAPS_URL = https://github.com/tlaplus/tlapm/releases/download/1.6.0-pre/tlapm-1.6.0-pre-$(TLAPS_ARCH).tar.gz
+TLAPS = $(OBJDIR)/tlaps-1.6.0-pre/tlapm/bin/tlapm
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-fmt-oracle fuzz-lint fuzz-lint-oracle fuzz-typecheck fuzz-sym fuzz-oracle fuzz-sim fuzz-check fuzz-live bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-fmt-oracle fuzz-lint fuzz-lint-oracle fuzz-typecheck fuzz-sym fuzz-oracle fuzz-sim fuzz-check fuzz-live fuzz-prove bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -173,6 +179,11 @@ test-fmt-oracle: manyan $(TLA_JAR) $(COMMUNITY)
 bless-fmt: manyan
 	python3 tests/fmt_runner.py ./manyan --bless $(if $(ONLY),--only $(ONLY))
 
+$(TLAPS):
+	rm -rf $(OBJDIR)/tlaps-1.6.0-pre && mkdir -p $(OBJDIR)/tlaps-1.6.0-pre
+	curl -fsSL $(TLAPS_URL) | tar xz -C $(OBJDIR)/tlaps-1.6.0-pre
+	touch $@
+
 $(APALACHE):
 	mkdir -p $(OBJDIR)
 	curl -fsSL -o $(OBJDIR)/apalache.tgz.tmp $(APALACHE_URL)
@@ -233,6 +244,9 @@ sanitize-linux:
 	docker run --rm -v "$(CURDIR)":/src -w /src debian:bookworm-slim sh -c \
 	  'apt-get update -qq && apt-get install -y -qq gcc make python3 >/dev/null && \
 	   make sanitize fuzz OBJDIR=.obj/linux RUNS=$(RUNS) SEED=$(SEED)'
+
+fuzz-prove: manyan $(TLAPS)
+	python3 tests/fuzz.py prove ./manyan --tlapm $(TLAPS) --runs $(RUNS) --seed $(SEED)
 
 fuzz-oracle: manyan $(TLA_JAR) $(COMMUNITY)
 	python3 tests/fuzz.py diff ./manyan --tlc "$(TLC)" --runs $(RUNS) --seed $(SEED)

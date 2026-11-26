@@ -9,6 +9,7 @@ usage: fuzz.py crash ENGINE [--runs N] [--seed S]
        fuzz.py sim ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py check ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
        fuzz.py live ENGINE --tlc "TLC CMD" [--runs N] [--seed S]
+       fuzz.py prove ENGINE --tlapm TLAPM [--runs N] [--seed S]
 
 crash: mutates the models of tests/spec and runs the engine (a sanitizer
 build) on each, half of them as random simulations (-simulate or
@@ -47,6 +48,12 @@ nested WF/SF, keyword subscripts, level-0 overrides, higher-order
 actions, INSTANCE, and nested ~>) of a random state graph under random
 fairness with the engine and with TLC, both with the same random
 fingerprint polynomial (-fp); they must print the same.
+
+prove: makes random constant expressions, evaluates each with the engine,
+and asks TLAPS (--tlapm) to prove that the expression equals the value
+printed, or else that it does not. A proof of the negation is a finding:
+the engine's value contradicts TLA+'s semantics, whatever TLC prints.
+What TLAPS proves neither way is inconclusive and left out.
 
 diff: makes random constant expressions (including lazy functions in
 sets, out-of-domain EXCEPT, nested @, empty lazy sets, and AssertError
@@ -386,6 +393,84 @@ def batch_output(command, exprs):
         (directory / "F.cfg").write_text("")
         code, out = run(command, "F", directory, 60)
         return spec_runner.normalize(out, directory) + f"exit {code}\n"
+
+
+# TLC's :> and @@, which print a function, for TLAPS (which has no TLC).
+PROVE_HEAD = """EXTENDS Integers, Sequences, FiniteSets, TLAPS
+d :> e == [x \\in {d} |-> e]
+f @@ g == [x \\in (DOMAIN f) \\cup (DOMAIN g) |-> IF x \\in DOMAIN f THEN f[x] ELSE g[x]]
+"""
+PROVE_BY = "BY SMTT(3), Zenon, IsaT(20) DEF :>, @@"
+NONSTANDARD = re.compile(r"AssertError|SortSeq")   # operators TLAPS does not define
+
+
+def values(engine, exprs):
+    """The value the engine prints for each expression, None where it fails."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        lines = "".join(f'ASSUME PrintT("@{i}")\nASSUME PrintT({e})\n' for i, e in enumerate(exprs))
+        (directory / "F.tla").write_text(f"---- MODULE F ----\nEXTENDS Integers, Sequences, FiniteSets, TLC\n{lines}====\n")
+        (directory / "F.cfg").write_text("")
+        code, out = run(engine, "F", directory, 60, ["-nowarning"])
+    if code != 0:
+        return [values(engine, [e])[0] for e in exprs] if len(exprs) > 1 else [None]
+    found, current = {}, None
+    for line in out.splitlines():
+        marker = re.fullmatch(r'"@(\d+)"', line)
+        if marker:
+            current = int(marker.group(1))
+            found[current] = []
+        elif current is not None and not line.startswith(("Finished computing", "Model checking")):
+            found[current].append(line.strip())
+        else:
+            current = None
+    return [" ".join(found[i]) if found.get(i) else None for i in range(len(exprs))]
+
+
+def unproved(tlapm, claims):
+    """The indices of claims TLAPS does not prove."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        lines = "".join(f"THEOREM {c} {PROVE_BY}\n" for c in claims)
+        (directory / "P.tla").write_text(f"---- MODULE P ----\n{PROVE_HEAD}{lines}====\n")
+        first = 2 + PROVE_HEAD.count("\n")   # the line of the first THEOREM
+        _, out, code, killed = spec_runner.guarded([tlapm, "--nofp", "--threads", "2", "P.tla"],
+                                                   directory, 60 + 10 * len(claims), MEMORY)
+    if killed:
+        return set(range(len(claims)))
+    if code != 0 and "obligations failed" not in out:
+        raise RuntimeError(f"tlapm cannot check\n{lines}{out}")
+    failing = {int(m) - first for m in re.findall(r'^File "\./P\.tla", line (\d+), char', out, re.M)}
+    return {i for i in failing if 0 <= i < len(claims)}
+
+
+def standard(rng, n):
+    """n random expressions of the standard modules."""
+    exprs = []
+    while len(exprs) < n:
+        e = Gen(rng).any()
+        if not NONSTANDARD.search(e):
+            exprs.append(e)
+    return exprs
+
+
+def prove(engine, tlapm, runs, seed):
+    rng = random.Random(seed)
+    failed = proved = 0
+    size = 25
+    for b in range(0, runs, size):
+        exprs = standard(rng, min(size, runs - b))
+        pairs = [(e, v) for e, v in zip(exprs, values(engine, exprs)) if v is not None]
+        left = unproved(tlapm, [f"({e}) = ({v})" for e, v in pairs])
+        proved += len(pairs) - len(left)
+        doubted = [pairs[i] for i in sorted(left)]
+        wrong = unproved(tlapm, [f"({e}) # ({v})" for e, v in doubted])
+        for i, (e, v) in enumerate(doubted):
+            if i not in wrong:
+                failed += 1
+                print(f"FAIL TLAPS proves {e} # {v}, the value manyan prints")
+    print(f"{proved}/{runs} random expressions proved equal to manyan's value, {failed} proved unequal")
+    return failed
 
 
 def diff_model(rng):
@@ -993,10 +1078,11 @@ def fuzz_sym(engine, runs, seed):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["crash", "fmt", "lint", "typecheck", "sym", "diff", "sim", "check", "live"])
+    parser.add_argument("mode", choices=["crash", "fmt", "lint", "typecheck", "sym", "diff", "sim", "check", "live", "prove"])
     parser.add_argument("engine")
     parser.add_argument("--tlc")
     parser.add_argument("--sany")
+    parser.add_argument("--tlapm")
     parser.add_argument("--runs", type=int, default=200)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
@@ -1011,6 +1097,10 @@ def main():
         return 1 if fuzz_typecheck(engine, args.runs, args.seed) else 0
     if args.mode == "sym":
         return 1 if fuzz_sym(engine, args.runs, args.seed) else 0
+    if args.mode == "prove":
+        if not args.tlapm:
+            parser.error("prove needs --tlapm")
+        return 1 if prove(engine, str(Path(args.tlapm).resolve()), args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
     return 1 if {"sim": sim, "check": check, "live": live, "diff": diff}[args.mode](engine, args.tlc, args.runs, args.seed) else 0

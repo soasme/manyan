@@ -374,6 +374,7 @@ make fuzz-oracle       # random expressions, printed by Manyan and by TLC
 make fuzz-sim          # random simulations of tests/spec models, by Manyan and by TLC
 make fuzz-check        # tests/spec models checked with random options, by Manyan and by TLC
 make fuzz-live         # random temporal properties under fairness, by Manyan and by TLC
+make fuzz-prove        # random expressions: TLAPS proves Manyan's value, or proves it wrong (downloads TLAPS)
 make bench             # times Manyan against TLC; writes docs/benchmark.md
 make test-symbolic     # tests/symbolic with -symbolic
 make test-symbolic-oracle  # also runs Apalache 0.63.0 on every test (downloads it)
@@ -422,9 +423,18 @@ TLC's worker goes on past an error until it is stopped. `make fuzz-check` checks
 with random options (`-deadlock`, `-continue`, `-difftrace`,
 `-nowarning`, `-view`), Manyan with one or four workers. `make
 fuzz-live` checks a random temporal property of a random state graph
-under random weak and strong fairness, with Manyan and with TLC. All five take `RUNS=` (1000) and `SEED=` (1);
-a run with a seed is repeatable. A case any of them finds becomes a test in
-`tests/spec`.
+under random weak and strong fairness, with Manyan and with TLC.
+
+TLC can be wrong too, so `make fuzz-prove` checks Manyan against the
+semantics of TLA⁺ instead. It takes the value Manyan prints for a
+random expression `e`, `v`, and asks TLAPS to prove `e = v`, and
+otherwise `e # v`: a proof of that is a value TLA⁺ says is wrong.
+What TLAPS proves neither way is left out. Where the semantics
+and TLC disagree on a verdict, the semantics wins; what Manyan prints
+stays TLC's.
+
+All six take `RUNS=` (1000) and `SEED=` (1); a run with a seed is
+repeatable. A case any of them finds becomes a test in `tests/spec`.
 
 ## Limitations
 

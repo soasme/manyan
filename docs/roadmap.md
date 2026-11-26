@@ -30,6 +30,10 @@ from TLC.
   rest: TLC's tableau is built of particles, its successors linked in the
   order of their index, so its product may have other nodes and edges
   than Manyan's.
+- Check Manyan against the semantics of TLA⁺, not only TLC: `make
+  fuzz-prove` asks TLAPS to prove the value Manyan prints. Next: a
+  reference semantics to run, then actions and states (a successor Manyan computes satisfies `Next`),
+  then temporal formulas.
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle, the tableau, level checking and
@@ -74,7 +78,9 @@ richer values, models and temporal formulas). It agrees with TLC on all
 
 - The core language in one C file and one header, and the operators TLC
   computes in Java in another pair, on the core's API; no dependencies.
-- Every expected output comes from TLC.
+- Every expected output comes from TLC, unless TLA⁺'s semantics says
+  TLC's verdict is wrong: then the semantics wins, and the manual says
+  where. How a result is printed stays TLC's.
 - With any number of workers, the output is identical to a one-worker run.
 - An improvement over TLC that changes the output, such as a clearer error
   message, is opt-in. The default output stays TLC's.
