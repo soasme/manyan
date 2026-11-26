@@ -20,6 +20,8 @@ UNIVERSE the definition of the states its behaviors take:
     property P holds  or `violated`
 
 TRACE, a behavior Manyan prints, is a line `invariant I`, `deadlock`,
+`stuck` (no next state in the constraints, which TLC's simulator
+reports as a deadlock),
 `safety P` (a prefix that violates P) or `property P`, a line for each
 state (a record of the variables), and for a property's lasso a line
 `loop J`, the state (from 0) the last goes back to; `ref` adds
@@ -102,6 +104,9 @@ def ends (md : Model) (what : String) (s : State) : M Bool :=
   | ["invariant", x] => do pure !(← holds md.c s none [] (.name x))
   | ["deadlock"] => match md.next with
     | some (n, ρ) => do pure !(← md.univ.anyM fun t => holds md.c s (some t) ρ n)
+    | none => pure false
+  | ["stuck"] => match md.next with   -- as TLC's simulator stops: no next state in the constraints
+    | some (n, ρ) => do pure !(← md.univ.anyM fun t => do pure ((← holds md.c s (some t) ρ n) && (← md.inModel (some s) t)))
     | none => pure false
   | _ => pure true
 

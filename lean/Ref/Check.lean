@@ -399,11 +399,13 @@ def mkModel (m : Module) (cfg : Config) (univ : String) : M Model := do
 def Model.steps (md : Model) (s : State) : M (List State) :=
   md.univ.filterM fun t => md.box.allM fun (e, ρ) => holds md.c s (some t) ρ e
 
-/-- Whether TLC keeps the step from `s` to `t`: its constraints hold of
-`t`, and its action constraints of the step, unless it stutters. -/
-def Model.inModel (md : Model) (s t : State) : M Bool := do
+/-- Whether TLC keeps the state `t`, found by a step from `s` or initial:
+its constraints hold of `t`, and its action constraints of the step. -/
+def Model.inModel (md : Model) (s : Option State) (t : State) : M Bool := do
   pure ((← md.constraints.allM (holds md.c t none [] ·)) &&
-        (stateKey s == stateKey t || (← md.actionConstraints.allM (holds md.c s (some t) [] ·))))
+        (← match s with
+          | some s => md.actionConstraints.allM (holds md.c s (some t) [] ·)
+          | none => pure true))
 
 /-- The reachable states, breadth first, and the depth each is found at;
 then the states found by steps outside the constraints, with theirs:
@@ -416,7 +418,7 @@ def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) :
   let mut outside : List (State × Nat) := []
   for s in md.univ do
     if !(← md.init.allM (·.holdsInit md.c s)) then continue
-    if !(← md.inModel s s) then outside := (s, 1) :: outside; continue
+    if !(← md.inModel none s) then outside := (s, 1) :: outside; continue
     ids := ids.insert (stateKey s) states.size
     states := states.push s
     depth := depth.push 1
@@ -426,7 +428,9 @@ def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) :
   while i < states.size do
     let mut out := []
     for t in ← md.steps states[i]! do
-      if !(← md.inModel states[i]! t) then outside := (t, depth[i]! + 1) :: outside; continue
+      -- TLC's behaviors may always stutter, whatever the action constraints.
+      if stateKey t != stateKey states[i]! && !(← md.inModel (some states[i]!) t) then
+        outside := (t, depth[i]! + 1) :: outside; continue
       let j ← match ids.get? (stateKey t) with
         | some j => pure j
         | none => do

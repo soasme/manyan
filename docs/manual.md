@@ -383,6 +383,7 @@ make fuzz-live         # random temporal properties under fairness, by Manyan an
 make fuzz-prove        # random expressions: TLAPS proves Manyan's value, or proves it wrong (downloads TLAPS)
 make fuzz-ref          # random expressions, Manyan's value against lean/'s semantics of TLA⁺ (needs Lean 4)
 make fuzz-model        # random models, Manyan's verdict, counts and traces against lean/'s
+make fuzz-model-simulate  # the same with -simulate: each error found is one, by a behavior of the spec
 make fuzz-model-symbolic  # the same, typed for Apalache, with -symbolic and a random -length
 make bench             # times Manyan against TLC; writes docs/benchmark.md
 make test-symbolic     # tests/symbolic with -symbolic
@@ -452,9 +453,12 @@ the same with `-symbolic -length L`: an invariant violated, or (where
 the verdict is TLC's) a deadlock, within L steps of an initial state
 must be found, by a shortest behavior. A model `-symbolic` takes over
 30 seconds on is counted, not failed: under fairness it refines
-`ENABLED` a state at a time.
+`ENABLED` a state at a time. `make fuzz-model-simulate` checks that each
+error `-simulate` reports is one: a behavior of the specification at
+least as long as the shortest that shows it. `--keep DIR` keeps each
+failing model.
 
-All nine take `RUNS=` (1000) and `SEED=` (1); a run with a seed is
+All ten take `RUNS=` (1000) and `SEED=` (1); a run with a seed is
 repeatable. A case any of them finds becomes a test in `tests/spec`.
 A test where TLC's verdict is wrong has a line `\* semantics: WHY`; its
 expected output is Manyan's, and the oracle does not run it.

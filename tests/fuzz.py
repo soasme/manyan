@@ -806,8 +806,9 @@ def model_verdict(reference, directory, name, trace=None):
     return v
 
 
-def judge(out, code, ref, reference, directory, name, cfg, length=None):
-    """Why Manyan's verdict is not TLA+'s, or None. length: Manyan checked behaviors of up to that many steps."""
+def judge(out, code, ref, reference, directory, name, cfg, length=None, simulated=False):
+    """Why Manyan's verdict is not TLA+'s, or None. length: Manyan checked behaviors of up to that many
+    steps; simulated: behaviors drawn at random, so an error may be missed, or found by a longer one."""
     m = VERDICT.search(out)
     states = re.search(r"(\d+) distinct states? found", out)
     depth = re.search(r"The depth of the complete state graph search is (\d+)", out)
@@ -820,7 +821,7 @@ def judge(out, code, ref, reference, directory, name, cfg, length=None):
         re.search(r"^PROPERTY", cfg, re.M) and re.search(r"[WS]F_", (directory / f"{name}.tla").read_text())))
     violated = [p for p, h in ref["properties"].items() if not h]
     if m is None:
-        if code != 0:
+        if code != 0 or simulated:
             return None   # Manyan refused, as TLC would: not a verdict
         if length is not None:
             within = lambda d: d is not None and d <= length + 1   # a state length steps from an initial one
@@ -845,17 +846,19 @@ def judge(out, code, ref, reference, directory, name, cfg, length=None):
             return None   # a behavior leaves the universe: lean/ cannot say
         if inv not in ref["invariants"]:
             return f"{inv} violated, but lean/ has it hold"
-        if len(trace) != first_inv:
+        if len(trace) < ref["invariants"][inv] or (len(trace) != first_inv and not simulated):
             return f"a trace of {len(trace)} states, lean/ a violation at depth {first_inv}"
-        if dead is not None and dead < len(trace) - 1:
+        if dead is not None and dead < len(trace) - 1 and not simulated:
             return f"an invariant violated at depth {len(trace)}, but lean/ has a deadlock at {dead}"
         check = f"invariant {inv}"
+    elif what.startswith("Deadlock") and simulated and re.search(r"^(ACTION_)?CONSTRAINT", cfg, re.M):
+        check = "stuck"   # TLC's simulator stops where no next state is in the constraints
     elif what.startswith("Deadlock"):
         if dead is None:
             return "a deadlock, but lean/ has none"
-        if len(trace) != dead and not (apalache and len(trace) > dead):
+        if len(trace) != dead and not ((apalache or simulated) and len(trace) > dead):
             return f"a deadlock after {len(trace)} states, lean/ at depth {dead}"
-        if first_inv is not None and first_inv <= dead:
+        if first_inv is not None and first_inv <= dead and not simulated:
             return f"a deadlock at depth {dead}, but lean/ has an invariant violated at {first_inv}"
         check = "deadlock"
     elif what.startswith("Assumption"):
@@ -866,7 +869,7 @@ def judge(out, code, ref, reference, directory, name, cfg, length=None):
         # TLC checks a state's invariants and safety properties as it finds it, deadlock as it expands it,
         # and temporal properties once the graph is complete.
         before = len(trace) if kind == "safety" else float("inf")
-        if (first_inv or before) < before or (not apalache and (dead or before) < before - 1):
+        if not simulated and ((first_inv or before) < before or (not apalache and (dead or before) < before - 1)):
             return f"a violation of a property, but lean/ has another first: {ref}"
         if not violated:
             return f"{what}, but lean/ has every property hold"
@@ -878,7 +881,8 @@ def judge(out, code, ref, reference, directory, name, cfg, length=None):
     return None
 
 
-def models(engine, reference, runs, seed, symbolic=False):
+def models(engine, reference, runs, seed, symbolic=False, simulate=False, keep=None):
+    """keep: a directory to copy each failing model into, with the options Manyan ran with."""
     rng = random.Random(seed)
     failed = skipped = refused = slow = 0
     for i in range(runs):
@@ -899,7 +903,8 @@ def models(engine, reference, runs, seed, symbolic=False):
                 continue
             length = rng.randint(1, 8) if symbolic else None
             options = (["-symbolic", "-length", str(length)] if symbolic else
-                       ["-workers", "4"] if rng.random() < 0.3 else [])
+                       ["-simulate", "num=20", "-depth", str(rng.randint(1, 10)), "-seed", str(rng.randrange(1 << 30))]
+                       if simulate else ["-workers", "4"] if rng.random() < 0.3 else [])
             _, out, code, killed = spec_runner.guarded(engine + options + ["-config", f"{name}.cfg", name],
                                                        directory, 30 if symbolic else 120, MEMORY)
             if killed and symbolic and killed.endswith(" s"):
@@ -911,10 +916,15 @@ def models(engine, reference, runs, seed, symbolic=False):
                 continue
             if code not in (0, 10, 11, 12, 13):
                 refused += 1
-            why = judge(out, code, ref_v, reference, directory, name, cfg, length)
+            why = judge(out, code, ref_v, reference, directory, name, cfg, length, simulate)
         if why:
             failed += 1
-            print(f"FAIL {why}\n{module}{cfg}--- manyan\n{out}")
+            print(f"FAIL {why}\n{module}{cfg}--- manyan {' '.join(options)}\n{out}")
+            if keep:
+                kept = Path(keep) / f"{seed}-{i}"
+                kept.mkdir(parents=True, exist_ok=True)
+                for f, text in {f"{name}.tla": module, f"{name}.cfg": cfg, "options": " ".join(options) + "\n", **files}.items():
+                    (kept / f).write_text(text)
     print(f"{runs - failed - skipped - slow}/{runs} random models have TLA+'s verdict by lean/, "
           f"{failed} another; {skipped} left out, {refused} refused by manyan" + (f", {slow} too slow" if symbolic else ""))
     return failed
@@ -1532,6 +1542,8 @@ def main():
     parser.add_argument("--tlapm")
     parser.add_argument("--ref")
     parser.add_argument("--symbolic", action="store_true", help="model: check with -symbolic")
+    parser.add_argument("--simulate", action="store_true", help="model: check with -simulate")
+    parser.add_argument("--keep", help="model: a directory to keep failing models in")
     parser.add_argument("--runs", type=int, default=200)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
@@ -1555,7 +1567,7 @@ def main():
             parser.error(args.mode + " needs --ref")
         reference = str(Path(args.ref).resolve())
         if args.mode == "model":
-            return 1 if models(engine, reference, args.runs, args.seed, args.symbolic) else 0
+            return 1 if models(engine, reference, args.runs, args.seed, args.symbolic, args.simulate, args.keep) else 0
         return 1 if ref(engine, reference, args.runs, args.seed) else 0
     if not args.tlc:
         parser.error(args.mode + " needs --tlc")
