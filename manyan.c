@@ -16930,6 +16930,8 @@ static int tf_tableau(TF *f) {
     case TF_AND: case TF_OR: return tf_tableau(f->a) || tf_tableau(f->b);
     case TF_ALWAYS: case TF_EVENTUALLY:
         return f->a->op == f->op || (f->a->op != TF_ALWAYS && f->a->op != TF_EVENTUALLY) || f->a->a->op != TF_ATOM;
+    case TF_TRUE: return 1;
+    case TF_ATOM: return !f->action;
     default: return 0;
     }
 }
@@ -16985,11 +16987,11 @@ static void warn_stuttering(void) {
     xfree(b.s);
 }
 
-/* The product nodes of the initial states, as TLC adds them; TRUE, with
-   no tableau, has the one node of nothing. */
+/* The product nodes of the initial states, as TLC adds them; without a
+   tableau (NULL), the one node of nothing. */
 static int live_roots(TF *negated, int **roots) {
     int *init, ninit;
-    expand(&negated, negated->op != TF_TRUE, &init, &ninit);
+    expand(&negated, negated != NULL, &init, &ninit);
     int n = 0;
     *roots = NULL;
     for (int s = 0; s < nstates; s++) {
@@ -18058,8 +18060,8 @@ static TFList pem_filled;   /* the <>[] actions evaluated on every edge */
 
 static int pem_group(Pem *pems, int n, int i, int prune) {
     int forks = nworkers > 1 && !in_worker;
-    TF *tf = tf_new(TF_TRUE, NULL, NULL);
-    for (int j = 0; j < pems[i].tf.n; j++) tf = tf_new(TF_AND, tf, pems[i].tf.v[j]);
+    TF *tf = NULL;
+    for (int j = 0; j < pems[i].tf.n; j++) tf = tf ? tf_new(TF_AND, tf, pems[i].tf.v[j]) : pems[i].tf.v[j];
     promises = (TFList){0};
     tf_promises(tf);
     tnodes_reset();

@@ -48,7 +48,9 @@ live: checks a random temporal property (including constants, ~, LET,
 nested WF/SF, keyword subscripts, level-0 overrides, higher-order
 actions, INSTANCE, and nested ~>) of a random state graph under random
 fairness with the engine and with TLC, both with the same random
-fingerprint polynomial (-fp); they must print the same.
+fingerprint polynomial (-fp); they must print the same, but for a cycle
+back into its first state, which TLC prints stuttering and the engine
+`Back to state i` (docs/standards/tla2.md §10.5).
 
 prove: makes random constant expressions, evaluates each with the engine,
 and asks TLAPS (--tlapm) to prove that the expression equals the value
@@ -1139,6 +1141,17 @@ def live_model(rng):
     return model, extra_files
 
 
+def back_into(tlc):
+    """TLC's output with a lasso's cycle back into its first state, which
+    TLC prints as that state again, then stuttering numbered before it, as
+    Manyan prints it: `Back to state i`."""
+    m = re.search(r"^State (\d+): (<[^\n]*>)\n((?:[^\n]+\n)+)\nState (\d+): Stuttering\n", tlc, re.M)
+    if not m or int(m.group(4)) >= int(m.group(1)):
+        return tlc
+    first = re.search(r"^State (\d+): [^\n]*\n" + re.escape(m.group(3)) + "\n", tlc[:m.start()], re.M)
+    return tlc[:m.start()] + f"Back to state {first.group(1)}: {m.group(2)}\n\n" + tlc[m.end():] if first else tlc
+
+
 def live(engine, tlc, runs, seed):
     rng = random.Random(seed)
     failed = 0
@@ -1156,7 +1169,7 @@ def live(engine, tlc, runs, seed):
                     (fdir / fname).write_text(ftext)
             ours = spec_runner.run(engine + fp, path, MEMORY)
             theirs = spec_runner.run(spec_runner.oracle_command(tlc) + fp, path, MEMORY)
-        if ours != theirs:
+        if ours != back_into(theirs):
             failed += 1
             print(f"DIFF {' '.join(fp)}\n{model}--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} liveness checks printed what TLC prints")
