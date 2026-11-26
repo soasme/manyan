@@ -508,7 +508,7 @@ def ref(engine, reference, runs, seed):
 class Machine:
     """A random state machine over bounded types, its universe their product."""
 
-    TYPES = ["int", "int", "bool", "set", "fcn", "rec"]
+    TYPES = ["int", "int", "bool", "set", "fcn", "rec", "seq", "proc"]
 
     def __init__(self, rng):
         self.rng = rng
@@ -521,7 +521,8 @@ class Machine:
 
     def domain(self, v):
         return {"int": f"0..{self.k[v] - 1}", "bool": "BOOLEAN", "set": "SUBSET {1, 2}",
-                "fcn": "[{1, 2} -> 0..1]", "rec": "[a : 0..1, b : BOOLEAN]"}[self.vars[v]]
+                "fcn": "[{1, 2} -> 0..1]", "rec": "[a : 0..1, b : BOOLEAN]",
+                "seq": "UNION {[1..n -> {1, 2}] : n \\in 0..2}", "proc": "Procs"}[self.vars[v]]
 
     def of(self, t):
         return [] if self.constant else [v for v, u in self.vars.items() if u == t]
@@ -532,6 +533,10 @@ class Machine:
         leaves += [lambda v=v: f"Cardinality({v})" for v in self.of("set")]
         leaves += [lambda v=v: f"{v}[{r.randint(1, 2)}]" for v in self.of("fcn")]
         leaves += [lambda v=v: f"{v}.a" for v in self.of("rec")]
+        leaves += [lambda v=v: f"Len({v})" for v in self.of("seq")]
+        leaves += [lambda v=v: f"(IF {v} = <<>> THEN 0 ELSE Head({v}))" for v in self.of("seq")]
+        leaves += [lambda v=v: f"Sum({v})" for v in self.of("set")]
+        leaves += [lambda: "Lim"]
         if d > 2:
             return f"({r.choice(leaves)()} % {k})"
         n = lambda: self.int(k, d + 1)
@@ -561,6 +566,9 @@ class Machine:
         leaves = [lambda: r.choice(["TRUE", "FALSE"])] + [lambda v=v: v for v in self.of("bool")]
         leaves += [lambda v=v: f"{v}.b" for v in self.of("rec")]
         leaves += [lambda a=a: f"(ENABLED {a})" for a in ([] if self.constant else self.actions)]
+        leaves += [lambda v=v: self.bound("(\\E {j} \\in 1..Len({}) : {}[{j}] = {})", v, v, r.randint(1, 2))
+                   for v in self.of("seq")]
+        leaves += [lambda v=v, w=w: f"({v} = {w})" for v in self.of("proc") for w in self.of("proc")]
         if d > 2:
             return r.choice(leaves)()
         b = lambda: self.bool(d + 1)
@@ -605,6 +613,14 @@ class Machine:
             base = v if r.random() < 0.6 and not self.constant else self.bound("[{j} \\in {{1, 2}} |-> {}]", self.int(2, d + 1))
             return r.choice([base, f"[{base} EXCEPT ![{r.randint(1, 2)}] = {self.int(2, d + 1)}]",
                              f"[{base} EXCEPT ![{r.randint(1, 2)}] = (@ + 1) % 2]"])
+        if t == "seq":
+            k = r.randint(1, 2)
+            base = "<<>>" if self.constant else v
+            return r.choice([f"<<{k}>>", "<<>>", f"(IF Len({base}) < 2 THEN Append({base}, {k}) ELSE Tail({base}))",
+                             f"(IF {base} = <<>> THEN {base} ELSE Tail({base}))", f"(IF {base} = <<>> THEN {base} ELSE SubSeq({base}, 1, 1))",
+                             f"({base} \\o <<>>)", f"(IF Len({base}) = 2 THEN <<>> ELSE {base} \\o <<{k}>>)"])
+        if t == "proc":
+            return v   # which model value CHOOSE picks only TLC knows
         rec = f"[a |-> {self.int(2, d + 1)}, b |-> {self.bool(d + 1)}]"
         if self.constant:
             return rec
@@ -620,6 +636,7 @@ class Machine:
             lambda: f"{v}' \\in {self.domain(v)}",
             lambda: f"\\E q \\in {{{self.value(v)}, {self.value(v)}}} : {v}' = q",
             lambda: f"Keep({v})",
+            lambda: f"\\E q \\in {self.domain(v)} : {v}' = q",
             lambda: f"(IF {self.bool()} THEN {v}' = {self.value(v)} ELSE {self.assign(v)})",
             lambda: f"(CASE {self.bool()} -> {v}' = {self.value(v)} [] OTHER -> {v}' \\in {self.domain(v)})",
             lambda: f"({v}' = {self.value(v)} \\/ ({self.bool()} /\\ {v}' = {self.value(v)}))",
@@ -650,9 +667,9 @@ class Machine:
         nxt = "Next ==\n" + "\n".join(f"    \\/ {a}" for a in names)
         self.constant = True
         init = "Init ==\n" + "\n".join(
-            "    /\\ " + r.choice([f"{v} = {self.value(v)}", f"{v} \\in {self.domain(v)}",
+            "    /\\ " + (f"{v} \\in Procs" if self.vars[v] == "proc" else r.choice([f"{v} = {self.value(v)}", f"{v} \\in {self.domain(v)}",
                                  f"{v} \\in {{{self.value(v)}, {self.value(v)}}}",
-                                 f"(\\E q \\in {self.domain(v)} : {v} = q /\\ q # {self.value(v)})"]) for v in vs)
+                                 f"(\\E q \\in {self.domain(v)} : {v} = q /\\ q # {self.value(v)})"])) for v in vs)
         self.constant = False
         universe = "U == [" + ", ".join(f"{v} : {self.domain(v)}" for v in vs) + "]"
         # Manyan checks the behaviors stay in the universe: lean/ explores no other state.
@@ -661,6 +678,8 @@ class Machine:
         tuple_ = f"<<{', '.join(vs)}>>"
         if r.random() < 0.4:
             fair = " /\\ ".join(f"{r.choice('WS')}F_vars({a})" for a in r.sample(names + ["Next"], r.randint(0, 2)))
+            if r.random() < 0.3:
+                fair += (" /\\ " if fair else "") + f"(\\A k \\in {{0, 1}} : {r.choice('WS')}F_vars(Step(k)))"
             props += f"vars == {tuple_}\nSpec == Init /\\ [][Next]_vars{' /\\ ' + fair if fair else ''}\n"
             p = r.choice([f"[]{self.bool()}", f"<>{self.bool()}", f"({self.bool()} ~> {self.bool()})",
                           f"[]<>{self.bool()}", f"<>[]{self.bool()}", f"[][{self.action_short()}]_vars",
@@ -679,8 +698,12 @@ class Machine:
             props += f"AConstr == {self.action_short()}\n"
             cfg.append("ACTION_CONSTRAINT AConstr")
         cfg.append(f"CHECK_DEADLOCK {r.choice(['TRUE', 'FALSE'])}")
-        module = (f"---- MODULE M ----\nEXTENDS Integers, FiniteSets\nVARIABLES {', '.join(vs)}\n"
-                  f"Keep(a) == a' = a\n{init}\n" + "\n".join(acts) + f"\n{nxt}\n{universe}\n{props}====\n")
+        cfg.append(f"CONSTANTS Procs = {r.choice(['{p1}', '{p1, p2}'])} Lim = {r.randint(0, 1)}")
+        module = (f"---- MODULE M ----\nEXTENDS Integers, FiniteSets, Sequences\n"
+                  f"CONSTANTS Procs, Lim\nVARIABLES {', '.join(vs)}\n"
+                  f"Keep(a) == a' = a\nRECURSIVE Sum(_)\n"
+                  f"Sum(S) == IF S = {{}} THEN 0 ELSE LET e == CHOOSE e \\in S : \\A f \\in S : e <= f IN e + Sum(S \\ {{e}})\n"
+                  f"{init}\n" + "\n".join(acts) + f"\n{nxt}\nStep(k) == IF k = 0 THEN {names[0]} ELSE {names[-1]}\n{universe}\n{props}====\n")
         return module, "\n".join(cfg) + "\n"
 
     def action_short(self):

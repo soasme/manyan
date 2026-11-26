@@ -96,6 +96,12 @@ partial def flatten (mods : List Module) (m : Module) : M Module := do
     out := { out with defs := out.defs ++ substs ++ n.defs.map fun (d, ps, e) => (p ++ d, ps, e.rename f ps) }
   pure { out with defs := out.defs ++ m.defs }
 
+/-- The names of `e` that nothing in `defs` defines, as the model values
+they are in a configuration or a trace. -/
+def modelValues (defs : Env) (e : Expr) : Env :=
+  (e.names.filter fun n => (defs.lookup n).isNone && !["Nat", "Int", "BOOLEAN", "STRING"].contains n).map
+    fun n => (n, .val (.model n))
+
 /-- The world of a module and its configuration: the configuration's
 constants and substitutions over the module's definitions; a constant's
 names that nothing defines are model values. -/
@@ -103,9 +109,7 @@ def mkWorld (m : Module) (cfg : Config) : M World := do
   let defs : Env := m.defs.map fun (x, ps, e) => (x, if ps.isEmpty then .expr e [] else .op ps e [])
   let base : World := { defs, vars := m.vars }
   let c := world .exec base
-  let consts ← cfg.consts.mapM fun (x, e) => do
-    let free := e.names.filter fun n => (defs.lookup n).isNone && !["Nat", "Int", "BOOLEAN", "STRING"].contains n
-    pure (x, Def.val (← c.ev .empty (free.map fun n => (n, Def.val (Val.model n))) e))
+  let consts ← cfg.consts.mapM fun (x, e) => do pure (x, Def.val (← c.ev .empty (modelValues defs e) e))
   let substs ← cfg.substs.mapM fun (x, y) => match defs.lookup y with
     | some d => pure (x, d)
     | none => undef s!"{x} <- {y}, which nothing defines"
@@ -391,26 +395,20 @@ def mkModel (m : Module) (cfg : Config) (univ : String) : M Model := do
          constraints := cfg.constraints.map .name, actionConstraints := cfg.actionConstraints.map .name,
          univ := states }
 
-/-- The states of the universe a step from `s` may go to. TLC's
-`ACTION_CONSTRAINT` leaves a behavior free to stutter. -/
+/-- The states of the universe a step of the specification from `s` may go to. -/
 def Model.steps (md : Model) (s : State) : M (List State) :=
-  md.univ.filterM fun t => do
-    for (e, ρ) in md.box do
-      if !(← holds md.c s (some t) ρ e) then return false
-    if stateKey t == stateKey s then return true
-    for e in md.actionConstraints do
-      if !(← holds md.c s (some t) [] e) then return false
-    pure true
+  md.univ.filterM fun t => md.box.allM fun (e, ρ) => holds md.c s (some t) ρ e
 
-def Model.inModel (md : Model) (s : State) : M Bool := do
-  for e in md.constraints do
-    if !(← holds md.c s none [] e) then return false
-  pure true
+/-- Whether TLC keeps the step from `s` to `t`: its constraints hold of
+`t`, and its action constraints of the step, unless it stutters. -/
+def Model.inModel (md : Model) (s t : State) : M Bool := do
+  pure ((← md.constraints.allM (holds md.c t none [] ·)) &&
+        (stateKey s == stateKey t || (← md.actionConstraints.allM (holds md.c s (some t) [] ·))))
 
 /-- The reachable states, breadth first, and the depth each is found at;
-then the states found outside the constraints, with theirs: TLC checks
-each state's invariants as it finds it, and keeps only those in the
-constraints. -/
+then the states found by steps outside the constraints, with theirs:
+TLC checks each state's invariants as it finds it, and keeps only those
+its constraints allow. -/
 def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) := do
   let mut states : Array State := #[]
   let mut ids : Std.HashMap String Nat := {}
@@ -418,7 +416,7 @@ def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) :
   let mut outside : List (State × Nat) := []
   for s in md.univ do
     if !(← md.init.allM (·.holdsInit md.c s)) then continue
-    if !(← md.inModel s) then outside := (s, 1) :: outside; continue
+    if !(← md.inModel s s) then outside := (s, 1) :: outside; continue
     ids := ids.insert (stateKey s) states.size
     states := states.push s
     depth := depth.push 1
@@ -428,7 +426,7 @@ def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) :
   while i < states.size do
     let mut out := []
     for t in ← md.steps states[i]! do
-      if !(← md.inModel t) then outside := (t, depth[i]! + 1) :: outside; continue
+      if !(← md.inModel states[i]! t) then outside := (t, depth[i]! + 1) :: outside; continue
       let j ← match ids.get? (stateKey t) with
         | some j => pure j
         | none => do

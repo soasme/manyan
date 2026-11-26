@@ -88,7 +88,7 @@ def readTrace (md : Model) (vars : List String) (text : String) :
   for l in lines.tail do
     if l.startsWith "loop " then loopTo := (l.drop 5).toString.toNat?
     else match parse l with
-      | .ok e => states := states ++ [← asState vars (← md.c.ev .empty [] e)]
+      | .ok e => states := states ++ [← asState vars (← md.c.ev .empty (modelValues md.c.w.defs e) e)]
       | .error why => undef s!"a state that does not parse: {why}"
   let prop := match what.splitOn " " with
     | ["property", p] | ["safety", p] => some (Expr.name p)
