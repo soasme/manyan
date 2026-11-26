@@ -105,6 +105,17 @@ def ends (md : Model) (what : String) (s : State) : M Bool :=
     | none => pure false
   | _ => pure true
 
+/-- The modules `m` uses that are files beside it, and theirs. -/
+partial def uses (dir : System.FilePath) (m : Module) (seen : List Module := []) : IO (List Module) := do
+  let mut seen := seen
+  for x in m.extends_ ++ m.instances.map (·.module) do
+    let path := dir / (x ++ ".tla")
+    if seen.any (·.name == x) || !(← path.pathExists) then continue
+    match parseModule (← IO.FS.readFile path) with
+    | .ok n => seen ← uses dir n (n :: seen)
+    | .error why => throw (IO.userError s!"{path}: {why}")
+  pure seen
+
 def model (args : List String) : IO UInt32 := do
   let (mPath, cPath, univ, trace) ← match args with
     | [m, c, u] => pure (m, c, u, none)
@@ -113,10 +124,14 @@ def model (args : List String) : IO UInt32 := do
   let mText ← IO.FS.readFile mPath
   let cText ← IO.FS.readFile cPath
   let tText ← match trace with | some t => some <$> IO.FS.readFile t | none => pure none
+  let m ← match parseModule mText with
+    | .ok m => pure m
+    | .error why => IO.println s!"error: {why}"; return 0
+  let mods ← uses ((System.FilePath.mk mPath).parent.getD ".") m
   let out : Except String String := do
-    let m ← parseModule mText
     let cfg ← parseConfig cText
     pure <| answer do
+      let m ← flatten mods m
       let md ← mkModel m cfg univ
       for a in m.assumes do
         if !(← md.c.ev .empty [] a >>= asBool) then return "assume FALSE"

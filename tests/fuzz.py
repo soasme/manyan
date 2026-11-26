@@ -671,14 +671,12 @@ class Machine:
 
 
 def live_universe(rng):
-    """A model of live_model, with its universe, or None for one with INSTANCE."""
+    """A model of live_model, with its universe and the modules it uses."""
     module, files = live_model(rng)
-    if files:
-        return None
-    n = module.count("{") and int(re.search(r"Succ == <<(.*)>>", module).group(1).count("{"))
+    n = re.search(r"Succ == <<(.*)>>", module).group(1).count("{")
     module = module.replace("\n====\n", f"\nU == [s : 1..{n}]\n====\n")
     text, cfg = module.split("====\n")
-    return text + "====\n", cfg
+    return text + "====\n", cfg, files
 
 
 VERDICT = re.compile(r"^Error: (Invariant (\w+) is violated\.|Deadlock reached\.|Action property (\w+) is violated\.|"
@@ -719,8 +717,7 @@ def manyan_trace(out):
     return states, loop
 
 
-def model_verdict(reference, directory, trace=None):
-    name = next(directory.glob("*.tla")).stem
+def model_verdict(reference, directory, name, trace=None):
     command = [reference, "model", f"{name}.tla", f"{name}.cfg", "U"] + (["T"] if trace else [])
     if trace:
         (directory / "T").write_text(trace)
@@ -745,7 +742,7 @@ def model_verdict(reference, directory, trace=None):
     return v
 
 
-def judge(out, code, ref, reference, directory, cfg):
+def judge(out, code, ref, reference, directory, name, cfg):
     """Why Manyan's verdict is not TLA+'s, or None."""
     m = VERDICT.search(out)
     states = re.search(r"(\d+) distinct states? found", out)
@@ -770,16 +767,16 @@ def judge(out, code, ref, reference, directory, cfg):
     if what.startswith("Invariant") and not re.search(rf"^INVARIANT {m.group(2)}$", cfg, re.M):
         what = "Action property"   # TLC reports a violated []P, or a LET's, as an invariant
     if what.startswith("Invariant"):
-        name = m.group(2)
-        if name == "TypeOK":
+        inv = m.group(2)
+        if inv == "TypeOK":
             return None   # a behavior leaves the universe: lean/ cannot say
-        if name not in ref["invariants"]:
-            return f"{name} violated, but lean/ has it hold"
+        if inv not in ref["invariants"]:
+            return f"{inv} violated, but lean/ has it hold"
         if len(trace) != first_inv:
             return f"a trace of {len(trace)} states, lean/ a violation at depth {first_inv}"
         if dead is not None and dead < len(trace) - 1:
             return f"an invariant violated at depth {len(trace)}, but lean/ has a deadlock at {dead}"
-        check = f"invariant {name}"
+        check = f"invariant {inv}"
     elif what.startswith("Deadlock"):
         if dead is None:
             return "a deadlock, but lean/ has none"
@@ -802,7 +799,7 @@ def judge(out, code, ref, reference, directory, cfg):
             return f"{what}, but lean/ has every property hold"
         check = f"{kind} {(set(names) & set(violated) or set(violated)).pop()}"
     text = check + "\n" + "\n".join(trace) + "\n" + (f"loop {loop}\n" if loop is not None and check.startswith("property") else "")
-    validated = model_verdict(reference, directory, text)
+    validated = model_verdict(reference, directory, name, text)
     if validated.get("trace") is not True:
         return f"Manyan's trace is not a behavior that shows it: {validated}\n{text}"
     return None
@@ -812,17 +809,15 @@ def models(engine, reference, runs, seed):
     rng = random.Random(seed)
     failed = skipped = refused = 0
     for i in range(runs):
-        made = live_universe(rng) if i % 2 else Machine(rng).model()
-        if made is None:
-            skipped += 1
-            continue
-        module, cfg = made
+        module, cfg, files = live_universe(rng) if i % 2 else Machine(rng).model() + ({},)
         name = re.search(r"MODULE (\w+)", module).group(1)
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
+            for f, text in files.items():
+                (directory / f).write_text(text)
             (directory / f"{name}.tla").write_text(module)
             (directory / f"{name}.cfg").write_text(cfg)
-            ref_v = model_verdict(reference, directory)
+            ref_v = model_verdict(reference, directory, name)
             if "skip" in ref_v:
                 skipped += 1
                 continue
@@ -833,7 +828,7 @@ def models(engine, reference, runs, seed):
                 continue
             if code not in (0, 10, 11, 12, 13):
                 refused += 1
-            why = judge(out, code, ref_v, reference, directory, cfg)
+            why = judge(out, code, ref_v, reference, directory, name, cfg)
         if why:
             failed += 1
             print(f"FAIL {why}\n{module}{cfg}--- manyan\n{out}")

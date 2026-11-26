@@ -57,6 +57,45 @@ def asState (vars : List String) (v : Val) : M State :=
     | none => undef s!"a state without the variable {x}"
   | _ => undef "a state that is not a record of the variables"
 
+/-- `e` with each free name `x` that `f` renames, `f x`. -/
+partial def Expr.rename (f : String → Option String) (bound : List String := []) : Expr → Expr
+  | .name x => .name (if bound.contains x then x else (f x).getD x)
+  | .op o args => .op (if bound.contains o then o else (f o).getD o) (args.map (·.rename f bound))
+  | .bind b x s body => .bind b x (s.rename f bound) (body.rename f (x :: bound))
+  | .lambda ps body => .lambda ps (body.rename f (ps ++ bound))
+  | .record fs => .record (fs.map fun (k, e) => (k, e.rename f bound))
+  | .recordSet fs => .recordSet (fs.map fun (k, e) => (k, e.rename f bound))
+  | .except g us => .except (g.rename f bound) (us.map fun (p, e) => (p.map (·.rename f bound), e.rename f bound))
+  | .letIn x ps d body => .letIn x ps (d.rename f (ps ++ bound)) (body.rename f (x :: bound))
+  | .case arms o => .case (arms.map fun (p, e) => (p.rename f bound, e.rename f bound)) (o.map (·.rename f bound))
+  | e => e
+
+/-- A module without instances, `mods` the modules it may use: those it
+extends declare its names; an instance `I == INSTANCE N WITH v <- e`
+defines `I!D` for each definition `D` of `N`, its variables and constants
+`I!v` the expressions substituted for them (by default, the names
+themselves). A module not in `mods` is a standard one. -/
+partial def flatten (mods : List Module) (m : Module) : M Module := do
+  let find (x : String) := mods.find? (·.name == x)
+  let mut out : Module := { m with extends_ := [], instances := [], defs := [] }
+  for x in m.extends_ do
+    if let some e := find x then
+      let e ← flatten mods e
+      out := { out with consts := e.consts ++ out.consts, vars := e.vars ++ out.vars,
+                        defs := out.defs ++ e.defs, assumes := e.assumes ++ out.assumes }
+  for i in m.instances do
+    let some n := find i.module | undef s!"INSTANCE {i.module}, a module not found"
+    let n ← flatten mods n
+    let p := if i.name.isEmpty then "" else i.name ++ "!"
+    let declared := n.vars ++ n.consts
+    let own := declared ++ n.defs.map (·.1)
+    let f (x : String) := if own.contains x then some (p ++ x) else none
+    let substs := declared.filterMap fun v =>
+      let e := (i.substs.lookup v).getD (.name v)
+      if p.isEmpty && match e with | .name y => y == v | _ => false then none else some (p ++ v, ([] : List String), e)
+    out := { out with defs := out.defs ++ substs ++ n.defs.map fun (d, ps, e) => (p ++ d, ps, e.rename f ps) }
+  pure { out with defs := out.defs ++ m.defs }
+
 /-- The world of a module and its configuration: the configuration's
 constants and substitutions over the module's definitions; a constant's
 names that nothing defines are model values. -/

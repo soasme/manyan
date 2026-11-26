@@ -36,7 +36,9 @@ property holds. A property is decided as a formula of linear-time
 temporal logic over the state graph: its negation's tableau and the
 graph have a product with a fair cycle, or not. With `TRACE`, a
 behavior Manyan prints, it also says whether that is a behavior of the
-specification that shows the error. `CONSTRAINT` is TLC's, not TLA⁺'s:
+specification that shows the error. Modules beside `M.tla` that it
+extends or instantiates are read too: `I!D` is `D` with the
+substitutions of `I == INSTANCE N WITH v <- e`. `CONSTRAINT` is TLC's, not TLA⁺'s:
 a state outside it is checked against the invariants, and not
 explored.
 

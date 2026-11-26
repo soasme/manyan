@@ -281,7 +281,11 @@ partial def primary : P Expr := do
     let p ← expr
     expect ")"
     suffix (.bind .select x s p)
-  | .id f =>
+  | .id f₀ =>
+    let mut f := f₀
+    while (← isSym "!") && (match ← peek 1 with | .id _ => true | _ => false) do   -- I!D
+      let _ ← next
+      f := f ++ "!" ++ (← ident)
     if f.startsWith "WF_" || f.startsWith "SF_" then do
       let v ← if f.length > 3 then pure (.name (f.drop 3).toString) else primary
       expect "("
@@ -419,9 +423,17 @@ def parse (s : String) : Except String Expr := runP (expr 0) s
 
 /-! ## Modules and models -/
 
+/-- `name == INSTANCE module WITH x <- e, ...`, `name` empty for an
+unnamed one. -/
+structure Instance where
+  name : String
+  module : String
+  substs : List (String × Expr)
+
 structure Module where
   name : String := ""
   extends_ : List String := []
+  instances : List Instance := []
   consts : List String := []
   vars : List String := []
   defs : List (String × List String × Expr) := []
@@ -440,6 +452,20 @@ def names : P (List String) := do
     out := out.push (← ident)
     skipArity
   pure out.toList
+
+def instanceP (name : String) : P Instance := do
+  expect "INSTANCE"
+  let module ← ident
+  let mut substs := []
+  if ← isId "WITH" then
+    let _ ← next
+    repeat
+      let x ← ident
+      expect "<-"
+      substs := substs ++ [(x, ← expr)]
+      if !(← isSym ",") then break
+      let _ ← next
+  pure { name, module, substs }
 
 partial def moduleP : P Module := do
   while !(← isId "MODULE") do let _ ← next
@@ -462,11 +488,16 @@ partial def moduleP : P Module := do
       let _ ← expr
     | .id "LOCAL" => let _ ← next
     | .id "RECURSIVE" => let _ ← next; let _ ← names
-    | .id "INSTANCE" => throw "INSTANCE is not supported"
+    | .id "INSTANCE" => m := { m with instances := m.instances ++ [← instanceP ""] }
     | _ =>
-      let d ← definition
-      if let (_, _, .name "INSTANCE") := d then throw "INSTANCE is not supported"
-      m := { m with defs := m.defs ++ [d] }
+      if (← peek 1) == .sym "==" && (← peek 2) == .id "INSTANCE" then
+        let x ← ident
+        expect "=="
+        m := { m with instances := m.instances ++ [← instanceP x] }
+      else
+        let d ← definition
+        if let (_, _, .name "INSTANCE") := d then throw "an instance with parameters is not supported"
+        m := { m with defs := m.defs ++ [d] }
   pure m
 
 def parseModule (s : String) : Except String Module := do
