@@ -452,8 +452,7 @@ the specification that shows the error. `make fuzz-model-symbolic` does
 the same with `-symbolic -length L`: an invariant violated, or (where
 the verdict is TLC's) a deadlock, within L steps of an initial state
 must be found, by a shortest behavior. A model `-symbolic` takes over
-30 seconds on is counted, not failed: under fairness it refines
-`ENABLED` a state at a time. `make fuzz-model-simulate` checks that each
+30 seconds on is counted as too slow, not failed. `make fuzz-model-simulate` checks that each
 error `-simulate` reports is one: a behavior of the specification at
 least as long as the shortest that shows it. `--keep DIR` keeps each
 failing model.

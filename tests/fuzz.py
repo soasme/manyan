@@ -908,7 +908,7 @@ def models(engine, reference, runs, seed, symbolic=False, simulate=False, keep=N
             _, out, code, killed = spec_runner.guarded(engine + options + ["-config", f"{name}.cfg", name],
                                                        directory, 30 if symbolic else 120, MEMORY)
             if killed and symbolic and killed.endswith(" s"):
-                slow += 1   # -symbolic refines ENABLED a state at a time: slow, under fairness, with many states
+                slow += 1   # counted, not failed
                 continue
             if killed:
                 print(f"FAIL manyan {killed}\n{module}{cfg}")

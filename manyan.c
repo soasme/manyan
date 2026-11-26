@@ -19082,6 +19082,33 @@ static int *bv_mul(const int *a, const int *b) {
     return acc;
 }
 
+/* a \div k and a % k for a constant k > 0, by long division: a circuit
+   the solver computes by propagation alone. For a < 0 it divides ~a = -a - 1,
+   as floor division has a \div k = ~(~a \div k), a % k = k - 1 - ~a % k. */
+static void bv_divmod_const(const int *a, int64_t k, int **q, int **r) {
+    int w = 1, sign = a[BW - 1];
+    while (w < 63 && (int64_t)1 << w <= k) w++;
+    w++;   /* the remainder doubled, plus a bit */
+    int *rem = NEWN(int, w), *t = NEWN(int, w), *d = NEWN(int, w);
+    for (int j = 0; j < w; j++) rem[j] = L_FALSE;
+    *q = NEWN(int, BW);
+    for (int i = BW - 1; i >= 0; i--) {
+        t[0] = g_xor(a[i], sign);
+        for (int j = 1; j < w; j++) t[j] = rem[j - 1];
+        int carry = L_TRUE;   /* t - k, its carry whether t >= k */
+        for (int j = 0; j < w; j++) {
+            int nk = j < 63 && (k >> j) & 1 ? L_FALSE : L_TRUE;
+            d[j] = g_xor(g_xor(t[j], nk), carry);
+            carry = g_or(g_and(t[j], nk), g_and(carry, g_xor(t[j], nk)));
+        }
+        (*q)[i] = g_xor(carry, sign);
+        for (int j = 0; j < w; j++) rem[j] = g_ite(carry, d[j], t[j]);
+    }
+    int *m = bv_const(0);
+    for (int j = 0; j < w; j++) m[j] = rem[j];
+    *r = bv_ite(sign, bv_sub(bv_const(k - 1), m), m);
+}
+
 /* a \div b and a % b for b > 0: a = q * b + r and 0 <= r < b. For other
    b, as Apalache's solver leaves them, any. */
 static void bv_divmod(const int *a, const int *b, int **q, int **r) {
@@ -19094,6 +19121,7 @@ static void bv_divmod(const int *a, const int *b, int **q, int **r) {
         for (int i = 0; i < BW; i++) { (*q)[i] = i + s < BW ? a[i + s] : a[BW - 1]; (*r)[i] = i < s ? a[i] : L_FALSE; }
         return;
     }
+    if (bv_value(b, &k) && k > 0) { bv_divmod_const(a, k, q, r); return; }
     *q = bv_fresh();
     *r = bv_fresh();
     int *zero = bv_const(0), o1, o2;
