@@ -3955,6 +3955,11 @@ static Expr *step_body(Expr *e, Tok *t) {
     return w;
 }
 
+/* BY ONLY, USE ONLY: num the place of ONLY, after one. */
+static void parse_only(Expr *e) {
+    if (is_kw(peek(), "ONLY")) e->num = P->pos + 1, next();
+}
+
 static Expr *mk_step(Tok *t, int kind) {
     Expr *e = mk_expr(X_STEP, t);
     e->op = kind;
@@ -4019,7 +4024,8 @@ static Expr *parse_step(int level) {
     Expr *e = mk_step(t, kind);
     if (kind != S_ASSERT && !(kind == S_DEFINE && !is_kw(t, "DEFINE"))) next();
     if (kind == S_USE || kind == S_HIDE) {
-        if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY only");
+        if (kind == S_USE) parse_only(e);
+        if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY or a step's USE only");
         parse_use_body(e);
     } else if (kind == S_DEFINE) {
         do PUSH(e->defs, e->ndefs, parse_definition(0)); while (def_ahead());
@@ -4055,7 +4061,7 @@ static Expr *parse_proof(int level) {
     Expr *e = mk_expr(X_PROOF, t);
     if (is_kw(t, "BY")) {
         Expr *by = mk_step(next(), S_BY);
-        if (is_kw(peek(), "ONLY")) next();
+        parse_only(by);
         parse_use_body(by);
         finish(by);
         PUSH(e->args, e->n, by);
@@ -4228,7 +4234,7 @@ static Module *parse_module(Module *outer) {
             syntax_error("a proof follows a theorem");   /* as SANY */
         if (is_kw(t, "USE") || is_kw(t, "HIDE")) {
             Expr *use = mk_step(next(), is_kw(t, "USE") ? S_USE : S_HIDE);
-            if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY only");
+            if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY or a step's USE only");
             parse_use_body(use);
             finish(use);
             Unit *u = add_unit(m, 6, NULL, NULL, NULL, 0);
@@ -6105,6 +6111,11 @@ static Scope *resolve_proof(Expr *e, Scope *sc) {
         Expr *at = NEW(Expr);
         *at = *e;
         at->l2 = at->l1, at->c2 = at->c1 + (e->op == S_BY ? 1 : e->op == S_USE ? 2 : 3);
+        if (e->num) {   /* as SANY, to ONLY, and another message */
+            Tok *only = &e->mod->toks[e->num - 1];
+            at->l2 = only->line, at->c2 = only->col + 3;
+            semantic_error(at, e->op == S_BY ? "Empty BY" : "Empty USE or HIDE statement.");
+        }
         semantic_error(at, "Empty BY, USE, or HIDE");
     }
     Scope *after = sc, *in = sc;   /* the scope of the steps after, of its proof */
