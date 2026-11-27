@@ -3,15 +3,15 @@
 This guide walks through the main patterns for declaring signature-level
 behavioural specifications in Python with `temporal`.
 
-## 1. Two Styles of State Machine
+## 1. Pure Signature-Level vs Executable State Machines
 
-`temporal` supports both pure TLA⁺-style models and annotated executable Python
-classes using the exact same PEP 593 vocabulary.
+`temporal` uses one uniform set of PEP 593 `Annotated` clauses for both pure
+TLA⁺-style models and executable Python classes.
 
-### Pure declarative style (`Action[bool]`)
+### Pure declarative model
 
-Declare state, initial predicates, and invariants directly in class annotations,
-and actions using `prime(...)` and `unchanged(...)`:
+Declare state, initial predicates, actions, and invariants directly in class
+annotations:
 
 ```python
 from typing import Annotated
@@ -21,46 +21,55 @@ from temporal import Action, Init, Invariant, State, prime
 class Counter:
     x: State[int]
 
-    init: Annotated[Init, lambda self: self.x == 0]
-    bounded: Annotated[Invariant, lambda self: 0 <= self.x <= 10]
+    init: Annotated[bool, Init(lambda s: s.x == 0)]
+    bounded: Annotated[bool, Invariant(lambda s: 0 <= s.x <= 10)]
 
-    def increment(self) -> Action[bool]:
-        return self.x < 10 and prime(self.x) == self.x + 1
-
-    def reset(self) -> Action[bool]:
-        return prime(self.x) == 0
+    increment: Annotated[bool, Action(lambda s: s.x < 10 and prime(s.x) == s.x + 1)]
+    reset: Annotated[bool, Action(lambda s: prime(s.x) == 0)]
 ```
 
-### Executable implementation style (`Action[None]` / `Action[R]`)
+### Executable Python class (`@dataclass` or ordinary class)
 
-Annotate a normal Python class (including `@dataclass`) so the same file runs in
-production and can be verified by Manyan. On a `@dataclass`, wrap predicate
-annotations in `ClassVar[...]` so `dataclasses` does not treat them as
-`__init__` fields:
+Attach `Action(...)` directly to real Python methods so the class executes
+natively while Manyan verifies conformance against the specification. On a
+`@dataclass`, wrap class-level specification annotations in `ClassVar[...]` so
+`dataclasses` does not treat them as `__init__` fields:
 
 ```python
 from dataclasses import dataclass
 from typing import Annotated, ClassVar
-from temporal import Action, Init, Invariant, State
+from temporal import Action, Init, Invariant, Requires, State, prime
 
 
 @dataclass
 class Counter:
     x: State[int] = 0
 
-    init: ClassVar[Annotated[Init, lambda self: self.x == 0]]
-    bounded: ClassVar[Annotated[Invariant, lambda self: 0 <= self.x <= 10]]
+    init: ClassVar[Annotated[bool, Init(lambda s: s.x == 0)]]
+    bounded: ClassVar[Annotated[bool, Invariant(lambda s: 0 <= s.x <= 10)]]
 
-    def increment(self) -> Action[None]:
-        if self.x < 10:
-            self.x += 1
+    def increment(self) -> Annotated[
+        None,
+        Requires(lambda s: s.x < 10),
+        Action(lambda s: prime(s.x) == s.x + 1),
+    ]:
+        self.x += 1
 
-    def reset(self) -> Action[None]:
+    def reset(self) -> Annotated[None, Action(lambda s: prime(s.x) == 0)]:
         self.x = 0
 ```
 
-For multi-line predicates or local bindings, the method-signature form
-(`def bounded(self) -> Invariant: ...`) is also equivalent.
+You can also use `Action()` without a predicate when the method body itself
+defines the transition, or attach specifications externally to an existing
+class:
+
+```python
+SafeCounter = Annotated[
+    Counter,
+    Init(lambda s: s.x == 0),
+    Invariant(lambda s: 0 <= s.x <= 10),
+]
+```
 
 ## 2. Reusable Refined Types with `Where`
 
@@ -69,28 +78,24 @@ across constants, state variables, parameters, and return types:
 
 ```python
 from typing import Annotated
-from temporal import Const, Pure, State, Where
+from temporal import Constant, Pure, State, Where
 
 Positive = Annotated[int, Where(lambda x: x > 0, "positive")]
 NonNegative = Annotated[int, Where(lambda x: x >= 0, "non-negative")]
 
 
 class Wallet:
-    limit: Const[Positive]
+    limit: Constant[Positive]
     balance: State[NonNegative] = 0
 
     def remaining(self) -> Pure[NonNegative]:
         return self.limit - self.balance
 ```
 
-Static type checkers treat `Positive` and `NonNegative` as `int`, while
-verifiers derive constant assumptions, state invariants, preconditions, and
-postconditions automatically from where the alias appears.
-
 ## 3. Function Contracts
 
-Attach `Requires`, `Ensures`, `Modifies`, and `Unchanged` to any function or
-method using `Annotated` on its return type:
+Attach `Requires`, `Ensures`, `Preserves`, `Modifies`, and `Unchanged` to any
+function or method using `Annotated` on its return type:
 
 ```python
 from typing import Annotated
@@ -109,17 +114,9 @@ def clamp(value: int, low: int, high: int) -> Annotated[
     return value
 ```
 
-For stateful methods, use `old(...)` inside `Ensures` to refer to pre-state
-values while bare `self.attr` refers to post-state values:
-
-```python
-def deposit(self, amount: Positive) -> Annotated[
-    Action[None],
-    Ensures(lambda self, amount: self.balance == old(self.balance) + amount),
-    Modifies("balance"),
-]:
-    self.balance += amount
-```
+Use `Preserves` when an operation maintains a property whenever it held before
+the call (`P(s) => P(s')`), and `old(...)` inside `Ensures` to relate the
+return value or post-state to the pre-state.
 
 ## 4. Behavioural Protocols and Refinement
 
@@ -129,7 +126,7 @@ internal state differs from the abstract specification:
 
 ```python
 from typing import Annotated, Generic, Protocol, TypeVar
-from temporal import Action, Ensures, Init, Refines, Requires, State, old
+from temporal import Action, Ensures, Init, Refines, Requires, State, old, prime
 
 T = TypeVar("T")
 
@@ -137,17 +134,18 @@ T = TypeVar("T")
 class Stack(Protocol[T]):
     items: State[tuple[T, ...]]
 
-    init: Annotated[Init, lambda self: self.items == ()]
+    init: Annotated[bool, Init(lambda s: s.items == ())]
 
     def push(self, item: T) -> Annotated[
-        Action[None],
-        Ensures(lambda self, item: self.items == old(self.items) + (item,)),
+        None,
+        Action(lambda s, item: prime(s.items) == s.items + (item,)),
     ]: ...
 
     def pop(self) -> Annotated[
-        Action[T],
-        Requires(lambda self: len(self.items) > 0),
-        Ensures(lambda self, result: old(self.items) == self.items + (result,)),
+        T,
+        Requires(lambda s: len(s.items) > 0),
+        Action(lambda s: prime(s.items) == s.items[:-1]),
+        Ensures(lambda s, result: result == old(s.items)[-1]),
     ]: ...
 
 
@@ -166,14 +164,16 @@ circular-buffer refinement example.
 
 ## 5. Fairness and Liveness Properties
 
-Attach simple per-action fairness directly on the action signature:
+Attach per-action fairness directly on the action signature:
 
 ```python
-def pop(self) -> Annotated[
-    Action[T],
-    Requires(lambda self: len(self.items) > 0),
+def release(self) -> Annotated[
+    None,
+    Requires(lambda s: s.available < s.capacity),
+    Action(lambda s: prime(s.available) == s.available + 1),
     WeakFairness(),
-]: ...
+]:
+    self.available += 1
 ```
 
 For parameterized fairness (such as per-process fairness `\A p \in procs : SF_vars(acquire(p))`),
@@ -182,23 +182,23 @@ express liveness with `Property` using `always`, `eventually`, and `leads_to`:
 
 ```python
 fair: Annotated[
-    Fairness,
-    lambda self: all(strong_fairness(self.acquire(p)) for p in self.procs),
+    bool,
+    Fairness(lambda s: all(strong_fairness(s.acquire(p)) for p in s.procs)),
 ]
 starvation_free: Annotated[
-    Property,
-    lambda self: all(leads_to(p in self.waiting, self.holder == p) for p in self.procs),
+    bool,
+    Property(lambda s: all(leads_to(p in s.waiting, s.holder == p) for p in s.procs)),
 ]
 ```
 
 ## 6. Configuring Finite Models
 
-Use `Model`, `ModelValue`, and `Symmetry` to declare finite model-checking
-configurations alongside your specifications:
+Use `Model`, `Domain`, `ModelValue`, and `Symmetry` to declare finite
+model-checking configurations alongside your specifications:
 
 ```python
 from dataclasses import replace
-from temporal import Model, ModelValue, Symmetry
+from temporal import Domain, Model, ModelValue, Symmetry
 
 
 class Node(ModelValue):
@@ -210,7 +210,7 @@ NODES = Symmetry({Node("n1"), Node("n2"), Node("n3")})
 small_model = Model(
     MyProtocol,
     constants={"nodes": NODES, "max_retries": 2},
-    domains={Node: NODES, int: range(3)},
+    domains={Node: NODES, "send.retries": Domain.range(0, 2)},
     state_constraint=lambda s: len(s.log) <= 4,
     check_deadlock=True,
 )
@@ -221,10 +221,10 @@ no_deadlock_model = replace(small_model, check_deadlock=False)
 ## 7. Static Type Checking
 
 `temporal` ships a `py.typed` marker (PEP 561) and passes `mypy --strict` and
-`Pyright` (`strict` mode on `temporal` itself). Because every declaration
-annotation is a PEP 593 `Annotated` alias:
+`Pyright` (`strict` mode on `temporal` itself). Because every declaration uses
+standard PEP 593 `Annotated` metadata:
 
 - `mypy --strict` type-checks all annotated specifications and examples cleanly.
 - If you run Pyright in `strict` mode on user specs, prefer named typed
-  predicate functions over untyped lambdas inside `Requires`/`Ensures`/`Where`
-  to avoid `reportUnknownLambdaType`.
+  predicate functions over untyped lambdas inside clauses to avoid
+  `reportUnknownLambdaType`.

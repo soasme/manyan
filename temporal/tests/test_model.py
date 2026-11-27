@@ -1,4 +1,4 @@
-"""Tests for ModelValue, Symmetry, and Model configuration declarations."""
+"""Tests for ModelValue, Symmetry, Domain, and Model configuration declarations."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import dataclasses
 import pickle
 import sys
 import unittest
-from typing import Generic, TypeVar
+from typing import Annotated, Generic, TypeVar
 
-from temporal import Action, Const, Model, ModelValue, State, Symmetry
+from temporal import Action, Constant, Domain, Model, ModelValue, State, Symmetry
 
 T = TypeVar("T")
 
@@ -23,10 +23,10 @@ class Msg(ModelValue):
 
 
 class DummySpec:
-    procs: Const[frozenset[Proc]]
+    procs: Constant[frozenset[Proc]]
     x: State[int] = 0
 
-    def step(self) -> Action[None]:
+    def step(self) -> Annotated[None, Action()]:
         self.x += 1
 
 
@@ -79,6 +79,30 @@ class TestSymmetry(unittest.TestCase):
         self.assertEqual(restored, sym)
 
 
+class TestDomain(unittest.TestCase):
+    def test_range_values_and_boolean(self) -> None:
+        r = Domain.range(0, 3)
+        self.assertEqual(list(r), [0, 1, 2, 3])
+        self.assertEqual(len(r), 4)
+        self.assertIn(3, r)
+        self.assertNotIn(4, r)
+        self.assertEqual(repr(r), "Domain.range(0, 3)")
+        self.assertEqual(pickle.loads(pickle.dumps(r)), r)
+
+        v = Domain.values("alice", "bob")
+        self.assertEqual(list(v), ["alice", "bob"])
+        self.assertEqual(repr(v), "Domain.values('alice', 'bob')")
+
+        # (0, 1) must not be confused with (False, True).
+        zero_one = Domain.values(0, 1)
+        self.assertEqual(repr(zero_one), "Domain.values(0, 1)")
+
+        b = Domain.boolean()
+        self.assertEqual(list(b), [False, True])
+        self.assertEqual(repr(b), "Domain.boolean()")
+        self.assertEqual(hash(b), hash(Domain.boolean()))
+
+
 class TestModel(unittest.TestCase):
     def test_defaults_repr_replace_and_pickle(self) -> None:
         m = Model(DummySpec)
@@ -96,7 +120,7 @@ class TestModel(unittest.TestCase):
         m2 = dataclasses.replace(
             m,
             constants={"procs": procs},
-            domains={Proc: procs, int: range(3)},
+            domains={Proc: procs, int: Domain.range(0, 2)},
             check_deadlock=False,
         )
         self.assertFalse(m2.check_deadlock)
@@ -108,7 +132,7 @@ class TestModel(unittest.TestCase):
             m.check_deadlock = False  # type: ignore[misc]
 
     def test_module_and_generic_alias_specs(self) -> None:
-        m_generic = Model(GenericSpec[int], domains={int: range(3)})
+        m_generic = Model(GenericSpec[int], domains={int: Domain.range(0, 2)})
         self.assertEqual(m_generic.spec, GenericSpec[int])
 
         this_module = sys.modules[__name__]

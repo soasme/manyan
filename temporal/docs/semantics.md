@@ -19,9 +19,9 @@ Every Temporal declaration belongs to one of TLA⁺'s four expression levels:
 
 | Level | Name | Declarations | May reference |
 | --- | --- | --- | --- |
-| 0 | Constant | `Const[T]`, `Assume` | Constants and constant operators |
-| 1 | State | `State[T]`, `Ghost[T]`, `Init`, `Pure[T]`, `Invariant` | Level 0 + current-state variables |
-| 2 | Action | `Action[T]`, `ActionInvariant`, `Requires`, `Ensures`, `Modifies`, `Unchanged` | Level 1 + next-state values (`prime` / post-state), `unchanged`, `enabled` |
+| 0 | Constant | `Constant[T]`, `Assume` | Constants and constant operators |
+| 1 | State | `State[T]`, `Ghost[T]`, `Pure[T]`, `Init`, `Invariant` | Level 0 + current-state variables |
+| 2 | Action | `Action`, `ActionInvariant`, `Requires`, `Ensures`, `Preserves`, `Modifies`, `Unchanged` | Level 1 + next-state values (`prime` / post-state), `unchanged`, `enabled` |
 | 3 | Temporal | `Property`, `Fairness`, `WeakFairness`, `StrongFairness` | Level 2 + `always`, `eventually`, `leads_to`, `weak_fairness`, `strong_fairness` |
 
 A lower-level declaration must not contain higher-level primitives (for
@@ -34,15 +34,14 @@ Temporal declarations perform zero runtime validation and zero automatic
 evaluation:
 
 - Importing a specification, instantiating a class, calling an annotated
-  function, or constructing `Where`, `Requires`, `Ensures`, `Refines`, or
-  `Model` never invokes user predicates.
+  function, or constructing clauses, `Domain`, `Refines`, or `Model` never
+  invokes user predicates.
 - All TLA⁺ expression primitives (`implies`, `iff`, `choose`, `old`, `prime`,
   `unchanged`, `enabled`, `always`, `eventually`, `leads_to`, `weak_fairness`,
   `strong_fairness`) are purely declarative stubs that raise
   `NotImplementedError` if called directly at runtime.
 - Standard `typing.get_type_hints(..., include_extras=True)`, `typing.get_origin`,
-  and `typing.get_args` expose the raw PEP 593 `Annotated` metadata without
-  requiring any custom runtime inspector.
+  and `typing.get_args` expose the PEP 593 `Annotated` metadata directly.
 
 ---
 
@@ -53,42 +52,50 @@ A Temporal specification may be declared as:
 1. **A class** (ordinary class, `@dataclass`, or `Generic[T]` class).
 2. **A behavioural protocol** (`typing.Protocol` or `Protocol[T]`): declares an
    abstract behavioural interface purely at the signature level.
-3. **A Python module**: module-level annotations and functions declare constants,
-   state variables, assumptions, initial predicates, actions, invariants,
-   properties, and fairness.
-4. **A standalone function**: annotated with `Pure[T]`, `Where`, `Requires`,
-   and/or `Ensures`.
+3. **An external type alias**: `SafeAccount = Annotated[BankAccount, Init(...), Invariant(...)]`
+   attaches behavioural declarations to an existing class without modifying it.
+4. **A Python module**: module-level annotations and functions declare
+   constants, state variables, assumptions, initial predicates, actions,
+   invariants, properties, and fairness.
+5. **A standalone function**: annotated with `Pure[T]`, `Where`, `Requires`,
+   `Ensures`, and/or `Preserves`.
 
-### Signature-Level Predicate Forms
+### Signature-Level Declaration Forms
 
-Boolean specification roles (`Assume`, `Init`, `Invariant`, `ActionInvariant`,
-`Property`, `Fairness`) may be written in either of two equivalent forms:
+System clauses (`Assume`, `Init`, `Action`, `Invariant`, `ActionInvariant`,
+`Property`, `Fairness`) accept an optional predicate and support three
+equivalent PEP 593 forms:
 
-1. **Signature attribute form** (no method created on the class):
+1. **Inline class annotation** (no method or runtime attribute created):
    ```python
-   non_negative: Annotated[Invariant, lambda self: self.balance >= 0]
+   non_negative: Annotated[bool, Invariant(lambda s: s.balance >= 0)]
    ```
    Inside `@dataclass`, wrap with `ClassVar[...]` so `dataclasses` does not
-   treat the declaration as an `__init__` field:
+   create an `__init__` field:
    ```python
-   non_negative: ClassVar[Annotated[Invariant, lambda self: self.balance >= 0]]
+   non_negative: ClassVar[Annotated[bool, Invariant(lambda s: s.balance >= 0)]]
    ```
-2. **Callable return-signature form** (useful for multi-line definitions or local
-   bindings):
+2. **Method return annotation** (predicate inline or defined by the body):
    ```python
-   def non_negative(self) -> Invariant:
-       return self.balance >= 0
+   def deposit(self, amount: int) -> Annotated[
+       None,
+       Action(lambda s, amount: prime(s.balance) == s.balance + amount),
+   ]:
+       self.balance += amount
    ```
-
-Both forms carry the exact same `Role` inside PEP 593 `Annotated` metadata and
-have identical TLA⁺ semantics.
+   When `predicate` is omitted (e.g. `Annotated[None, Action()]` or
+   `Annotated[bool, Action()]`), the method body itself defines the predicate
+   or transition.
+3. **External class annotation**:
+   ```python
+   SafeAccount = Annotated[BankAccount, Init(...), Invariant(...)]
+   ```
 
 ### Composition and Inheritance
 
-- Subclasses inherit all declarations along Python's Method Resolution Order
-  (MRO).
-- Conflicting `Role` markers for the same symbol (such as `State[Const[int]]`
-  or overriding a `Const` as a `State`) are invalid.
+- Subclasses inherit declarations along Python's Method Resolution Order (MRO).
+- Conflicting roles on the same symbol (such as `State[Constant[int]]` or
+  overriding a `Constant` as a `State`) are invalid.
 - Generic specifications (`Generic[T]`, `Protocol[T]`) are parameterized by
   type variables whose finite domains may be bound in a `Model`.
 
@@ -96,11 +103,11 @@ have identical TLA⁺ semantics.
 
 ## 3. Constants and State Variables
 
-### `Const[T]`
+### `Constant[T]`
 
 Declares a TLA⁺ `CONSTANT`. Its value is fixed throughout a behavior and does
-not change across transitions. If a `Model` binds the constant in `constants`,
-that binding overrides any Python default value.
+not change across transitions. A `Model.constants` binding overrides any Python
+default value.
 
 ### `State[T]`
 
@@ -117,7 +124,7 @@ or prophecy variable.
   `State` variables and are included in $\text{vars}$.
 - In implementation conformance checking, runtime code is not required to store
   or mutate `Ghost` attributes; their transitions are specified declaratively
-  via `Init`, `Ensures`, or declarative `Action[bool]` relations.
+  via `Init`, `Action`, or `Ensures`.
 
 ### Inline Type Refinements (`Where`)
 
@@ -127,7 +134,7 @@ When composed with a declaration via `Annotated` (for example
 
 | Position | Verification obligation |
 | --- | --- |
-| `Const[Positive]` | Constant assumption: `ASSUME predicate(c)` |
+| `Constant[Positive]` | Constant assumption: `ASSUME predicate(c)` |
 | `State[Positive]` / `Ghost[Positive]` | State invariant: `[] predicate(v)` |
 | Function/action parameter `x: Positive` | Precondition: `predicate(x)` |
 | Function/action return `-> Positive` | Postcondition: `predicate(result)` |
@@ -141,7 +148,7 @@ Multiple `Where` clauses on one annotation are conjoined.
 ### `Assume`
 
 Each `Assume` declaration contributes a constant-level assumption (`ASSUME P`).
-Multiple `Assume` declarations (together with `Where` refinements on `Const`
+Multiple `Assume` declarations (together with `Where` refinements on `Constant`
 fields) are conjoined and must hold of the constants bound in a `Model`.
 
 ### `Init`
@@ -156,23 +163,22 @@ dataclass defaults, or require `Model.init`.
 
 ## 5. Actions and State Transitions
 
-Each method or function returning `Action[T]` declares an atomic transition
-action $A_i$.
+Each declaration carrying `Action(...)` declares an atomic transition action
+$A_i$.
 
-### Action Styles
+### Action Forms
 
-1. **Declarative actions (`Action[bool]`):** The body is a two-state TLA⁺
-   action formula over current-state expressions (`self.x`) and next-state
-   expressions (`prime(self.x)`), with framing via `unchanged(...)`,
-   `Modifies(...)`, or `Unchanged(...)`.
-2. **Imperative actions (`Action[None]` or `Action[R]`):** The body is ordinary
-   executable Python code mutating `State` attributes and optionally returning
-   `R`. Unassigned `State` attributes remain `UNCHANGED`. Attached `Requires`
-   clauses act as enabling guards; attached `Ensures`, `Modifies`, and
-   `Unchanged` clauses are conformance obligations checked against the body.
-3. **Abstract actions (body is `...`, e.g., on a `Protocol`):** The action
-   relation is defined solely by its signature: `Requires`, `Ensures`,
-   `Modifies`, `Unchanged`, and parameter/return `Where` clauses.
+1. **Explicit action relation (`Action(predicate)`):** `predicate` is a
+   two-state TLA⁺ formula over pre-state (`s.x`) and post-state (`prime(s.x)`).
+   - May appear on a class attribute (`step: Annotated[bool, Action(lambda s: ...)]`),
+     on an abstract `Protocol` method (`def push(...) -> Annotated[None, Action(...)]: ...`),
+     or on an executable method (where the verifier checks that the Python body
+     conforms to the declared action relation; nondeterministic specs allow the
+     implementation to choose any permitted successor state).
+2. **Body-defined action (`Action()`):** The method body defines the transition
+   — either as an imperative Python method (`-> Annotated[None, Action()]` /
+   `-> Annotated[R, Action()]`) or as a declarative `bool` formula
+   (`-> Annotated[bool, Action()]`).
 
 ### Next-State Relation
 
@@ -180,7 +186,7 @@ For an action $A_i(p_1: T_1, \dots, p_k: T_k)$ with parameters, its
 contribution to the next-state relation is existentially quantified over the
 parameters' domains (subject to any `Where` and `Requires` guards):
 
-$$A_i^{\exists} \;\triangleq\; \exists p_1 \in D_1, \dots, p_k \in D_k : \text{Guard}_i(\vec{p}) \land \text{Body}_i(\vec{p})$$
+$$A_i^{\exists} \;\triangleq\; \exists p_1 \in D_1, \dots, p_k \in D_k : \text{Guard}_i(\vec{p}) \land \text{Relation}_i(\vec{p})$$
 
 The specification's next-state relation is the disjunction of all actions:
 
@@ -199,7 +205,10 @@ specification:
 - `Unchanged(u1, ..., uj)` asserts $\text{UNCHANGED}\,\{u_1, \dots, u_j\}$.
 - Multiple `Modifies` clauses intersect; any variable in `Unchanged` must
   remain unchanged even if listed in `Modifies`.
-- Naming a variable not declared on the specification is a static error.
+- For imperative bodies, unassigned `State` attributes are implicitly
+  `UNCHANGED`. For explicit `Action(predicate)` relations without `Modifies`,
+  a verifier may treat state variables not referenced under `prime(...)` as
+  implicitly unchanged unless otherwise configured.
 
 ---
 
@@ -211,27 +220,29 @@ Declares a side-effect-free operator returning `T` (TLA⁺ Level 0 if it accesse
 no state variables; Level 1 if it reads state variables). A `Pure` function must
 not mutate state variables and may be referenced inside specifications.
 
-### `Requires` and `Ensures`
+### `Requires`, `Ensures`, and `Preserves`
 
-- **`Requires(predicate)`**: Precondition or action guard. Parameters of
-  `predicate` are bound by name to the enclosing function's parameters (including
-  `self` for methods); unused parameters may be omitted. State expressions refer
-  to the pre-state.
-- **`Ensures(predicate)`**: Postcondition. Parameters of `predicate` are bound
-  by name to the enclosing function's parameters, plus `result` for the return
-  value (omissible when returning `None` or unconstrained).
+- **`Requires(predicate)`**: Precondition or action enabling guard. For methods,
+  the first parameter of `predicate` binds to the receiver (`self`/`s`);
+  remaining parameters bind to function arguments by name (unused parameters
+  may be omitted). State expressions refer to the pre-state.
+- **`Ensures(predicate)`**: Postcondition holding on normal return. Parameters
+  bind as in `Requires`, plus `result` for the return value (omissible when
+  returning `None` or unconstrained).
   - Inside `Ensures`, `old(expr)` evaluates in the **pre-state** ($s$).
   - Outside `old(...)`, state expressions evaluate in the **post-state** ($s'$).
-  - Multiple `Requires` clauses are conjoined; multiple `Ensures` clauses are
-    conjoined.
+- **`Preserves(predicate)`**: Inductive preservation obligation across an
+  operation: if `predicate` holds in the pre-state $s$, it must also hold in
+  the post-state $s'$ ($\text{predicate}(s) \implies \text{predicate}(s')$).
+- Multiple clauses of the same kind are conjoined.
 
 ### Pre-State / Post-State Convention Summary
 
-| Context | Bare state expr `self.x` | Explicit partner |
+| Context | Bare state expr `s.x` | Explicit partner |
 | --- | --- | --- |
-| Declarative `Action[bool]` / `ActionInvariant` | Pre-state $x$ | `prime(self.x)` = post-state $x'$ |
-| `Requires` | Pre-state $x$ | *(none — single-state)* |
-| `Ensures` | Post-state $x'$ | `old(self.x)` = pre-state $x$ |
+| `Action` / `ActionInvariant` | Pre-state $x$ | `prime(s.x)` = post-state $x'$ |
+| `Requires` / `Preserves` | Single-state predicate $P(s)$ | *(evaluated on $s$, and for `Preserves` on $s'$)* |
+| `Ensures` | Post-state $x'$ | `old(s.x)` = pre-state $x$ |
 
 ---
 
@@ -239,13 +250,13 @@ not mutate state variables and may be referenced inside specifications.
 
 ### `Invariant`
 
-A state predicate $I$ that must hold in every reachable state:
+A state predicate $I$ verified in every reachable state:
 $\text{Spec} \implies \square I$.
 
 ### `ActionInvariant`
 
-A two-state predicate $A$ (using `self.x` and `prime(self.x)`) that must hold on
-every non-stuttering step:
+A two-state predicate $A$ (using `s.x` and `prime(s.x)`) verified on every
+non-stuttering step:
 $\text{Spec} \implies \square[A]_{\text{vars}}$.
 
 ### `Fairness`, `WeakFairness`, and `StrongFairness`
@@ -256,8 +267,9 @@ Fairness constraints belong to the **assumption** side of the specification
 - `WeakFairness(*vars)` on an action $A$ adds $\text{WF}_v(A)$ where $v$ is
   the tuple of listed variables (or $\text{vars}$ if empty).
 - `StrongFairness(*vars)` on an action $A$ adds $\text{SF}_v(A)$ similarly.
-- A `Fairness` declaration contributes its temporal fairness formula (built from
-  `weak_fairness`, `strong_fairness`, `and`, `all(...)`) to $\text{Fairness}$.
+- A `Fairness(...)` declaration contributes its temporal fairness formula
+  (built from `weak_fairness`, `strong_fairness`, `and`, `all(...)`) to
+  $\text{Fairness}$.
 
 Let $\text{Fairness}$ be the conjunction of all `Fairness` declarations and all
 action `WeakFairness` / `StrongFairness` clauses. The complete temporal
@@ -349,13 +361,13 @@ Refinement is declared in either of two ways:
 | `Model` field | TLA⁺ `.cfg` directive | Meaning |
 | --- | --- | --- |
 | `spec` | Target module | Specification class, protocol, generic alias, or module |
-| `constants` | `CONSTANT c = val` | Concrete values or `Symmetry` sets for `Const` declarations |
-| `domains` | Finite domain bindings | Finite sets for `TypeVar`s, types (`int`, `ModelValue` sorts), or parameter names |
+| `constants` | `CONSTANT c = val` | Concrete values or `Symmetry` sets for `Constant` declarations |
+| `domains` | Finite domain bindings | Finite sets (`Domain`, `Symmetry`, `range`, etc.) for `TypeVar`s, types, or parameter names (e.g. `"deposit.amount"`) |
 | `init` | `INIT` | Optional override of initial predicate |
 | `actions` | `NEXT` | Optional subset/override of actions (`None` = all; `()` = none) |
 | `invariants` | `INVARIANT` | Optional subset/override of invariants (`None` = all; `()` = none) |
 | `properties` | `PROPERTY` | Optional subset/override of temporal properties (`None` = all; `()` = none) |
-| `state_constraint` | `CONSTRAINT` | State-space bounding predicate |
+| `state_constraint` | `CONSTRAINT` | State-space bounding predicate (bounds exploration; not an invariant) |
 | `action_constraint` | `ACTION_CONSTRAINT` | Transition bounding predicate |
 | `symmetry` | `SYMMETRY` | Explicit symmetry sets (`Permutations(S)`); `Symmetry` values in `constants`/`domains` also declare symmetries |
 | `view` | `VIEW` | State projection for equivalence checking |
@@ -363,7 +375,7 @@ Refinement is declared in either of two ways:
 | `postcondition` | `POSTCONDITION` | Check-wide postcondition evaluated after checking completes |
 | `check_deadlock` | `CHECK_DEADLOCK` | Whether terminal states without enabled actions are errors (default `True`) |
 
-### `ModelValue` and `Symmetry`
+### `ModelValue`, `Symmetry`, and `Domain`
 
 - `ModelValue(name)` represents an uninterpreted atomic constant. Equality is
   strictly by `(type, name)`; model values are never equal to strings and are
@@ -371,3 +383,5 @@ Refinement is declared in either of two ways:
   compatible with Apalache's uninterpreted types.
 - `Symmetry(iterable)` is an immutable `frozenset` subclass declaring that all
   permutations of its elements are symmetries of the specification.
+- `Domain` constructs immutable finite domains: `Domain.range(start, stop)`
+  (inclusive `start..stop`), `Domain.values(*items)`, and `Domain.boolean()`.

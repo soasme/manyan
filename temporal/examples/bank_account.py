@@ -9,19 +9,20 @@ from temporal import (
     Action,
     ActionInvariant,
     Assume,
-    Const,
+    Constant,
+    Domain,
     Ensures,
     Ghost,
     Init,
     Invariant,
     Model,
     Modifies,
+    Preserves,
     Pure,
     Requires,
     State,
     Unchanged,
     Where,
-    old,
     prime,
 )
 
@@ -31,23 +32,25 @@ NonNegative = Annotated[int, Where(lambda x: x >= 0, "non-negative integer")]
 
 @dataclass
 class BankAccount:
-    owner: Const[str]
-    credit_limit: Const[NonNegative] = 0
+    owner: Constant[str]
+    credit_limit: Constant[NonNegative] = 0
     balance: State[int] = 0
     ledger: Ghost[tuple[int, ...]] = ()
 
-    valid_owner: ClassVar[Annotated[Assume, lambda self: len(self.owner) > 0]]
-    init: ClassVar[Annotated[Init, lambda self: self.balance == 0 and self.ledger == ()]]
-    within_limit: ClassVar[Annotated[Invariant, lambda self: self.balance >= -self.credit_limit]]
+    valid_owner: ClassVar[Annotated[bool, Assume(lambda s: len(s.owner) > 0)]]
+    init: ClassVar[Annotated[bool, Init(lambda s: s.balance == 0 and s.ledger == ())]]
+    within_limit: ClassVar[Annotated[bool, Invariant(lambda s: s.balance >= -s.credit_limit)]]
     ledger_matches_balance: ClassVar[
-        Annotated[Invariant, lambda self: sum(self.ledger) == self.balance]
+        Annotated[bool, Invariant(lambda s: sum(s.ledger) == s.balance)]
     ]
     ledger_append_only: ClassVar[
         Annotated[
-            ActionInvariant,
-            lambda self: (
-                len(prime(self.ledger)) >= len(self.ledger)
-                and prime(self.ledger)[: len(self.ledger)] == self.ledger
+            bool,
+            ActionInvariant(
+                lambda s: (
+                    len(prime(s.ledger)) >= len(s.ledger)
+                    and prime(s.ledger)[: len(s.ledger)] == s.ledger
+                )
             ),
         ]
     ]
@@ -57,30 +60,31 @@ class BankAccount:
         return self.balance + self.credit_limit
 
     def deposit(self, amount: Positive) -> Annotated[
-        Action[None],
-        Ensures(
-            lambda self, amount: (
-                self.balance == old(self.balance) + amount
-                and self.ledger == old(self.ledger) + (amount,)
+        None,
+        Action(
+            lambda s, amount: (
+                prime(s.balance) == s.balance + amount
+                and prime(s.ledger) == s.ledger + (amount,)
             )
         ),
+        Preserves(lambda s: s.balance >= -s.credit_limit),
         Modifies("balance", "ledger"),
     ]:
         self.balance += amount
 
     def withdraw(self, amount: Positive) -> Annotated[
-        Action[Positive],
+        Positive,
         Requires(
-            lambda self, amount: amount <= self.balance + self.credit_limit,
+            lambda s, amount: amount <= s.balance + s.credit_limit,
             "sufficient funds",
         ),
-        Ensures(
-            lambda self, amount, result: (
-                self.balance == old(self.balance) - amount
-                and self.ledger == old(self.ledger) + (-amount,)
-                and result == amount
+        Action(
+            lambda s, amount: (
+                prime(s.balance) == s.balance - amount
+                and prime(s.ledger) == s.ledger + (-amount,)
             )
         ),
+        Ensures(lambda s, amount, result: result == amount),
         Modifies("balance", "ledger"),
         Unchanged("owner", "credit_limit"),
     ]:
@@ -91,6 +95,9 @@ class BankAccount:
 small_account_model = Model(
     BankAccount,
     constants={"owner": "alice", "credit_limit": 2},
-    domains={int: range(1, 4)},
+    domains={
+        "deposit.amount": Domain.range(1, 3),
+        "withdraw.amount": Domain.range(1, 3),
+    },
     state_constraint=lambda s: len(s.ledger) <= 4,
 )

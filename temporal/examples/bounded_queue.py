@@ -7,7 +7,7 @@ from typing import Annotated, Generic, Optional, Protocol, TypeVar
 from temporal import (
     Action,
     Assume,
-    Const,
+    Constant,
     Ensures,
     Init,
     Invariant,
@@ -24,6 +24,7 @@ from temporal import (
     Where,
     leads_to,
     old,
+    prime,
 )
 
 T = TypeVar("T")
@@ -33,27 +34,29 @@ Positive = Annotated[int, Where(lambda x: x > 0)]
 class BoundedQueue(Protocol[T]):
     """Abstract behavioural protocol for a bounded FIFO queue (signatures only)."""
 
-    capacity: Const[Positive]
+    capacity: Constant[Positive]
     items: State[tuple[T, ...]]
 
-    positive_capacity: Annotated[Assume, lambda self: self.capacity > 0]
-    init: Annotated[Init, lambda self: self.items == ()]
-    bounded: Annotated[Invariant, lambda self: 0 <= len(self.items) <= self.capacity]
+    positive_capacity: Annotated[bool, Assume(lambda s: s.capacity > 0)]
+    init: Annotated[bool, Init(lambda s: s.items == ())]
+    bounded: Annotated[bool, Invariant(lambda s: 0 <= len(s.items) <= s.capacity)]
     eventually_drained: Annotated[
-        Property, lambda self: leads_to(len(self.items) > 0, len(self.items) == 0)
+        bool,
+        Property(lambda s: leads_to(len(s.items) > 0, len(s.items) == 0)),
     ]
 
     def push(self, item: T) -> Annotated[
-        Action[None],
-        Requires(lambda self, item: len(self.items) < self.capacity),
-        Ensures(lambda self, item: self.items == old(self.items) + (item,)),
+        None,
+        Requires(lambda s, item: len(s.items) < s.capacity),
+        Action(lambda s, item: prime(s.items) == s.items + (item,)),
         Modifies("items"),
     ]: ...
 
     def pop(self) -> Annotated[
-        Action[T],
-        Requires(lambda self: len(self.items) > 0),
-        Ensures(lambda self, result: old(self.items) == (result,) + self.items),
+        T,
+        Requires(lambda s: len(s.items) > 0),
+        Action(lambda s: prime(s.items) == s.items[1:]),
+        Ensures(lambda s, result: result == old(s.items)[0]),
         Modifies("items"),
         WeakFairness(),
     ]: ...
@@ -62,23 +65,27 @@ class BoundedQueue(Protocol[T]):
 class RingBuffer(Generic[T]):
     """Concrete circular-buffer implementation refining BoundedQueue[T]."""
 
-    capacity: Const[Positive]
+    capacity: Constant[Positive]
     _buf: State[tuple[Optional[T], ...]]
     _head: State[int]
     _size: State[int]
 
     init: Annotated[
-        Init,
-        lambda self: (
-            self._buf == (None,) * self.capacity and self._head == 0 and self._size == 0
+        bool,
+        Init(
+            lambda s: (
+                s._buf == (None,) * s.capacity and s._head == 0 and s._size == 0
+            )
         ),
     ]
     shape_ok: Annotated[
-        Invariant,
-        lambda self: (
-            len(self._buf) == self.capacity
-            and 0 <= self._head < self.capacity
-            and 0 <= self._size <= self.capacity
+        bool,
+        Invariant(
+            lambda s: (
+                len(s._buf) == s.capacity
+                and 0 <= s._head < s.capacity
+                and 0 <= s._size <= s.capacity
+            )
         ),
     ]
 
@@ -93,8 +100,9 @@ class RingBuffer(Generic[T]):
         return self._size
 
     def push(self, item: T) -> Annotated[
-        Action[None],
-        Requires(lambda self, item: self._size < self.capacity),
+        None,
+        Requires(lambda s, item: s._size < s.capacity),
+        Action(),
         Modifies("_buf", "_size"),
     ]:
         tail = (self._head + self._size) % self.capacity
@@ -104,8 +112,9 @@ class RingBuffer(Generic[T]):
         self._size += 1
 
     def pop(self) -> Annotated[
-        Action[T],
-        Requires(lambda self: self._size > 0),
+        T,
+        Requires(lambda s: s._size > 0),
+        Action(),
         Modifies("_buf", "_head", "_size"),
         WeakFairness(),
     ]:

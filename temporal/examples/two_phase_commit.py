@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 from temporal import (
     Action,
     Assume,
-    Const,
+    Constant,
     Fairness,
     Init,
     Invariant,
@@ -32,114 +32,134 @@ class RM(ModelValue):
     """Uninterpreted resource manager identifier."""
 
 
-class TwoPhaseCommit:
-    rms: Const[frozenset[RM]]
+class TwoPhaseCommit(Protocol):
+    rms: Constant[frozenset[RM]]
     rm_state: State[dict[RM, RMState]]
     tm_state: State[TMState]
     tm_prepared: State[frozenset[RM]]
 
-    non_empty_rms: Annotated[Assume, lambda self: len(self.rms) > 0]
+    non_empty_rms: Annotated[bool, Assume(lambda s: len(s.rms) > 0)]
     init: Annotated[
-        Init,
-        lambda self: (
-            self.rm_state == {r: "working" for r in self.rms}
-            and self.tm_state == "init"
-            and self.tm_prepared == frozenset()
+        bool,
+        Init(
+            lambda s: (
+                s.rm_state == {r: "working" for r in s.rms}
+                and s.tm_state == "init"
+                and s.tm_prepared == frozenset()
+            )
         ),
     ]
     consistent: Annotated[
-        Invariant,
-        lambda self: all(
-            not (self.rm_state[r1] == "committed" and self.rm_state[r2] == "aborted")
-            for r1 in self.rms
-            for r2 in self.rms
+        bool,
+        Invariant(
+            lambda s: all(
+                not (s.rm_state[r1] == "committed" and s.rm_state[r2] == "aborted")
+                for r1 in s.rms
+                for r2 in s.rms
+            )
         ),
     ]
     commit_requires_all_prepared: Annotated[
-        Invariant,
-        lambda self: implies(
-            self.tm_state == "committed",
-            all(self.rm_state[r] in ("prepared", "committed") for r in self.rms),
+        bool,
+        Invariant(
+            lambda s: implies(
+                s.tm_state == "committed",
+                all(s.rm_state[r] in ("prepared", "committed") for r in s.rms),
+            )
         ),
     ]
     fair: Annotated[
-        Fairness,
-        lambda self: (
-            weak_fairness(self.tm_commit())
-            and all(
-                weak_fairness(self.rm_rcv_commit(r))
-                and weak_fairness(self.rm_rcv_abort(r))
-                for r in self.rms
+        bool,
+        Fairness(
+            lambda s: (
+                weak_fairness(s.tm_commit())
+                and all(
+                    weak_fairness(s.rm_rcv_commit(r))
+                    and weak_fairness(s.rm_rcv_abort(r))
+                    for r in s.rms
+                )
             )
         ),
     ]
     decision_propagates: Annotated[
-        Property,
-        lambda self: implies(
-            self.tm_state == "committed",
-            eventually(all(self.rm_state[r] == "committed" for r in self.rms)),
+        bool,
+        Property(
+            lambda s: implies(
+                s.tm_state == "committed",
+                eventually(all(s.rm_state[r] == "committed" for r in s.rms)),
+            )
         ),
     ]
 
     def rm_prepare(self, r: RM) -> Annotated[
-        Action[bool],
-        Requires(lambda self, r: r in self.rms and self.rm_state[r] == "working"),
-    ]:
-        return (
-            prime(self.rm_state) == {**self.rm_state, r: "prepared"}
-            and unchanged(self.tm_state, self.tm_prepared)
-        )
-
-    def tm_rcv_prepared(self, r: RM) -> Annotated[
-        Action[bool],
-        Requires(
-            lambda self, r: (
-                r in self.rms
-                and self.tm_state == "init"
-                and self.rm_state[r] == "prepared"
+        bool,
+        Requires(lambda s, r: r in s.rms and s.rm_state[r] == "working"),
+        Action(
+            lambda s, r: (
+                prime(s.rm_state) == {**s.rm_state, r: "prepared"}
+                and unchanged(s.tm_state, s.tm_prepared)
             )
         ),
-    ]:
-        return (
-            prime(self.tm_prepared) == (self.tm_prepared | {r})
-            and unchanged(self.rm_state, self.tm_state)
-        )
+    ]: ...
+
+    def tm_rcv_prepared(self, r: RM) -> Annotated[
+        bool,
+        Requires(
+            lambda s, r: (
+                r in s.rms and s.tm_state == "init" and s.rm_state[r] == "prepared"
+            )
+        ),
+        Action(
+            lambda s, r: (
+                prime(s.tm_prepared) == (s.tm_prepared | {r})
+                and unchanged(s.rm_state, s.tm_state)
+            )
+        ),
+    ]: ...
 
     def tm_commit(self) -> Annotated[
-        Action[bool],
-        Requires(lambda self: self.tm_state == "init" and self.tm_prepared == self.rms),
-    ]:
-        return (
-            prime(self.tm_state) == "committed"
-            and unchanged(self.rm_state, self.tm_prepared)
-        )
+        bool,
+        Requires(lambda s: s.tm_state == "init" and s.tm_prepared == s.rms),
+        Action(
+            lambda s: (
+                prime(s.tm_state) == "committed"
+                and unchanged(s.rm_state, s.tm_prepared)
+            )
+        ),
+    ]: ...
 
     def tm_abort(self) -> Annotated[
-        Action[bool],
-        Requires(lambda self: self.tm_state == "init"),
-    ]:
-        return (
-            prime(self.tm_state) == "aborted"
-            and unchanged(self.rm_state, self.tm_prepared)
-        )
+        bool,
+        Requires(lambda s: s.tm_state == "init"),
+        Action(
+            lambda s: (
+                prime(s.tm_state) == "aborted"
+                and unchanged(s.rm_state, s.tm_prepared)
+            )
+        ),
+    ]: ...
 
     def rm_rcv_commit(self, r: RM) -> Annotated[
-        Action[bool],
-        Requires(lambda self, r: r in self.rms and self.tm_state == "committed"),
-    ]:
-        return (
-            prime(self.rm_state) == {**self.rm_state, r: "committed"}
-            and unchanged(self.tm_state, self.tm_prepared)
-        )
+        bool,
+        Requires(lambda s, r: r in s.rms and s.tm_state == "committed"),
+        Action(
+            lambda s, r: (
+                prime(s.rm_state) == {**s.rm_state, r: "committed"}
+                and unchanged(s.tm_state, s.tm_prepared)
+            )
+        ),
+    ]: ...
 
     def rm_rcv_abort(self, r: RM) -> Annotated[
-        Action[bool],
-        Requires(lambda self, r: r in self.rms and self.tm_state == "aborted"),
-    ]:
-        return (
-            prime(self.rm_state) == {**self.rm_state, r: "aborted"}
-            and unchanged(self.tm_state, self.tm_prepared)
-        )
+        bool,
+        Requires(lambda s, r: r in s.rms and s.tm_state == "aborted"),
+        Action(
+            lambda s, r: (
+                prime(s.rm_state) == {**s.rm_state, r: "aborted"}
+                and unchanged(s.tm_state, s.tm_prepared)
+            )
+        ),
+    ]: ...
 
 
 RMS = Symmetry({RM("r1"), RM("r2"), RM("r3")})

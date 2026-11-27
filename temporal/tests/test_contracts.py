@@ -1,4 +1,4 @@
-"""Tests for contract, framing, fairness, and refinement clauses."""
+"""Tests for specification, contract, framing, fairness, and refinement clauses."""
 
 from __future__ import annotations
 
@@ -9,8 +9,16 @@ import unittest
 from typing import Any
 
 from temporal import (
+    Action,
+    ActionInvariant,
+    Assume,
     Ensures,
+    Fairness,
+    Init,
+    Invariant,
     Modifies,
+    Preserves,
+    Property,
     Refines,
     Requires,
     StrongFairness,
@@ -24,9 +32,40 @@ def _boom(*args: Any, **kwargs: Any) -> bool:
     raise AssertionError("Predicate must never be executed by Temporal")
 
 
+class TestOptionalPredicateClauses(unittest.TestCase):
+    def test_system_clauses(self) -> None:
+        clauses = (Assume, Init, Action, Invariant, ActionInvariant, Property, Fairness)
+        for cls in clauses:
+            bare = cls()
+            self.assertIsNone(bare.predicate)
+            self.assertIsNone(bare.description)
+            self.assertEqual(repr(bare), f"{cls.__name__}()")
+
+            desc_only = cls(description="label")
+            self.assertIsNone(desc_only.predicate)
+            self.assertEqual(repr(desc_only), f"{cls.__name__}(description='label')")
+
+            pred_only = cls(_boom)
+            self.assertIs(pred_only.predicate, _boom)
+            self.assertEqual(repr(pred_only), f"{cls.__name__}({_boom!r})")
+
+            full = cls(_boom, "must not run")
+            self.assertEqual(full, cls(_boom, "must not run"))
+            self.assertEqual(hash(full), hash(cls(_boom, "must not run")))
+            self.assertEqual(repr(full), f"{cls.__name__}({_boom!r}, 'must not run')")
+            self.assertEqual(pickle.loads(pickle.dumps(full)), full)
+            self.assertEqual(copy.deepcopy(full), full)
+
+            with self.assertRaises(dataclasses.FrozenInstanceError):
+                full.description = "mutated"  # type: ignore[misc]
+
+        self.assertNotEqual(Init(_boom), Invariant(_boom))
+        self.assertNotEqual(Action(), Init())
+
+
 class TestPredicateClauses(unittest.TestCase):
-    def test_where_requires_ensures(self) -> None:
-        for cls in (Where, Requires, Ensures):
+    def test_where_requires_ensures_preserves(self) -> None:
+        for cls in (Where, Requires, Ensures, Preserves):
             clause = cls(_boom, "must not run")
             self.assertIs(clause.predicate, _boom)
             self.assertEqual(clause.description, "must not run")
@@ -46,6 +85,7 @@ class TestPredicateClauses(unittest.TestCase):
 
         self.assertNotEqual(Where(_boom), Requires(_boom))
         self.assertNotEqual(Requires(_boom), Ensures(_boom))
+        self.assertNotEqual(Ensures(_boom), Preserves(_boom))
 
 
 class TestVariableClauses(unittest.TestCase):

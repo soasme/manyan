@@ -9,7 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Annotated, get_args, get_origin, get_type_hints
 
-from temporal import Role
+from temporal import Action, Fairness, Init, Invariant, Property, Role
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
@@ -29,10 +29,10 @@ class TestExamples(unittest.TestCase):
         mod = _load_example("die_hard")
         hints = get_type_hints(mod.DieHardSpec, include_extras=True)
         self.assertIs(get_args(hints["small"])[1], Role.STATE)
-        self.assertIs(get_args(hints["init"])[1], Role.INIT)
-        self.assertIs(get_args(hints["not_solved"])[1], Role.INVARIANT)
+        self.assertIsInstance(get_args(hints["init"])[1], Init)
+        self.assertIsInstance(get_args(hints["fill_small"])[1], Action)
+        self.assertIsInstance(get_args(hints["not_solved"])[1], Invariant)
 
-        # Executable implementation runs natively in Python.
         jugs = mod.DieHard()
         jugs.fill_big()
         jugs.pour_big_to_small()
@@ -54,8 +54,8 @@ class TestExamples(unittest.TestCase):
     def test_bounded_queue_and_ring_buffer(self) -> None:
         mod = _load_example("bounded_queue")
         hints = get_type_hints(mod.BoundedQueue, include_extras=True)
-        self.assertIs(get_args(hints["bounded"])[1], Role.INVARIANT)
-        self.assertIs(get_args(hints["eventually_drained"])[1], Role.PROPERTY)
+        self.assertIsInstance(get_args(hints["bounded"])[1], Invariant)
+        self.assertIsInstance(get_args(hints["eventually_drained"])[1], Property)
 
         rb = mod.RingBuffer(capacity=3)
         rb.push("a")
@@ -70,17 +70,30 @@ class TestExamples(unittest.TestCase):
     def test_mutex(self) -> None:
         mod = _load_example("mutex")
         hints = get_type_hints(mod.Mutex, include_extras=True)
-        self.assertIs(get_args(hints["procs"])[1], Role.CONST)
-        self.assertIs(get_args(hints["fair"])[1], Role.FAIRNESS)
-        self.assertIs(get_args(hints["starvation_free"])[1], Role.PROPERTY)
+        self.assertIs(get_args(hints["procs"])[1], Role.CONSTANT)
+        self.assertIsInstance(get_args(hints["fair"])[1], Fairness)
+        self.assertIsInstance(get_args(hints["starvation_free"])[1], Property)
         self.assertIs(mod.mutex_model.spec, mod.Mutex)
 
     def test_two_phase_commit(self) -> None:
         mod = _load_example("two_phase_commit")
         hints = get_type_hints(mod.TwoPhaseCommit, include_extras=True)
-        self.assertIs(get_args(hints["consistent"])[1], Role.INVARIANT)
-        self.assertIs(get_args(hints["decision_propagates"])[1], Role.PROPERTY)
+        self.assertIsInstance(get_args(hints["consistent"])[1], Invariant)
+        self.assertIsInstance(get_args(hints["decision_propagates"])[1], Property)
         self.assertFalse(mod.two_phase_model.check_deadlock)
+
+    def test_semaphore(self) -> None:
+        mod = _load_example("semaphore")
+        hints = get_type_hints(mod.Semaphore, include_extras=True)
+        self.assertIs(get_args(hints["capacity"])[1], Role.CONSTANT)
+        self.assertIsInstance(get_args(hints["bounded"])[1], Invariant)
+        self.assertIsInstance(get_args(hints["progress"])[1], Property)
+
+        sem = mod.Semaphore(capacity=2)
+        self.assertTrue(sem.acquire())
+        self.assertEqual(sem.available, 1)
+        sem.release()
+        self.assertEqual(sem.available, 2)
 
     def test_pure_contracts(self) -> None:
         mod = _load_example("contracts")
@@ -89,7 +102,9 @@ class TestExamples(unittest.TestCase):
             self.assertIs(get_origin(ret), Annotated)
             self.assertIn(Role.PURE, get_args(ret))
 
-        self.assertEqual([mod.integer_sqrt(n) for n in range(10)], [0, 1, 1, 1, 2, 2, 2, 2, 2, 3])
+        self.assertEqual(
+            [mod.integer_sqrt(n) for n in range(10)], [0, 1, 1, 1, 2, 2, 2, 2, 2, 3]
+        )
         self.assertEqual(mod.binary_search((1, 3, 5, 7, 9), 7), 3)
         self.assertIsNone(mod.binary_search((1, 3, 5, 7, 9), 4))
         self.assertEqual(mod.clamp(-5, 0, 10), 0)

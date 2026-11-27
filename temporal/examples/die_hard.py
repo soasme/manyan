@@ -18,27 +18,20 @@ class DieHardSpec:
     small: State[int]
     big: State[int]
 
-    init: Annotated[Init, lambda self: self.small == 0 and self.big == 0]
-    type_ok: Annotated[Invariant, lambda self: 0 <= self.small <= 3 and 0 <= self.big <= 5]
-    not_solved: Annotated[Invariant, lambda self: self.big != 4]
+    init: Annotated[bool, Init(lambda s: s.small == 0 and s.big == 0)]
+    type_ok: Annotated[bool, Invariant(lambda s: 0 <= s.small <= 3 and 0 <= s.big <= 5)]
+    not_solved: Annotated[bool, Invariant(lambda s: s.big != 4)]
 
-    def fill_small(self) -> Action[bool]:
-        return prime(self.small) == 3 and unchanged(self.big)
+    fill_small: Annotated[bool, Action(lambda s: prime(s.small) == 3 and unchanged(s.big))]
+    fill_big: Annotated[bool, Action(lambda s: prime(s.big) == 5 and unchanged(s.small))]
+    empty_small: Annotated[bool, Action(lambda s: prime(s.small) == 0 and unchanged(s.big))]
+    empty_big: Annotated[bool, Action(lambda s: prime(s.big) == 0 and unchanged(s.small))]
 
-    def fill_big(self) -> Action[bool]:
-        return prime(self.big) == 5 and unchanged(self.small)
-
-    def empty_small(self) -> Action[bool]:
-        return prime(self.small) == 0 and unchanged(self.big)
-
-    def empty_big(self) -> Action[bool]:
-        return prime(self.big) == 0 and unchanged(self.small)
-
-    def pour_small_to_big(self) -> Action[bool]:
+    def pour_small_to_big(self) -> Annotated[bool, Action()]:
         poured = min(self.small, 5 - self.big)
         return prime(self.small) == self.small - poured and prime(self.big) == self.big + poured
 
-    def pour_big_to_small(self) -> Action[bool]:
+    def pour_big_to_small(self) -> Annotated[bool, Action()]:
         poured = min(self.big, 3 - self.small)
         return prime(self.big) == self.big - poured and prime(self.small) == self.small + poured
 
@@ -50,30 +43,30 @@ class DieHard:
     small: State[int] = 0
     big: State[int] = 0
 
-    init: ClassVar[Annotated[Init, lambda self: self.small == 0 and self.big == 0]]
+    init: ClassVar[Annotated[bool, Init(lambda s: s.small == 0 and s.big == 0)]]
     type_ok: ClassVar[
-        Annotated[Invariant, lambda self: 0 <= self.small <= 3 and 0 <= self.big <= 5]
+        Annotated[bool, Invariant(lambda s: 0 <= s.small <= 3 and 0 <= s.big <= 5)]
     ]
-    not_solved: ClassVar[Annotated[Invariant, lambda self: self.big != 4]]
+    not_solved: ClassVar[Annotated[bool, Invariant(lambda s: s.big != 4)]]
 
-    def fill_small(self) -> Action[None]:
+    def fill_small(self) -> Annotated[None, Action()]:
         self.small = 3
 
-    def fill_big(self) -> Action[None]:
+    def fill_big(self) -> Annotated[None, Action()]:
         self.big = 5
 
-    def empty_small(self) -> Action[None]:
+    def empty_small(self) -> Annotated[None, Action()]:
         self.small = 0
 
-    def empty_big(self) -> Action[None]:
+    def empty_big(self) -> Annotated[None, Action()]:
         self.big = 0
 
-    def pour_small_to_big(self) -> Action[None]:
+    def pour_small_to_big(self) -> Annotated[None, Action()]:
         poured = min(self.small, 5 - self.big)
         self.small -= poured
         self.big += poured
 
-    def pour_big_to_small(self) -> Action[None]:
+    def pour_big_to_small(self) -> Annotated[None, Action()]:
         poured = min(self.big, 3 - self.small)
         self.big -= poured
         self.small += poured

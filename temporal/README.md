@@ -30,8 +30,8 @@ performed externally by tools such as [Manyan](https://github.com/soasme/manyan)
 from dataclasses import dataclass
 from typing import Annotated, ClassVar
 from temporal import (
-    Action, ActionInvariant, Const, Ensures, Ghost, Init, Invariant,
-    Model, Modifies, Requires, State, Where, old, prime,
+    Action, ActionInvariant, Constant, Domain, Ensures, Ghost, Init, Invariant,
+    Model, Modifies, Preserves, Requires, State, Where, prime,
 )
 
 Positive = Annotated[int, Where(lambda x: x > 0)]
@@ -39,38 +39,43 @@ Positive = Annotated[int, Where(lambda x: x > 0)]
 
 @dataclass
 class BankAccount:
-    owner: Const[str]
+    owner: Constant[str]
     balance: State[int] = 0
     ledger: Ghost[tuple[int, ...]] = ()
 
-    init: ClassVar[Annotated[Init, lambda self: self.balance == 0 and self.ledger == ()]]
-    non_negative: ClassVar[Annotated[Invariant, lambda self: self.balance >= 0]]
+    init: ClassVar[Annotated[bool, Init(lambda s: s.balance == 0 and s.ledger == ())]]
+    non_negative: ClassVar[Annotated[bool, Invariant(lambda s: s.balance >= 0)]]
     ledger_append_only: ClassVar[
-        Annotated[ActionInvariant, lambda self: len(prime(self.ledger)) >= len(self.ledger)]
+        Annotated[bool, ActionInvariant(lambda s: len(prime(s.ledger)) >= len(s.ledger))]
     ]
 
     def deposit(self, amount: Positive) -> Annotated[
-        Action[None],
-        Ensures(lambda self, amount: self.balance == old(self.balance) + amount),
+        None,
+        Action(lambda s, amount: prime(s.balance) == s.balance + amount),
+        Preserves(lambda s: s.balance >= 0),
         Modifies("balance", "ledger"),
     ]:
         self.balance += amount
 
     def withdraw(self, amount: Positive) -> Annotated[
-        Action[Positive],
-        Requires(lambda self, amount: amount <= self.balance),
-        Ensures(
-            lambda self, amount, result: (
-                self.balance == old(self.balance) - amount and result == amount
-            )
-        ),
+        Positive,
+        Requires(lambda s, amount: amount <= s.balance),
+        Action(lambda s, amount: prime(s.balance) == s.balance - amount),
+        Ensures(lambda s, amount, result: result == amount),
         Modifies("balance", "ledger"),
     ]:
         self.balance -= amount
         return amount
 
 
-model = Model(BankAccount, constants={"owner": "alice"}, domains={int: range(1, 5)})
+model = Model(
+    BankAccount,
+    constants={"owner": "alice"},
+    domains={
+        "deposit.amount": Domain.range(1, 5),
+        "withdraw.amount": Domain.range(1, 5),
+    },
+)
 ```
 
 Annotated classes remain ordinary Python:
@@ -78,14 +83,14 @@ Annotated classes remain ordinary Python:
 - They execute natively with zero runtime overhead or predicate evaluation.
 - Specifications live at the signature level without polluting runtime attributes or methods.
 - They work with `@dataclass`, `Protocol`, `Generic`, inheritance, and `from __future__ import annotations`.
-- They pass `mypy --strict` and `Pyright` because every declaration annotation (`State[T]`, `Const[T]`, `Action[T]`, `Invariant`, ...) is a PEP 593 `Annotated` alias over its underlying Python type.
+- They pass `mypy --strict` and `Pyright` because every declaration uses standard PEP 593 `Annotated` metadata over ordinary Python types.
 
-### Behavioural protocol with fairness and liveness
+### Pure signature-level protocol with fairness and liveness
 
 ```python
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Protocol
 from temporal import (
-    Action, Assume, Const, Fairness, Init, Invariant, Model, ModelValue,
+    Action, Assume, Constant, Fairness, Init, Invariant, Model, ModelValue,
     Property, Requires, State, Symmetry, leads_to, prime, strong_fairness,
     unchanged, weak_fairness,
 )
@@ -95,42 +100,44 @@ class Proc(ModelValue):
     pass
 
 
-class Mutex:
-    procs: Const[frozenset[Proc]]
+class Mutex(Protocol):
+    procs: Constant[frozenset[Proc]]
     holder: State[Optional[Proc]]
     waiting: State[frozenset[Proc]]
 
-    non_empty: Annotated[Assume, lambda self: len(self.procs) > 0]
-    init: Annotated[Init, lambda self: self.holder is None and self.waiting == frozenset()]
+    non_empty: Annotated[bool, Assume(lambda s: len(s.procs) > 0)]
+    init: Annotated[bool, Init(lambda s: s.holder is None and s.waiting == frozenset())]
     fair: Annotated[
-        Fairness,
-        lambda self: all(
-            strong_fairness(self.acquire(p)) and weak_fairness(self.release(p))
-            for p in self.procs
+        bool,
+        Fairness(
+            lambda s: all(
+                strong_fairness(s.acquire(p)) and weak_fairness(s.release(p))
+                for p in s.procs
+            )
         ),
     ]
     starvation_free: Annotated[
-        Property,
-        lambda self: all(leads_to(p in self.waiting, self.holder == p) for p in self.procs),
+        bool,
+        Property(lambda s: all(leads_to(p in s.waiting, s.holder == p) for p in s.procs)),
     ]
 
     def request(self, p: Proc) -> Annotated[
-        Action[bool],
-        Requires(lambda self, p: p in self.procs and p not in self.waiting and self.holder != p),
-    ]:
-        return prime(self.waiting) == (self.waiting | {p}) and unchanged(self.holder)
+        bool,
+        Requires(lambda s, p: p in s.procs and p not in s.waiting and s.holder != p),
+        Action(lambda s, p: prime(s.waiting) == (s.waiting | {p}) and unchanged(s.holder)),
+    ]: ...
 
     def acquire(self, p: Proc) -> Annotated[
-        Action[bool],
-        Requires(lambda self, p: p in self.waiting and self.holder is None),
-    ]:
-        return prime(self.holder) == p and prime(self.waiting) == (self.waiting - {p})
+        bool,
+        Requires(lambda s, p: p in s.waiting and s.holder is None),
+        Action(lambda s, p: prime(s.holder) == p and prime(s.waiting) == (s.waiting - {p})),
+    ]: ...
 
     def release(self, p: Proc) -> Annotated[
-        Action[bool],
-        Requires(lambda self, p: self.holder == p),
-    ]:
-        return prime(self.holder) is None and unchanged(self.waiting)
+        bool,
+        Requires(lambda s, p: s.holder == p),
+        Action(lambda s, p: prime(s.holder) is None and unchanged(s.waiting)),
+    ]: ...
 
 
 PROCS = Symmetry({Proc("p1"), Proc("p2"), Proc("p3")})
@@ -139,34 +146,39 @@ mutex_model = Model(Mutex, constants={"procs": PROCS}, domains={Proc: PROCS})
 
 ## API overview
 
-### Declaration annotations (TLA⁺'s four levels)
-
-Every declaration alias carries a `Role` marker inside `typing.Annotated`:
+### Value-level type qualifiers (PEP 593 `Annotated` aliases)
 
 | Annotation | Underlying type | TLA⁺ level | Meaning |
 | --- | --- | --- | --- |
-| `Const[T]` | `T` | Constant (0) | `CONSTANT` — fixed across a behavior |
-| `Assume` | `bool` | Constant (0) | `ASSUME` — constant assumption |
+| `Constant[T]` | `T` | Constant (0) | `CONSTANT` — fixed across a behavior |
 | `State[T]` | `T` | State (1) | `VARIABLE` — mutable state variable |
 | `Ghost[T]` | `T` | State (1) | Auxiliary specification-only variable |
-| `Init` | `bool` | State (1) | Initial state predicate |
 | `Pure[T]` | `T` | Constant/State (0–1) | Pure side-effect-free operator |
-| `Invariant` | `bool` | State (1) | State invariant (`[]I`) |
-| `Action[T]` | `T` | Action (2) | Atomic state transition (`Next` disjunct) |
-| `ActionInvariant` | `bool` | Action (2) | Two-state action invariant (`[][A]_v`) |
-| `Property` | `bool` | Temporal (3) | Temporal property (`PROPERTY`) |
-| `Fairness` | `bool` | Temporal (3) | Fairness conjunct (`WF` / `SF`) |
 
-### Contract, framing, fairness, and refinement clauses
+### Specification, contract, framing, fairness, and refinement clauses
 
-- `Where(predicate, description=None)` — refinement predicate `{x \in T : P(x)}`
-- `Requires(predicate, description=None)` — function/action precondition or guard
-- `Ensures(predicate, description=None)` — function/action postcondition
-- `Modifies(*variables)` — frame clause: only listed state variables may change
-- `Unchanged(*variables)` — frame clause: listed state variables are `UNCHANGED`
-- `WeakFairness(*variables)` — weak fairness metadata on an action (`WF_v(A)`)
-- `StrongFairness(*variables)` — strong fairness metadata on an action (`SF_v(A)`)
-- `Refines[Spec]` — refinement mapping to an abstract specification (`INSTANCE ... WITH`)
+All clauses are frozen metadata dataclasses used inside `Annotated[...]`:
+
+- **System declarations** (optional `predicate` — inline or bound to the annotated method body):
+  - `Assume(predicate=None, description=None)` — constant assumption (`ASSUME`)
+  - `Init(predicate=None, description=None)` — initial-state predicate (`Init`)
+  - `Action(predicate=None, description=None)` — atomic state transition (`Next` disjunct)
+  - `Invariant(predicate=None, description=None)` — state invariant (`[]I`)
+  - `ActionInvariant(predicate=None, description=None)` — two-state action invariant (`[][A]_v`)
+  - `Property(predicate=None, description=None)` — temporal property (`PROPERTY`)
+  - `Fairness(predicate=None, description=None)` — fairness assumption (`WF` / `SF`)
+- **Contract clauses**:
+  - `Where(predicate, description=None)` — refinement type `{x \in T : P(x)}`
+  - `Requires(predicate, description=None)` — precondition / action guard
+  - `Ensures(predicate, description=None)` — postcondition
+  - `Preserves(predicate, description=None)` — inductive preservation (`P(s) => P(s')`)
+- **Framing and action fairness**:
+  - `Modifies(*variables)` — only listed state variables may change
+  - `Unchanged(*variables)` — listed state variables remain `UNCHANGED`
+  - `WeakFairness(*variables)` — weak fairness on the annotated action (`WF_v(A)`)
+  - `StrongFairness(*variables)` — strong fairness on the annotated action (`SF_v(A)`)
+- **Refinement**:
+  - `Refines[Spec](**mapping)` — refinement mapping (`INSTANCE Spec WITH ...`)
 
 ### Expression primitives (passive TLA⁺ stubs)
 
@@ -180,13 +192,14 @@ All expression primitives are purely declarative and raise `NotImplementedError`
 
 - `ModelValue(name)` — uninterpreted TLA⁺ model value (subclass for disjoint sorts)
 - `Symmetry(iterable)` — `frozenset` subclass marking a `SYMMETRY` set
+- `Domain` — finite domains (`Domain.range(start, stop)` inclusive, `Domain.values(...)`, `Domain.boolean()`)
 - `Model(spec, *, constants=..., domains=..., ...)` — frozen `.cfg` declaration
 
 ## Documentation and examples
 
 - [Specification Semantics](docs/semantics.md) — formal TLA⁺ semantics of every declaration, contract clause, refinement, expression mapping, and model configuration.
 - [User Guide](docs/guide.md) — practical patterns for signature-level specs, contracts, protocols, refinement, and models.
-- [Examples](examples/) — `die_hard.py`, `bank_account.py`, `bounded_queue.py`, `mutex.py`, `two_phase_commit.py`, `contracts.py`.
+- [Examples](examples/) — `die_hard.py`, `bank_account.py`, `bounded_queue.py`, `mutex.py`, `two_phase_commit.py`, `semaphore.py`, `contracts.py`.
 
 ## License
 

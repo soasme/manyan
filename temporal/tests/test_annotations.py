@@ -21,15 +21,11 @@ from typing import (
 import temporal
 from temporal import (
     Action,
-    ActionInvariant,
-    Assume,
-    Const,
+    Constant,
     Ensures,
-    Fairness,
     Ghost,
     Init,
     Invariant,
-    Property,
     Pure,
     Requires,
     Role,
@@ -44,17 +40,10 @@ Positive = Annotated[int, Where(lambda x: x > 0)]
 class TestDeclarationAnnotations(unittest.TestCase):
     def test_all_roles_covered(self) -> None:
         role_map = {
-            Role.CONST: (Const[int], int),
+            Role.CONSTANT: (Constant[int], int),
             Role.STATE: (State[int], int),
             Role.GHOST: (Ghost[tuple[int, ...]], tuple[int, ...]),
-            Role.ASSUME: (Assume, bool),
-            Role.INIT: (Init, bool),
             Role.PURE: (Pure[float], float),
-            Role.ACTION: (Action[None], type(None)),
-            Role.INVARIANT: (Invariant, bool),
-            Role.ACTION_INVARIANT: (ActionInvariant, bool),
-            Role.PROPERTY: (Property, bool),
-            Role.FAIRNESS: (Fairness, bool),
         }
         self.assertEqual(set(role_map), set(Role))
         for role, (ann, underlying) in role_map.items():
@@ -64,16 +53,21 @@ class TestDeclarationAnnotations(unittest.TestCase):
             self.assertIs(args[1], role)
             self.assertEqual(repr(role), f"Role.{role.name}")
 
-    def test_annotated_flattening(self) -> None:
-        req = Requires(lambda self, x: x > 0)
-        ens = Ensures(lambda self, x, result: result == x)
-        combined = Annotated[Action[int], req, ens]
+    def test_annotated_flattening_and_external_composition(self) -> None:
+        req = Requires(lambda s, x: x > 0)
+        act = Action(lambda s, x: True)
+        ens = Ensures(lambda s, x, result: result == x)
+        combined = Annotated[int, req, act, ens]
         self.assertIs(get_origin(combined), Annotated)
-        self.assertEqual(get_args(combined), (int, Role.ACTION, req, ens))
+        self.assertEqual(get_args(combined), (int, req, act, ens))
 
-        inv_pred = lambda self: True
-        inv_ann = Annotated[Invariant, inv_pred]
-        self.assertEqual(get_args(inv_ann), (bool, Role.INVARIANT, inv_pred))
+        class Account:
+            balance: State[int] = 0
+
+        init = Init(lambda s: s.balance == 0)
+        inv = Invariant(lambda s: s.balance >= 0)
+        safe_account = Annotated[Account, init, inv]
+        self.assertEqual(get_args(safe_account), (Account, init, inv))
 
     def test_composed_refined_type_alias(self) -> None:
         state_pos = State[Positive]
@@ -85,19 +79,23 @@ class TestDeclarationAnnotations(unittest.TestCase):
     def test_dataclass_and_signature_level_annotations(self) -> None:
         @dataclasses.dataclass
         class Jugs:
-            capacity: Const[int]
+            capacity: Constant[int]
             level: State[int] = 0
             moves: Ghost[int] = 0
 
-            bounded: ClassVar[Annotated[Invariant, lambda self: 0 <= self.level <= self.capacity]]
+            bounded: ClassVar[
+                Annotated[bool, Invariant(lambda s: 0 <= s.level <= s.capacity)]
+            ]
 
         j = Jugs(capacity=5)
         self.assertEqual(dataclasses.asdict(j), {"capacity": 5, "level": 0, "moves": 0})
-        self.assertEqual([f.name for f in dataclasses.fields(Jugs)], ["capacity", "level", "moves"])
+        self.assertEqual(
+            [f.name for f in dataclasses.fields(Jugs)], ["capacity", "level", "moves"]
+        )
         self.assertFalse(hasattr(j, "bounded"))
 
         hints = get_type_hints(Jugs, localns=locals(), include_extras=True)
-        self.assertIs(get_args(hints["capacity"])[1], Role.CONST)
+        self.assertIs(get_args(hints["capacity"])[1], Role.CONSTANT)
         self.assertIs(get_args(hints["level"])[1], Role.STATE)
         self.assertIs(get_args(hints["moves"])[1], Role.GHOST)
         self.assertIs(get_origin(hints["bounded"]), ClassVar)
