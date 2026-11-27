@@ -136,7 +136,7 @@ class TestModel(unittest.TestCase):
         raw_domains = {
             Proc: procs,
             Msg: msgs,
-            int: range(0, 5),
+            int: range(5),
             str: {"a", "b"},
             "extra": [1, 2, 3],
         }
@@ -153,7 +153,7 @@ class TestModel(unittest.TestCase):
         raw_constants["limit"] = 999
         self.assertEqual(m.constants["limit"], 3)
         self.assertIs(m.domains[Proc], procs)
-        self.assertEqual(m.domains[int], range(0, 5))
+        self.assertEqual(m.domains[int], range(5))
         self.assertEqual(m.domains[str], frozenset({"a", "b"}))
         self.assertEqual(m.domains["extra"], (1, 2, 3))
         self.assertEqual(m.actions, (DummySpec.step,))

@@ -10,6 +10,7 @@ from typing import (
     Generic,
     Optional,
     TypeVar,
+    cast,
     get_origin,
     overload,
 )
@@ -22,6 +23,14 @@ _EMPTY_MAPPING: Mapping[Any, Any] = MappingProxyType({})
 
 def _empty_mapping() -> Mapping[Any, Any]:
     return _EMPTY_MAPPING
+
+
+def _check_name(name: object) -> str:
+    if not isinstance(name, str):
+        raise TypeError(f"ModelValue name must be str, got {type(name).__name__}")
+    if not name or not name.strip():
+        raise ValueError("ModelValue name must be a non-empty string")
+    return name
 
 
 class ModelValue:
@@ -42,11 +51,7 @@ class ModelValue:
     _name: str
 
     def __init__(self, name: str) -> None:
-        if not isinstance(name, str):
-            raise TypeError(f"ModelValue name must be str, got {type(name).__name__}")
-        if not name or not name.strip():
-            raise ValueError("ModelValue name must be a non-empty string")
-        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_name", _check_name(name))
 
     @property
     def name(self) -> str:
@@ -100,27 +105,27 @@ def _is_valid_spec(spec: Any) -> bool:
     return isinstance(get_origin(spec), type)
 
 
-def _freeze_domain(domain: Any) -> Any:
+def _freeze_domain(domain: object) -> Any:
     if isinstance(domain, (Symmetry, frozenset, tuple, range)):
-        return domain
+        return cast(object, domain)
     if isinstance(domain, set):
-        return frozenset(domain)
+        return frozenset(cast("set[object]", domain))
     if isinstance(domain, Iterable) and not isinstance(domain, (str, bytes)):
-        return tuple(domain)
+        return tuple(cast("Iterable[object]", domain))
     raise TypeError(
         f"Model domain must be a finite iterable (not str/bytes), got {type(domain).__name__}"
     )
 
 
 def _freeze_callables(
-    name: str, items: Optional[Iterable[Callable[..., Any]]]
+    name: str, items: object
 ) -> Optional[tuple[Callable[..., Any], ...]]:
     if items is None:
         return None
     if isinstance(items, (str, bytes)) or not isinstance(items, Iterable):
         raise TypeError(f"Model {name} must be an iterable of callables or None")
     result: list[Callable[..., Any]] = []
-    for item in items:
+    for item in cast("Iterable[object]", items):
         if not callable(item):
             raise TypeError(
                 f"Model {name} entries must be callable, got {type(item).__name__}"
@@ -129,7 +134,54 @@ def _freeze_callables(
     return tuple(result)
 
 
-def _check_optional_callable(name: str, fn: Any) -> None:
+def _freeze_constants(constants: object) -> Mapping[str, Any]:
+    if not isinstance(constants, Mapping):
+        raise TypeError(
+            f"Model constants must be a mapping, got {type(constants).__name__}"
+        )
+    checked: dict[str, Any] = {}
+    for key, value in cast("Mapping[object, object]", constants).items():
+        if not isinstance(key, str) or not key.isidentifier():
+            raise ValueError(
+                f"Model constant name must be a valid Python identifier, got {key!r}"
+            )
+        checked[key] = value
+    return MappingProxyType(checked)
+
+
+def _freeze_domains(domains: object) -> Mapping[Any, Any]:
+    if not isinstance(domains, Mapping):
+        raise TypeError(
+            f"Model domains must be a mapping, got {type(domains).__name__}"
+        )
+    return MappingProxyType(
+        {
+            k: _freeze_domain(v)
+            for k, v in cast("Mapping[object, object]", domains).items()
+        }
+    )
+
+
+def _freeze_symmetries(symmetry: object) -> tuple[Symmetry[Any], ...]:
+    if isinstance(symmetry, (str, bytes)) or not isinstance(symmetry, Iterable):
+        raise TypeError("Model symmetry must be an iterable of Symmetry sets")
+    sym_list: list[Symmetry[Any]] = []
+    for item in cast("Iterable[object]", symmetry):
+        if not isinstance(item, Symmetry):
+            raise TypeError(
+                f"Model symmetry entries must be Symmetry instances, got {type(item).__name__}"
+            )
+        sym_list.append(cast("Symmetry[object]", item))
+    return tuple(sym_list)
+
+
+def _check_bool(name: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"Model {name} must be bool, got {type(value).__name__}")
+    return value
+
+
+def _check_optional_callable(name: str, fn: object) -> None:
     if fn is not None and not callable(fn):
         raise TypeError(f"Model {name} must be callable or None, got {type(fn).__name__}")
 
@@ -220,24 +272,6 @@ class Model(Generic[_S]):
             raise TypeError(
                 f"Model spec must be a class, protocol, or module, got {type(spec).__name__}"
             )
-        if not isinstance(constants, Mapping):
-            raise TypeError(
-                f"Model constants must be a mapping, got {type(constants).__name__}"
-            )
-        checked_constants: dict[str, Any] = {}
-        for key, value in constants.items():
-            if not isinstance(key, str) or not key.isidentifier():
-                raise ValueError(
-                    f"Model constant name must be a valid Python identifier, got {key!r}"
-                )
-            checked_constants[key] = value
-
-        if not isinstance(domains, Mapping):
-            raise TypeError(
-                f"Model domains must be a mapping, got {type(domains).__name__}"
-            )
-        frozen_domains = {k: _freeze_domain(v) for k, v in domains.items()}
-
         _check_optional_callable("init", init)
         _check_optional_callable("state_constraint", state_constraint)
         _check_optional_callable("action_constraint", action_constraint)
@@ -245,24 +279,9 @@ class Model(Generic[_S]):
         _check_optional_callable("alias", alias)
         _check_optional_callable("postcondition", postcondition)
 
-        if isinstance(symmetry, (str, bytes)) or not isinstance(symmetry, Iterable):
-            raise TypeError("Model symmetry must be an iterable of Symmetry sets")
-        sym_list: list[Symmetry[Any]] = []
-        for s in symmetry:
-            if not isinstance(s, Symmetry):
-                raise TypeError(
-                    f"Model symmetry entries must be Symmetry instances, got {type(s).__name__}"
-                )
-            sym_list.append(s)
-
-        if not isinstance(check_deadlock, bool):
-            raise TypeError(
-                f"Model check_deadlock must be bool, got {type(check_deadlock).__name__}"
-            )
-
         object.__setattr__(self, "spec", spec)
-        object.__setattr__(self, "constants", MappingProxyType(checked_constants))
-        object.__setattr__(self, "domains", MappingProxyType(frozen_domains))
+        object.__setattr__(self, "constants", _freeze_constants(constants))
+        object.__setattr__(self, "domains", _freeze_domains(domains))
         object.__setattr__(self, "init", init)
         object.__setattr__(self, "actions", _freeze_callables("actions", actions))
         object.__setattr__(
@@ -273,21 +292,24 @@ class Model(Generic[_S]):
         )
         object.__setattr__(self, "state_constraint", state_constraint)
         object.__setattr__(self, "action_constraint", action_constraint)
-        object.__setattr__(self, "symmetry", tuple(sym_list))
+        object.__setattr__(self, "symmetry", _freeze_symmetries(symmetry))
         object.__setattr__(self, "view", view)
         object.__setattr__(self, "alias", alias)
         object.__setattr__(self, "postcondition", postcondition)
-        object.__setattr__(self, "check_deadlock", check_deadlock)
+        object.__setattr__(
+            self, "check_deadlock", _check_bool("check_deadlock", check_deadlock)
+        )
 
     @property
     def symmetries(self) -> tuple[Symmetry[Any], ...]:
         """All unique ``Symmetry`` sets declared explicitly or via constants/domains."""
         seen: list[Symmetry[Any]] = []
-        for candidate in (
+        candidates: tuple[Any, ...] = (
             *self.symmetry,
             *self.constants.values(),
             *self.domains.values(),
-        ):
+        )
+        for candidate in candidates:
             if isinstance(candidate, Symmetry) and candidate not in seen:
-                seen.append(candidate)
+                seen.append(cast("Symmetry[object]", candidate))
         return tuple(seen)

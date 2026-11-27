@@ -7,7 +7,15 @@ import dataclasses
 import sys
 import unittest
 from pathlib import Path
-from typing import Annotated, Generic, Protocol, TypeVar, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Generic,
+    Protocol,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import temporal
 from temporal import (

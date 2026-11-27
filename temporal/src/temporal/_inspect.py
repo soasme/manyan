@@ -118,7 +118,7 @@ def _unwrap_callable(member: object) -> Optional[Callable[..., Any]]:
     if isinstance(member, property):
         return member.fget
     if isinstance(member, (staticmethod, classmethod)):
-        fn: Any = member.__func__
+        fn: object = member.__dict__.get("__func__", getattr(member, "__func__", None))  # pyright: ignore[reportUnknownArgumentType]
         return fn if callable(fn) else None
     if isinstance(member, type):
         return None
