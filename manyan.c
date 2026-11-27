@@ -3760,6 +3760,7 @@ static Def *parse_instance(Tok *start, int name) {
             expect_op("<-");
             Def *p = NEW(Def);
             p->name = pname;
+            p->where = mk_expr(X_NAME, t);   /* the target, where SANY locates its errors */
             PUSH(d->subst_decl, n, p);
             Tok *at = peek();
             if ((at->kind == T_OP || at->kind == T_KW) &&
@@ -3836,6 +3837,7 @@ static void skip_proof(void) {
 static Module *parse_module(Module *outer) {
     Module *m = NEW(Module);
     m->outer = outer;
+    m->toks = P->t, m->ntoks = P->n;   /* its file's, a nested module's too */
     Module *saved_mod = P->mod;
     P->mod = m;
     Tok *mstart = peek();
@@ -4348,8 +4350,6 @@ static Module *parse_text(const char *text, const char *path) {
     Module *m = parse_module(NULL);
     P = saved;
     m->path = (char *)path;
-    m->toks = toks;
-    m->ntoks = n;
     collect_nested(m);
     return m;
 }
@@ -4461,12 +4461,19 @@ static void loc_line(Buf *b, Expr *e) {
 
 static Module *file_module(Module *m);
 static void print_warnings(Module *m);
+static void file_loc_text(Buf *b, Expr *e);
+
 /* SANY's semantic errors: n of them, each at where[i]. */
 static _Noreturn void semantic_errors(int n, Expr **where, char (*msg)[1024]) {
     if (breakpoint) breakpoint_error(0, NULL);
     if (cur_module && file_module(cur_module)->nwarnings) print_warnings(file_module(cur_module));   /* SANY's, before its errors */
     printf("Semantic errors:\n\n*** Errors: %d\n\n", n);
-    for (int i = 0; i < n; i++) printf("%s\n\n%s\n\n", loc_str(where[i]), msg[i]);
+    for (int i = 0; i < n; i++) {   /* located, as SANY, in the module of the file */
+        Buf at = {0};
+        if (where[i] && where[i]->mod) file_loc_text(&at, where[i]);
+        printf("%s\n\n%s\n\n", at.s ? at.s : "Unknown location", msg[i]);
+        xfree(at.s);
+    }
     printf("Error: Parsing or semantic analysis failed.\n");
     stop(MANYAN_ERROR_PARSE);
 }
@@ -5502,9 +5509,12 @@ static void resolve_def(Def *d, Scope *sc) {
             int pname = d->subst_decl[j]->name, legal = 0;
             for (int k = 0; k < j; k++)
                 if (d->subst_decl[k]->name == pname)
-                    semantic_error(d->where, "Multiple substitutions for symbol '%s' in substitution.", S(pname));
+                    semantic_error(d->subst_expr[j], "Multiple substitutions for symbol '%s' in substitution.", S(pname));
             for (int i = 0; i < t->ndecls && !legal; i++) legal = t->decls[i]->name == pname;
-            if (!legal) semantic_error(d->where, "Identifier '%s' is not a legal target of a substitution.", S(pname));
+            if (!legal)
+                semantic_error(d->subst_decl[j]->where, "Identifier '%s' is not a legal target of a substitution. \n"
+                               "A legal target must be a declared CONSTANT or VARIABLE in the module being instantiated. \n"
+                               "(Also, check for warnings about multiple declarations of this same identifier.)", S(pname));
         }
         Def **decls = NEWN(Def *, t->ndecls);
         Expr **exprs = NEWN(Expr *, t->ndecls);
@@ -5525,9 +5535,12 @@ static void resolve_def(Def *d, Scope *sc) {
                 ref->segs = NEW(Seg);
                 ref->segs->name = decl->name;
                 ref->op = decl->name;
-                if (ref->kind == X_NAME && !scope_lookup(inner, decl->name) && !module_lookup(cur_module, decl->name))
-                    semantic_error(d->where, "The constant or variable %s of module %s is not defined in the instantiating module.",
-                                   S(decl->name), S(t->name));
+                if (ref->kind == X_NAME && !scope_lookup(inner, decl->name) && !module_lookup(cur_module, decl->name)) {
+                    Buf at = {0};
+                    file_loc_text(&at, decl->where);
+                    semantic_error(d->where, "Substitution missing for symbol %s declared at %s \nand instantiated in module %s.",
+                                   S(decl->name), at.s, S(cur_module->name));
+                }
                 exprs[i] = ref;
             }
             resolve_arg(exprs[i], inner, decl->arity, i, S(t->name), NULL, NULL, NULL);
@@ -5873,7 +5886,7 @@ static void check_ho_arg(Expr *where, const char *ctx_name, int is_inst, Def *p,
         if (mapped) {
             if (expr_level(mapped) > fmax) {
                 if (is_inst)
-                    semantic_error(where, "Level error when instantiating module '%s':\nThe level of the argument %d of the operator %s \nmust be at most %d.",
+                    semantic_error(where, "Level error when instantiating module '%s':\nThe level of the argument %d of the operator %s' \nmust be at most %d.",
                                    ctx_name, j, S(p->name), fmax);
                 semantic_error(where, "Level error in applying operator %s:\nThe level of argument %d exceeds the maximum level allowed by the operator.",
                                ctx_name, m + 1);
