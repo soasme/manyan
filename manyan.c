@@ -4517,6 +4517,8 @@ static Sym *module_lookup(Module *m, int name);
 static Expr def_span(Def *d) {
     Expr e = *d->where;
     Expr *b = d->body;
+    Expr *p = d->nparams && d->params[0]->where ? d->params[0]->where : NULL;   /* a ++ b: from a */
+    if (p && (p->l1 < e.l1 || (p->l1 == e.l1 && p->c1 < e.c1))) e.l1 = p->l1, e.c1 = p->c1;
     if (d->local_at) e.l1 = d->local_at->l1, e.c1 = d->local_at->c1;
     if (b) { e.l2 = b->pl2 ? b->pl2 : b->l2; e.c2 = b->pl2 ? b->pc2 : b->c2; }
     return e;
@@ -4614,21 +4616,21 @@ static void file_loc_text(Buf *b, Expr *e) {
     buf_printf(b, "line %d, col %d to line %d, col %d of module %s", e->l1, e->c1, e->l2, e->c2, S(file_module(e->mod)->name));
 }
 
+/* The location of the text of m from byte pos to end, as of a statement. */
+static Expr text_span(Module *m, int pos, int end) {
+    Expr e = {0};
+    e.mod = m;
+    for (Tok *t = m->toks; t < m->toks + m->ntoks; t++) {
+        if (t->pos == pos) e.l1 = t->line, e.c1 = t->col;
+        if (t->end == end) e.l2 = t->eline, e.c2 = t->ecol;
+    }
+    return e;
+}
+
 static void check_outer(Module *m, Def *d) {
     Sym *s = m->outer ? module_lookup(m, d->name) : NULL;
     if (!s || (m->nsyms && s >= m->syms && s < m->syms + m->nsyms)) return;   /* its own: add_sym's */
-    Def *o = s->def;
-    Buf here = {0}, there = {0};
-    file_loc_text(&here, d->where);
-    file_loc_text(&there, o->where);
-    if ((d->kind != D_CONST && d->kind != D_VAR) || o->kind != d->kind || o->arity != d->arity)
-        semantic_error(d->where, "Multiple declarations or definitions for symbol %s.\nThis duplicates the one at %s.", S(d->name), there.s);
-    Module *file = file_module(m);
-    buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
-               here.s, S(d->name), there.s);
-    file->nwarnings++;
-    xfree(here.s);
-    xfree(there.s);
+    redefined(s->def, d, d->where);   /* as SANY, as if in one module */
 }
 
 /* SANY's warnings so far, all of them printed as each file's module is
@@ -5688,11 +5690,7 @@ static void resolve_module(Module *m) {
                 if (pending_rec) {   /* located, as SANY, at the whole statement */
                     int last = i;
                     while (last + 1 < m->nunits && m->units[last + 1].group == u->group) last++;
-                    Expr at = *d->where;
-                    for (Tok *t = m->toks; t < m->toks + m->ntoks; t++) {
-                        if (t->pos == u->pos) at.l1 = t->line, at.c1 = t->col;
-                        if (t->end == m->units[last].end) at.l2 = t->eline, at.c2 = t->ecol;
-                    }
+                    Expr at = text_span(m, u->pos, m->units[last].end);
                     semantic_error(&at, "A %sdeclaration may not appear within a recursive definition section.", d->kind == D_VAR ? "VARIABLE " : "");
                 }
                 d->mod = m;
@@ -5707,9 +5705,7 @@ static void resolve_module(Module *m) {
             } else {
                 resolve_def(d, NULL);
             }
-        } else if (u->kind == 4 && u->def->body) {
-            if (pending_rec)
-                semantic_error(u->def->where, "A named assumption or theorem may not appear within a recursive definition section.");
+        } else if (u->kind == 4 && u->def->body) {   /* in a recursive section, the statement after it is the error */
             /* A theorem's or assumption's name is an operator without parameters. */
             Def *d = NEW(Def);
             *d = *u->def;
@@ -5754,8 +5750,8 @@ static void resolve_module(Module *m) {
                 add_sym(m, s->name, s->def, path, s->npath + 1, u->local, NULL);
             }
         } else if (u->kind == 2 || u->kind == 6) {
-            if (pending_rec && u->kind == 2) semantic_error(u->where, "An ASSUME may not appear within a recursive definition section.");
-            if (pending_rec) semantic_error(NULL, "A THEOREM may not appear within a recursive definition section.");
+            Expr at = text_span(m, u->pos, u->end);
+            if (pending_rec) semantic_error(&at, "A%s may not appear within a recursive definition section.", u->kind == 2 ? "n ASSUME" : " THEOREM");
             if (!u->def && u->expr) {   /* a named one is resolved with its name */
                 int saved_in_def = in_def_body;
                 Scope *saved_lb = label_bounds;
@@ -5770,8 +5766,13 @@ static void resolve_module(Module *m) {
         } else if (u->kind == 3) {
             if (pending_rec) semantic_error(NULL, "A submodule may not appear within a recursive definition section.");
             for (int k = 0; k < i; k++)
-                if (m->units[k].kind == 3 && m->units[k].module->name == u->module->name)
-                    semantic_error(NULL, "Multiply-defined module '%s': this definition or declaration conflicts with another one.", S(u->module->name));
+                if (m->units[k].kind == 3 && m->units[k].module->name == u->module->name) {
+                    Module *a = u->module, *b = m->units[k].module;
+                    Expr here = text_span(a, a->pos, a->end), there = text_span(b, b->pos, b->end);
+                    Buf t = {0};
+                    file_loc_text(&t, &there);
+                    semantic_error(&here, "Multiply-defined module '%s': this definition or declaration conflicts \nwith the one at %s.", S(u->module->name), t.s);
+                }
             u->module->nouter_syms = m->nsyms;
             resolve_module(u->module);
         }
@@ -5904,9 +5905,9 @@ static void check_ho_arg(Expr *where, const char *ctx_name, int is_inst, Def *p,
 /* Argument i of op in e, where its level may be at most cap; e itself may be at most max. */
 static void check_argument(Expr *e, const char *op, int i, Expr *a, int cap, int max) {
     if (!a) return;
+    check_levels(a, cap < max ? cap : max);   /* as SANY, from the inside out */
     if (expr_level(a) > cap)
         semantic_error(e, "Level error in applying operator %s:\nThe level of argument %d exceeds the maximum level allowed by the operator.", op, i + 1);
-    check_levels(a, cap < max ? cap : max);
 }
 
 /* The operands of e, the first of level at most first, the others at most rest. */
@@ -5961,9 +5962,16 @@ static const char *sany_connective(int kind) {
 
 /* Checks e, where its level may be at most max, and records that limit for
    the parameters and declarations it uses. */
+static void check_levels_of(Expr *e, int max);
+
+/* That e may be at most of level max: as SANY, its parts first. */
 static void check_levels(Expr *e, int max) {
     if (!e) return;
+    check_levels_of(e, max);
     check_temporal(e);
+}
+
+static void check_levels_of(Expr *e, int max) {
     Def *d = e->def;
     switch (e->kind) {
     case K_BOUND: case K_DECL:
@@ -6012,11 +6020,11 @@ static void check_levels(Expr *e, int max) {
         int inner = op && max > 2 ? 2 : max;
         for (int i = 0; i < e->nb; i++) {
             Bound *b = &e->bounds[i];
+            check_levels(b->set, inner);
             if (op && b->set && expr_level(b->set) > 2) {
                 Expr at = {.mod = e->mod, .l1 = b->line, .c1 = b->col, .l2 = b->line, .c2 = b->col + (int)strlen(S(b->names[0])) - 1};
                 semantic_error(e, "Level error in applying operator %s:\nThe level of the range for the bounded variable %s \nexceeds the maximum level allowed by the operator.", op, loc_str(&at));
             }
-            check_levels(b->set, inner);
         }
         for (int i = 0; e->kind == X_EXCEPT && i < e->n - 1; i++) {
             Path *p = &e->paths[i];
@@ -6025,15 +6033,15 @@ static void check_levels(Expr *e, int max) {
             at.c1 = p->col;
             for (int k = 0; k < p->n; k++) check_argument(&at, "$Seq", k, p->keys[k], 2, max);
         }
+        int free = e->kind == X_FCN || e->kind == X_FORALL || e->kind == X_EXISTS;
+        for (int i = 0; i < e->n; i++)
+            if (op && !free) check_argument(e, op, i, e->args[i], 2, max);
+            else check_levels(e->args[i], max);
         if (conn) {
             int temporal = 0, action = 0;
             for (int i = 0; i < e->n; i++) { int l = expr_level(e->args[i]); temporal |= l == 3; action |= l == 2; }
             if (temporal && action) semantic_error(e, "%s has both temporal formula and action as arguments.", conn);
         }
-        int free = e->kind == X_FCN || e->kind == X_FORALL || e->kind == X_EXISTS;
-        for (int i = 0; i < e->n; i++)
-            if (op && !free) check_argument(e, op, i, e->args[i], 2, max);
-            else check_levels(e->args[i], max);
         return;
     }
     }
