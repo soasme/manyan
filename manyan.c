@@ -3914,6 +3914,9 @@ static Module *parse_module(Module *outer) {
             if (!is_kw(peek(), "ASSUME")) {
                 body = parse_expr();
                 if (d) d->body = body;
+                Tok *p = peek();   /* then its proof, if any */
+                if (!at_unit_start() && p->kind != T_STEP && !is_kw(p, "PROOF") && !is_kw(p, "BY") && !is_kw(p, "OBVIOUS") && !is_kw(p, "OMITTED"))
+                    syntax_error("expected a proof or a definition");
             }
             int after = P->pos;
             skip_proof();
