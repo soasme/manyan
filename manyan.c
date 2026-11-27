@@ -2256,6 +2256,7 @@ typedef struct {
     Expr *set;      /* NULL for an unbounded binding */
     int line, col;  /* of its first name */
     int pos;        /* byte offset of its start (for -fmt) */
+    Expr *builtin;  /* where its first name is TRUE, FALSE, BOOLEAN or STRING */
 } Bound;
 
 /* A segment of A!B(x)!C, or a subexpression selector (§5.7): !2, !<<, !>>,
@@ -2420,6 +2421,7 @@ static const char *symbols[] = {
     "(", ")", "[", "]", "{", "}", ",", ":", ".", "!", "@", "'", "=", "#", "<", ">", "+", "-", "*",
     "/", "%", "^", "&", "|", "$", "?", "~", "_", "\\", NULL};
 
+static int backslash_op(const char *s, int n);
 static int is_keyword(const char *s, int len) {
     for (int i = 0; keywords[i]; i++)
         if ((int)strlen(keywords[i]) == len && memcmp(keywords[i], s, (size_t)len) == 0) return 1;
@@ -2592,7 +2594,11 @@ static Tok *lex(const char *src, const char *file, int *count) {
                 for (int i = 2; i < len; i++) { v = v * base + digit_value(s[i]); if (v > 0x7fffffffffffLL) v = 0x7fffffffffffLL; }
                 t->num = v;
                 t->id = intern_n(s, len);
-            } else {
+            } else {   /* as SANY: the longest operator it knows, so \in3 and \cupx are \in 3 and \cup x */
+                for (len = 1; isalpha((unsigned char)s[len]); len++) {}
+                int n = len;
+                while (n > 1 && !backslash_op(s, n)) n--;
+                len = n > 1 ? n : 1;   /* none: \ alone, set difference */
                 t->kind = T_OP;
                 t->id = intern_n(s, len);
             }
@@ -2700,9 +2706,17 @@ static int is_kw(Tok *t, const char *s) { return t->kind == T_KW && strcmp(S(t->
 static void expect_op(const char *s) { if (!is_op(peek(), s)) syntax_error(s); next(); }
 static void expect_kw(const char *s) { if (!is_kw(peek(), s)) syntax_error(s); next(); }
 
+/* A name: SANY reads TRUE, FALSE, BOOLEAN and STRING as names too, and
+   rejects their declaration or definition as it resolves the module. */
+static int builtin_name(int id) {
+    const char *s = S(id);
+    return !strcmp(s, "TRUE") || !strcmp(s, "FALSE") || !strcmp(s, "BOOLEAN") || !strcmp(s, "STRING");
+}
+static int is_name(Tok *t) { return t->kind == T_IDENT || (t->kind == T_KW && builtin_name(t->id)); }
+
 static int expect_ident(void) {
     Tok *t = peek();
-    if (t->kind != T_IDENT) syntax_error("expected an identifier");
+    if (!is_name(t)) syntax_error("expected an identifier");
     next();
     return t->id;
 }
@@ -2798,6 +2812,15 @@ static int canonical(int id) {
         {"(\\X)", "\\otimes"}, {NULL, NULL}};
     for (int i = 0; syn[i][0]; i++) if (strcmp(S(id), syn[i][0]) == 0) return intern(syn[i][1]);
     return id;
+}
+
+/* Whether the n characters at s name an operator \word SANY knows. */
+static int backslash_op(const char *s, int n) {
+    static const char *more[] = {"\\A", "\\E", "\\AA", "\\EE", "\\forall", "\\exists", "\\land", "\\lor", "\\lnot", "\\neg", "\\equiv",
+                                 "\\intersect", "\\union", "\\times", "\\circ", NULL};
+    for (int i = 0; op_table[i].name; i++) if (!strncmp(op_table[i].name, s, n) && !op_table[i].name[n]) return 1;
+    for (int i = 0; more[i]; i++) if (!strncmp(more[i], s, n) && !more[i][n]) return 1;
+    return 0;
 }
 
 static const OpInfo *op_info(Tok *t, int fix) {
@@ -2922,6 +2945,15 @@ static Expr *parse_name(void) {
     return e;
 }
 
+/* A bound name, which SANY rejects as it resolves it if TRUE, FALSE,
+   BOOLEAN or STRING. */
+static void bound_name(Bound *b) {
+    Tok *t = peek();
+    int id = expect_ident();
+    if (t->kind == T_KW && !b->builtin) b->builtin = mk_expr(X_BOOL, t), b->builtin->op = id;
+    PUSH(b->names, b->n, id);
+}
+
 /* `x, y \in S, <<a, b>> \in T` or, unbounded, `x, y`. */
 static void parse_bounds(Expr *e, int allow_unbounded) {
     for (;;) {
@@ -2930,13 +2962,13 @@ static void parse_bounds(Expr *e, int allow_unbounded) {
         b.line = peek()->line;
         b.col = peek()->col;
         if (b.tuple) {
-            do PUSH(b.names, b.n, expect_ident()); while (is_op(peek(), ",") && next());
+            do bound_name(&b); while (is_op(peek(), ",") && next());
             expect_op(">>");
         } else {
-            PUSH(b.names, b.n, expect_ident());
-            while (is_op(peek(), ",") && peek_at(1)->kind == T_IDENT) {
+            bound_name(&b);
+            while (is_op(peek(), ",") && is_name(peek_at(1))) {
                 next();
-                PUSH(b.names, b.n, expect_ident());
+                bound_name(&b);
             }
         }
         if (is_op(peek(), "\\in")) {
@@ -2956,15 +2988,52 @@ static int binder_ahead(void) {
     int k = 0;
     if (is_op(peek_at(0), "<<")) {
         k = 1;
-        while (peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), ",")) k += 2;
-        if (peek_at(k)->kind != T_IDENT || !is_op(peek_at(k + 1), ">>")) return 0;
+        while (is_name(peek_at(k)) && is_op(peek_at(k + 1), ",")) k += 2;
+        if (!is_name(peek_at(k)) || !is_op(peek_at(k + 1), ">>")) return 0;
         return is_op(peek_at(k + 2), "\\in");
     }
-    while (peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), ",")) k += 2;
-    return peek_at(k)->kind == T_IDENT && is_op(peek_at(k + 1), "\\in");
+    while (is_name(peek_at(k)) && is_op(peek_at(k + 1), ",")) k += 2;
+    return is_name(peek_at(k)) && is_op(peek_at(k + 1), "\\in");
 }
 
 static _Noreturn void semantic_error(Expr *where, const char *fmt, ...);
+/* The first semantic error met as a module parses: SANY reports it once
+   the module parses, after any parse error. */
+static Expr *parsed_error_at;
+static const char *parsed_error;
+static void semantic_error_later(Expr *where, const char *fmt, ...) {
+    if (parsed_error_at) return;
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    parsed_error_at = where, parsed_error = xstrdup(msg);
+}
+
+static Expr **parse_args(int *n);
+static Expr *mk_op(Tok *t, int op, int n, Expr **args);
+static void finish(Expr *e);
+/* TRUE, FALSE, BOOLEAN or STRING. */
+static Expr *mk_expr(int kind, Tok *start);
+static Expr *parse_constant_kw(void) {
+    Tok *t = next();
+    Expr *e = mk_expr(is_kw(t, "TRUE") || is_kw(t, "FALSE") ? X_BOOL : X_OP, t);
+    if (e->kind == X_BOOL) e->num = is_kw(t, "TRUE");
+    else e->op = t->id;
+    return e;
+}
+
+/* One applied to arguments, which SANY parses. */
+static void applied_constant(Tok *t) {
+    if (!is_op(peek(), "(")) return;
+    Tok *open = peek();
+    int n;
+    parse_args(&n);
+    Expr *where = mk_op(open, 0, 0, NULL);
+    finish(where);
+    semantic_error_later(where, "The operator %s requires 0 arguments.", S(t->id));
+}
 
 static Expr *parse_junction(Tok *bullet) {
     int col = bullet->col;
@@ -3002,7 +3071,7 @@ static Expr *parse_subscript(void) {
         finish(e);
         return e;
     }
-    if (is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) return parse_primary();
+    if (is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) return parse_constant_kw();
     if (is_op(t, "<<") || is_op(t, "(") || is_op(t, "{") || is_op(t, "[")) return parse_binary(16);
     syntax_error("expected a subscript");
 }
@@ -3029,16 +3098,9 @@ static Expr *parse_primary(void) {
     case T_IDENT:
         return parse_name();
     case T_KW:
-        if (is_kw(t, "TRUE") || is_kw(t, "FALSE")) {
-            next();
-            e = mk_expr(X_BOOL, t);
-            e->num = is_kw(t, "TRUE");
-            return e;
-        }
-        if (is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) {
-            next();
-            e = mk_expr(X_OP, t);
-            e->op = t->id;
+        if (is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) {
+            e = parse_constant_kw();
+            applied_constant(t);
             return e;
         }
         if (is_kw(t, "IF")) {
@@ -3207,10 +3269,10 @@ static Expr *parse_primary(void) {
                 b.line = peek()->line;
                 b.col = peek()->col;
                 if (b.tuple) {
-                    do PUSH(b.names, b.n, expect_ident()); while (is_op(peek(), ",") && next());
+                    do bound_name(&b); while (is_op(peek(), ",") && next());
                     expect_op(">>");
                 } else {
-                    PUSH(b.names, b.n, expect_ident());
+                    bound_name(&b);
                 }
                 if (is_op(peek(), "\\in")) {
                     next();
@@ -3264,16 +3326,17 @@ static Expr *parse_primary(void) {
             if (peek()->kind == T_IDENT && (is_op(peek_at(1), "|->") || is_op(peek_at(1), ":"))) {
                 int set = is_op(peek_at(1), ":");
                 e = mk_expr(set ? X_RCDSET : X_RECORD, t);
+                Tok *twice = NULL;   /* a field named again, an error once the constructor parses */
                 do {
                     Tok *field = peek();
                     int name = expect_ident();
-                    for (int i = 0; i < e->nseg; i++)
-                        if (e->segs[i].name == name) semantic_error(mk_expr(X_NAME, field), "Non-unique fields in constructor.");
+                    for (int i = 0; i < e->nseg && !twice; i++) if (e->segs[i].name == name) twice = field;
                     PUSH(e->segs, e->nseg, ((Seg){.name = name, .line = field->line, .col = field->col}));
                     expect_op(set ? ":" : "|->");
                     PUSH(e->args, e->n, parse_expr());
                 } while (is_op(peek(), ",") && next());
                 expect_op("]");
+                if (twice) semantic_error_later(mk_expr(X_NAME, twice), "Non-unique fields in constructor.");
                 P->limit = saved;
                 finish(e);
                 return e;
@@ -3359,6 +3422,12 @@ static Expr *parse_primary(void) {
                 e->args = args_array(a, 2);
                 finish(e);
                 return e;
+            }
+            if (is_op(peek(), "]")) {   /* SANY's error once the module parses */
+                next();
+                P->limit = saved;
+                semantic_error_later(mk_expr(X_NAME, t), "Unsupported expression type `['.");
+                return first;
             }
             syntax_error("expected ]_, ->, or EXCEPT");
         }
@@ -3455,10 +3524,17 @@ static Expr *parse_unary(const OpInfo **prefix) {
         if (n != want) {
             Expr *where = mk_op(open, 0, 0, NULL);
             finish(where);
-            semantic_error(where, "The operator %s requires %d arguments.", named->name, want);
+            semantic_error_later(where, "The operator %s requires %d arguments.", named->name, want);
         }
         Expr *e = mk_op(t, intern(named->name), n, args);
         finish(e);
+        return e;
+    }
+    if (!info && named && !is_junction(t)) {   /* an infix or postfix operator alone: SANY's error once the module parses */
+        next();
+        semantic_error_later(mk_expr(X_NAME, t), "The operator %s requires %d arguments.", named->name, op_info(t, INFIX) ? 2 : 1);
+        Expr *e = mk_expr(X_BOOL, t);
+        e->num = 1;
         return e;
     }
     if (info) {
@@ -3553,14 +3629,14 @@ static Def *parse_param(int kind) {
     if (is_op(t, "_")) {
         next();
         Tok *op = peek();
-        if (op->kind != T_OP && op->kind != T_KW) syntax_error("expected an operator");
+        if (!op_info(op, INFIX) && !op_info(op, POSTFIX)) syntax_error("expected an operator");
         next();
         Def *d = new_def(kind, canonical(op->id), op);
         if (is_op(peek(), "_")) { next(); d->arity = 2; }
         else d->arity = 1;
         return d;
     }
-    if ((t->kind == T_OP || t->kind == T_KW) && is_op(peek_at(1), "_")) {
+    if (op_info(t, PREFIX) && is_op(peek_at(1), "_")) {
         next();
         next();
         int name = canonical(t->id);
@@ -3574,6 +3650,7 @@ static Def *parse_param(int kind) {
         next();
         do { expect_op("_"); d->arity++; } while (is_op(peek(), ",") && next());
         expect_op(")");
+        finish(d->where);
     }
     return d;
 }
@@ -3587,10 +3664,10 @@ static Def *parse_definition(int local) {
     Def *d;
     Def *params[64];
     int np = 0;
-    if (t->kind == T_IDENT && is_op(peek_at(1), "==")) {
+    if (is_name(t) && is_op(peek_at(1), "==")) {
         d = new_def(D_OP, t->id, t);
         next();
-    } else if (t->kind == T_IDENT && is_op(peek_at(1), "(")) {
+    } else if (is_name(t) && is_op(peek_at(1), "(")) {
         d = new_def(D_OP, t->id, t);
         next();
         next();
@@ -3599,7 +3676,7 @@ static Def *parse_definition(int local) {
             params[np++] = parse_param(D_PARAM);
         } while (is_op(peek(), ",") && next());
         expect_op(")");
-    } else if (t->kind == T_IDENT && is_op(peek_at(1), "[")) {
+    } else if (is_name(t) && is_op(peek_at(1), "[")) {
         d = new_def(D_FCN, t->id, t);
         next();
         next();
@@ -3609,8 +3686,8 @@ static Def *parse_definition(int local) {
         d->bounds = tmp.bounds;
         d->nb = tmp.nb;
         expect_op("]");
-    } else if (t->kind == T_IDENT && op_info(peek_at(1), INFIX) &&
-               peek_at(2)->kind == T_IDENT && is_op(peek_at(3), "==")) {
+    } else if (is_name(t) && op_info(peek_at(1), INFIX) &&
+               is_name(peek_at(2)) && is_op(peek_at(3), "==")) {
         Tok *op = peek_at(1);
         d = new_def(D_OP, canonical(op->id), op);
         params[np++] = new_def(D_PARAM, t->id, t);
@@ -3618,14 +3695,14 @@ static Def *parse_definition(int local) {
         next();
         params[np++] = new_def(D_PARAM, peek()->id, peek());
         next();
-    } else if (op_info(t, PREFIX) && peek_at(1)->kind == T_IDENT && is_op(peek_at(2), "==")) {
+    } else if (op_info(t, PREFIX) && is_name(peek_at(1)) && is_op(peek_at(2), "==")) {
         int name = canonical(t->id);
         if (strcmp(S(name), "-") == 0) name = intern("-.");
         d = new_def(D_OP, name, t);
         next();
         params[np++] = new_def(D_PARAM, peek()->id, peek());
         next();
-    } else if (t->kind == T_IDENT && op_info(peek_at(1), POSTFIX) && is_op(peek_at(2), "==")) {
+    } else if (is_name(t) && op_info(peek_at(1), POSTFIX) && is_op(peek_at(2), "==")) {
         Tok *op = peek_at(1);
         d = new_def(D_OP, canonical(op->id), op);
         params[np++] = new_def(D_PARAM, t->id, t);
@@ -3668,7 +3745,7 @@ static Def *parse_instance(Tok *start, int name) {
             Tok *t = peek();
             int pname;
             if (t->kind == T_IDENT) pname = t->id;
-            else if (t->kind == T_OP || t->kind == T_KW) pname = canonical(t->id);
+            else if (op_info(t, INFIX) || op_info(t, PREFIX) || op_info(t, POSTFIX)) pname = canonical(t->id);
             else syntax_error("expected a parameter");
             next();
             expect_op("<-");
@@ -3733,7 +3810,7 @@ static void hide_facts(void) {
         Tok *t = next();
         if (is_kw(t, "MODULE")) next();
         else if (t->kind != T_IDENT && t->kind != T_STEP)
-            semantic_error(mk_expr(X_NAME, t), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
+            semantic_error_later(mk_expr(X_NAME, t), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
         while (is_op(peek(), "!") && !at_unit_start()) { next(); next(); }
         if (!is_op(peek(), ",")) return;
         next();
@@ -3867,6 +3944,11 @@ static Module *parse_module(Module *outer) {
         unit_span(add_unit(m, 0, d, NULL, NULL, local), first, prev_tok(), 0, 0);
     }
     P->mod = saved_mod;
+    if (parsed_error_at) {
+        Expr *at = parsed_error_at;
+        parsed_error_at = NULL;
+        semantic_error(at, "%s", parsed_error);
+    }
     return m;
 }
 
@@ -4379,6 +4461,8 @@ static Sym *module_lookup(Module *m, int name);
 
 /* A new name in scope, which must not hide one (§5.6). */
 static Scope *bind(Scope *sc, int name, Def *d) {
+    if (builtin_name(name) && d->where && d->kind != D_OP && d->kind != D_FCN)
+        semantic_error(d->where, "Symbol %s is a built-in operator, and cannot be redefined.", S(name));
     Def *old = scope_lookup(sc, name);
     Sym *sym = old || !cur_module ? NULL : module_lookup(cur_module, name);
     if ((old && old != d) || (sym && sym->def != d))
@@ -4500,8 +4584,13 @@ static int def_arity(Def *d) {
 }
 
 static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int local, Expr *where) {
-    if (npath == 0 && where && is_core_op(name))
-        semantic_error(where, "Operator %s already defined or declared.", S(name));
+    int defined = def->kind == D_OP || def->kind == D_FCN;
+    if (npath == 0 && where && builtin_name(name) && !defined)
+        semantic_error(where, "Symbol %s is a built-in operator, and cannot be redefined.", S(name));
+    if (npath == 0 && where && (is_core_op(name) || builtin_name(name))) {
+        Expr span = defined ? def_span(def) : *where;
+        semantic_error(&span, def->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(name));
+    }
     for (int i = 0; i < m->nsyms; i++)
         if (m->syms[i].name == name) {
             if (m->syms[i].def == def) return;
@@ -4635,6 +4724,7 @@ static void resolve_bounds(Expr *e, Scope **sc) {
     for (int i = 0; i < e->nb; i++) if (e->bounds[i].set) resolve_expr(e->bounds[i].set, outer);
     for (int i = 0; i < e->nb; i++) {
         Bound *b = &e->bounds[i];
+        if (b->builtin) semantic_error(b->builtin, "Symbol %s is a built-in operator, and cannot be redefined.", S(b->builtin->op));
         b->defs = NEWN(Def *, b->n);
         for (int j = 0; j < b->n; j++) {
             Def *d = NEW(Def);
@@ -5154,7 +5244,10 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
                 inner = bind(inner, found->name, found);
                 continue;
             }
-            if (is_core_op(d->name)) semantic_error(d->where, "Operator %s already defined or declared.", S(d->name));
+            if (is_core_op(d->name) || builtin_name(d->name)) {
+                Expr span = def_span(d);
+                semantic_error(&span, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(d->name));
+            }
             d->local = 2;   /* a LET definition: bound in the environment */
             resolve_def(d, inner);
             if (!d->recursive) inner = bind(inner, d->name, d);
@@ -26165,7 +26258,7 @@ static void reset_check(void) {
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
     Z(shifted); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);
-    Z(keep_going); Z(te_spec); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
+    Z(keep_going); Z(parsed_error_at); Z(parsed_error); Z(te_spec); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
     Z(nwitnesses); Z(gen_values); Z(ngen_values); Z(gen_step); Z(apalache_name); Z(folds_name); Z(gen_name);
     Z(eval_tracking); Z(effects); Z(format_msg); Z(user_file); Z(reprinting); Z(expansion_printed);
     Z(starting); Z(registers); Z(nregisters); Z(checking_posts); Z(sim_traces); Z(props); Z(nprops);
