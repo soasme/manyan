@@ -1061,9 +1061,9 @@ def diff(engine, tlc, runs, seed):
 
 
 def spec_models():
-    """The models of tests/spec that run without options."""
+    """The models of tests/spec that run without options, where TLC's verdict is right."""
     models = sorted((ROOT / "tests/spec").rglob("*.tla"))
-    return [p for p in models if ".files" not in str(p) and not spec_runner.options(p)
+    return [p for p in models if ".files" not in str(p) and not spec_runner.options(p) and not spec_runner.semantic(p)
             and re.search(r"^\s*(INIT|SPECIFICATION)\b", p.read_text(), flags=re.M)]
 
 

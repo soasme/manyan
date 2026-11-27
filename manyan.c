@@ -13505,7 +13505,7 @@ static int search(void) {
         } else xfree(first.msg.s);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
-        if (status == MANYAN_FAILURE_EVAL && !keep_going && (error_module == 1 || live_fails(1))) status = MANYAN_ERROR;
+        if (status == MANYAN_FAILURE_EVAL && (error_module == 1 || (!keep_going && live_fails(1)))) status = MANYAN_ERROR;
         return status;
     }
     gen_target = succ;
@@ -13901,6 +13901,12 @@ static void sim_print(States *trace) {
    and in a simulated behavior (in_behavior) a TLCRuntimeException, is
    reported plainly, any other as unexpected. */
 static void report_exception(int in_behavior) {
+    if (simulating && error_java && !strcmp(error_java, "java.lang.OutOfMemoryError")) {   /* its worker's catch */
+        printf("Error: Java ran out of memory.  Running Java with a larger memory allocation\n"
+               "pool (heap) may fix this.  But it won't help if some state has an enormous\n"
+               "number of successor states, or if TLC must compute the value of a huge set.\n");
+        return;
+    }
     if (stackless || (in_behavior && error_module == 2)) {
         printf("Error: ");
         print_error_text();

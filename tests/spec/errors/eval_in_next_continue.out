@@ -1,0 +1,50 @@
+Finished computing initial states: 1 distinct state generated.
+Error: The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 5
+
+State 3: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = -4
+
+State 4: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 1
+
+State 5: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 10
+
+State 6: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = -2
+
+State 7: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 2
+
+Error: The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 5
+
+State 3: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = -4
+
+State 4: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 1
+
+State 5: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 10
+
+State 6: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = -2
+
+State 7: <Next line 8, col 9 to line 8, col 28 of module eval_in_next_continue>
+x = 2
+
+7 states generated, 7 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 7.
+exit 255
