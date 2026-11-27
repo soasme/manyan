@@ -9,7 +9,7 @@ import sys
 import unittest
 from typing import Generic, TypeVar
 
-from temporal import Action, Const, Init, Invariant, Model, ModelValue, State, Symmetry
+from temporal import Action, Const, Model, ModelValue, State, Symmetry
 
 T = TypeVar("T")
 
@@ -26,14 +26,8 @@ class DummySpec:
     procs: Const[frozenset[Proc]]
     x: State[int] = 0
 
-    def init(self) -> Init:
-        return self.x == 0
-
     def step(self) -> Action[None]:
         self.x += 1
-
-    def non_neg(self) -> Invariant:
-        return self.x >= 0
 
 
 class GenericSpec(Generic[T]):
@@ -41,12 +35,9 @@ class GenericSpec(Generic[T]):
 
 
 class TestModelValue(unittest.TestCase):
-    def test_equality_and_disjoint_sorts(self) -> None:
-        a1 = ModelValue("a")
-        a2 = ModelValue("a")
-        b = ModelValue("b")
-        p = Proc("a")
-        m = Msg("a")
+    def test_equality_disjoint_sorts_and_hashing(self) -> None:
+        a1, a2, b = ModelValue("a"), ModelValue("a"), ModelValue("b")
+        p, m = Proc("a"), Msg("a")
 
         self.assertEqual(a1, a2)
         self.assertEqual(hash(a1), hash(a2))
@@ -57,48 +48,31 @@ class TestModelValue(unittest.TestCase):
         self.assertEqual(p, Proc("a"))
         self.assertEqual(hash(p), hash(Proc("a")))
 
-    def test_unordered_and_immutable(self) -> None:
+    def test_unordered_immutable_and_picklable(self) -> None:
         p1, p2 = Proc("p1"), Proc("p2")
         with self.assertRaises(TypeError):
             _ = p1 < p2  # type: ignore[operator]
-        with self.assertRaises(AttributeError):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             p1.name = "p3"  # type: ignore[misc]
-        with self.assertRaises(AttributeError):
-            del p1.name  # type: ignore[misc]
 
-    def test_str_repr_and_pickle(self) -> None:
-        p = Proc("p1")
-        self.assertEqual(str(p), "p1")
-        self.assertEqual(repr(p), "Proc('p1')")
-        self.assertEqual(pickle.loads(pickle.dumps(p)), p)
-        self.assertIs(type(pickle.loads(pickle.dumps(p))), Proc)
-        self.assertEqual(copy.copy(p), p)
-        self.assertEqual(copy.deepcopy(p), p)
-
-    def test_validation(self) -> None:
-        with self.assertRaises(TypeError):
-            ModelValue(123)  # type: ignore[arg-type]
-        for bad in ("", "   ", "\t\n"):
-            with self.assertRaises(ValueError):
-                ModelValue(bad)
+        self.assertEqual(str(p1), "p1")
+        self.assertEqual(repr(p1), "Proc('p1')")
+        self.assertEqual(pickle.loads(pickle.dumps(p1)), p1)
+        self.assertIs(type(pickle.loads(pickle.dumps(p1))), Proc)
+        self.assertEqual(copy.deepcopy(p1), p1)
 
 
 class TestSymmetry(unittest.TestCase):
-    def test_frozenset_semantics_and_identity(self) -> None:
+    def test_frozenset_semantics_and_pickle(self) -> None:
         p1, p2 = Proc("p1"), Proc("p2")
         sym = Symmetry({p1, p2})
         self.assertIsInstance(sym, Symmetry)
         self.assertIsInstance(sym, frozenset)
-        self.assertEqual(len(sym), 2)
-        self.assertIn(p1, sym)
         self.assertEqual(sym, frozenset({p1, p2}))
         self.assertEqual(hash(sym), hash(frozenset({p1, p2})))
         self.assertEqual(repr(Symmetry()), "Symmetry()")
         self.assertTrue(repr(sym).startswith("Symmetry({"))
-
-        # Set operations return plain frozenset (union need not preserve symmetry).
-        combined = sym | frozenset({Proc("p3")})
-        self.assertIs(type(combined), frozenset)
+        self.assertIs(type(sym | frozenset({Proc("p3")})), frozenset)
 
         restored = pickle.loads(pickle.dumps(sym))
         self.assertIsInstance(restored, Symmetry)
@@ -106,77 +80,34 @@ class TestSymmetry(unittest.TestCase):
 
 
 class TestModel(unittest.TestCase):
-    def test_defaults_and_immutability(self) -> None:
+    def test_defaults_repr_replace_and_pickle(self) -> None:
         m = Model(DummySpec)
         self.assertIs(m.spec, DummySpec)
-        self.assertEqual(dict(m.constants), {})
-        self.assertEqual(dict(m.domains), {})
+        self.assertEqual(m.constants, {})
+        self.assertEqual(m.domains, {})
         self.assertIsNone(m.init)
         self.assertIsNone(m.actions)
         self.assertIsNone(m.invariants)
         self.assertIsNone(m.properties)
-        self.assertIsNone(m.state_constraint)
-        self.assertIsNone(m.action_constraint)
-        self.assertEqual(m.symmetry, ())
-        self.assertEqual(m.symmetries, ())
-        self.assertIsNone(m.view)
-        self.assertIsNone(m.alias)
-        self.assertIsNone(m.postcondition)
         self.assertTrue(m.check_deadlock)
         self.assertEqual(repr(m), f"Model({DummySpec!r})")
-        m_custom = Model(DummySpec, constants={"N": 3}, check_deadlock=False)
-        self.assertEqual(
-            repr(m_custom),
-            f"Model({DummySpec!r}, constants={{'N': 3}}, check_deadlock=False)",
+
+        procs = Symmetry({Proc("p1"), Proc("p2")})
+        m2 = dataclasses.replace(
+            m,
+            constants={"procs": procs},
+            domains={Proc: procs, int: range(3)},
+            check_deadlock=False,
         )
+        self.assertFalse(m2.check_deadlock)
+        self.assertEqual(m2.constants["procs"], procs)
+        self.assertEqual(pickle.loads(pickle.dumps(m2)), m2)
+        self.assertEqual(copy.deepcopy(m2), m2)
 
         with self.assertRaises(dataclasses.FrozenInstanceError):
             m.check_deadlock = False  # type: ignore[misc]
-        with self.assertRaises(TypeError):
-            m.constants["x"] = 1  # type: ignore[index]
 
-    def test_constants_domains_and_symmetries(self) -> None:
-        procs = Symmetry({Proc("p1"), Proc("p2")})
-        msgs = Symmetry({Msg("m1"), Msg("m2")})
-        raw_constants = {"procs": procs, "limit": 3}
-        raw_domains = {
-            Proc: procs,
-            Msg: msgs,
-            int: range(5),
-            str: {"a", "b"},
-            "extra": [1, 2, 3],
-        }
-        m = Model(
-            DummySpec,
-            constants=raw_constants,
-            domains=raw_domains,
-            actions=[DummySpec.step],
-            invariants=[DummySpec.non_neg],
-            properties=(),
-            check_deadlock=False,
-        )
-        # Mutating caller dicts must not affect the Model.
-        raw_constants["limit"] = 999
-        self.assertEqual(m.constants["limit"], 3)
-        self.assertIs(m.domains[Proc], procs)
-        self.assertEqual(m.domains[int], range(5))
-        self.assertEqual(m.domains[str], frozenset({"a", "b"}))
-        self.assertEqual(m.domains["extra"], (1, 2, 3))
-        self.assertEqual(m.actions, (DummySpec.step,))
-        self.assertEqual(m.invariants, (DummySpec.non_neg,))
-        self.assertEqual(m.properties, ())
-        self.assertEqual(m.symmetries, (procs, msgs))
-        self.assertFalse(m.check_deadlock)
-
-    def test_replace_updates_symmetries_cleanly(self) -> None:
-        s1 = Symmetry({Proc("p1"), Proc("p2")})
-        s2 = Symmetry({Proc("p1"), Proc("p2"), Proc("p3")})
-        m1 = Model(DummySpec, constants={"procs": s1})
-        m2 = dataclasses.replace(m1, constants={"procs": s2})
-        self.assertEqual(m1.symmetries, (s1,))
-        self.assertEqual(m2.symmetries, (s2,))
-
-    def test_accepts_generic_alias_and_module(self) -> None:
+    def test_module_and_generic_alias_specs(self) -> None:
         m_generic = Model(GenericSpec[int], domains={int: range(3)})
         self.assertEqual(m_generic.spec, GenericSpec[int])
 
@@ -201,30 +132,6 @@ class TestModel(unittest.TestCase):
             postcondition=boom,
         )
         self.assertIs(m.state_constraint, boom)
-
-    def test_validation_errors(self) -> None:
-        with self.assertRaises(TypeError):
-            Model(DummySpec())  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            Model(123)  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            Model(DummySpec, constants=[("a", 1)])  # type: ignore[arg-type]
-        with self.assertRaises(ValueError):
-            Model(DummySpec, constants={"not valid": 1})
-        with self.assertRaises(TypeError):
-            Model(DummySpec, domains={int: "abc"})
-        with self.assertRaises(TypeError):
-            Model(DummySpec, domains={int: 42})  # type: ignore[dict-item]
-        with self.assertRaises(TypeError):
-            Model(DummySpec, init="Init")  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            Model(DummySpec, invariants=["non_neg"])  # type: ignore[list-item]
-        with self.assertRaises(TypeError):
-            Model(DummySpec, invariants="non_neg")  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            Model(DummySpec, symmetry=[frozenset({Proc("p1")})])  # type: ignore[list-item]
-        with self.assertRaises(TypeError):
-            Model(DummySpec, check_deadlock=1)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

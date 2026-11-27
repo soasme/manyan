@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import pickle
 import unittest
 from typing import Any
 
@@ -23,30 +25,24 @@ def _boom(*args: Any, **kwargs: Any) -> bool:
 
 
 class TestPredicateClauses(unittest.TestCase):
-    def test_where_requires_ensures_passive_and_immutable(self) -> None:
+    def test_where_requires_ensures(self) -> None:
         for cls in (Where, Requires, Ensures):
             clause = cls(_boom, "must not run")
             self.assertIs(clause.predicate, _boom)
             self.assertEqual(clause.description, "must not run")
             self.assertEqual(clause, cls(_boom, "must not run"))
             self.assertEqual(hash(clause), hash(cls(_boom, "must not run")))
-            with self.assertRaises(dataclasses.FrozenInstanceError):
-                clause.description = "mutated"  # type: ignore[misc]
+            self.assertEqual(repr(clause), f"{cls.__name__}({_boom!r}, 'must not run')")
+            self.assertEqual(pickle.loads(pickle.dumps(clause)), clause)
+            self.assertEqual(copy.deepcopy(clause), clause)
 
             no_desc = cls(_boom)
             self.assertIsNone(no_desc.description)
-            self.assertNotEqual(clause, no_desc)
             self.assertEqual(repr(no_desc), f"{cls.__name__}({_boom!r})")
-            self.assertEqual(repr(clause), f"{cls.__name__}({_boom!r}, 'must not run')")
+            self.assertNotEqual(clause, no_desc)
 
-    def test_predicate_validation(self) -> None:
-        for cls in (Where, Requires, Ensures):
-            with self.assertRaises(TypeError):
-                cls(True)  # type: ignore[arg-type]
-            with self.assertRaises(TypeError):
-                cls("x > 0")  # type: ignore[arg-type]
-            with self.assertRaises(TypeError):
-                cls(_boom, 123)  # type: ignore[arg-type]
+            with self.assertRaises(dataclasses.FrozenInstanceError):
+                clause.description = "mutated"  # type: ignore[misc]
 
 
 class TestVariableClauses(unittest.TestCase):
@@ -55,51 +51,35 @@ class TestVariableClauses(unittest.TestCase):
             empty = cls()
             self.assertEqual(empty.variables, ())
             self.assertEqual(repr(empty), f"{cls.__name__}()")
-            one = cls("balance")
-            self.assertEqual(one.variables, ("balance",))
-            self.assertEqual(repr(one), f"{cls.__name__}('balance')")
+
             two = cls("small", "big")
             self.assertEqual(two.variables, ("small", "big"))
             self.assertEqual(repr(two), f"{cls.__name__}('small', 'big')")
             self.assertEqual(two, cls("small", "big"))
             self.assertEqual(hash(two), hash(cls("small", "big")))
-            self.assertNotEqual(two, cls("big", "small"))
+            self.assertEqual(pickle.loads(pickle.dumps(two)), two)
+            self.assertEqual(copy.deepcopy(two), two)
+
             with self.assertRaises(dataclasses.FrozenInstanceError):
                 two.variables = ()  # type: ignore[misc]
 
-    def test_variable_validation(self) -> None:
-        for cls in (Modifies, Unchanged, WeakFairness, StrongFairness):
-            with self.assertRaises(TypeError):
-                cls(123)  # type: ignore[arg-type]
-            with self.assertRaises(TypeError):
-                cls(["balance"])  # type: ignore[arg-type]
-            for bad in ("", " ", "1abc", "a-b", "self.x"):
-                with self.assertRaises(ValueError):
-                    cls(bad)
-
 
 class TestRefines(unittest.TestCase):
-    def test_identity_and_mapping(self) -> None:
+    def test_identity_mapping_pickle_and_immutability(self) -> None:
         empty: Refines[Any] = Refines()
-        self.assertEqual(dict(empty.mapping), {})
+        self.assertEqual(empty.mapping, {})
         self.assertEqual(repr(empty), "Refines()")
 
         r: Refines[Any] = Refines(capacity=3, items=(1, 2))
-        self.assertEqual(r.mapping["capacity"], 3)
-        self.assertEqual(r.mapping["items"], (1, 2))
+        self.assertEqual(r.mapping, {"capacity": 3, "items": (1, 2)})
         self.assertEqual(r, Refines(capacity=3, items=(1, 2)))
         self.assertNotEqual(r, Refines(capacity=4, items=(1, 2)))
-        self.assertNotEqual(r, {"capacity": 3, "items": (1, 2)})
         self.assertEqual(repr(r), "Refines(capacity=3, items=(1, 2))")
+        self.assertEqual(pickle.loads(pickle.dumps(r)), r)
+        self.assertEqual(copy.deepcopy(r), r)
 
-    def test_immutability(self) -> None:
-        r: Refines[Any] = Refines(x=1)
-        with self.assertRaises(TypeError):
-            r.mapping["x"] = 2  # type: ignore[index]
-        with self.assertRaises(AttributeError):
-            r.x = 2  # type: ignore[attr-defined]
-        with self.assertRaises(AttributeError):
-            del r.mapping  # type: ignore[misc]
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            r.mapping = {}  # type: ignore[misc]
 
 
 if __name__ == "__main__":

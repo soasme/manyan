@@ -1,4 +1,4 @@
-"""Generic behavioural Protocol and concrete RingBuffer refinement mapping."""
+"""Generic behavioural Protocol (pure signatures) and concrete RingBuffer refinement."""
 
 from __future__ import annotations
 
@@ -31,19 +31,17 @@ Positive = Annotated[int, Where(lambda x: x > 0)]
 
 
 class BoundedQueue(Protocol[T]):
-    """Abstract behavioural protocol for a bounded FIFO queue."""
+    """Abstract behavioural protocol for a bounded FIFO queue (signatures only)."""
 
     capacity: Const[Positive]
     items: State[tuple[T, ...]]
 
-    def positive_capacity(self) -> Assume:
-        return self.capacity > 0
-
-    def init(self) -> Init:
-        return self.items == ()
-
-    def bounded(self) -> Invariant:
-        return 0 <= len(self.items) <= self.capacity
+    positive_capacity: Annotated[Assume, lambda self: self.capacity > 0]
+    init: Annotated[Init, lambda self: self.items == ()]
+    bounded: Annotated[Invariant, lambda self: 0 <= len(self.items) <= self.capacity]
+    eventually_drained: Annotated[
+        Property, lambda self: leads_to(len(self.items) > 0, len(self.items) == 0)
+    ]
 
     def push(self, item: T) -> Annotated[
         Action[None],
@@ -60,9 +58,6 @@ class BoundedQueue(Protocol[T]):
         WeakFairness(),
     ]: ...
 
-    def eventually_drained(self) -> Property:
-        return leads_to(len(self.items) > 0, len(self.items) == 0)
-
 
 class RingBuffer(Generic[T]):
     """Concrete circular-buffer implementation refining BoundedQueue[T]."""
@@ -72,25 +67,26 @@ class RingBuffer(Generic[T]):
     _head: State[int]
     _size: State[int]
 
+    init: Annotated[
+        Init,
+        lambda self: (
+            self._buf == (None,) * self.capacity and self._head == 0 and self._size == 0
+        ),
+    ]
+    shape_ok: Annotated[
+        Invariant,
+        lambda self: (
+            len(self._buf) == self.capacity
+            and 0 <= self._head < self.capacity
+            and 0 <= self._size <= self.capacity
+        ),
+    ]
+
     def __init__(self, capacity: Positive) -> None:
         self.capacity = capacity
         self._buf = (None,) * capacity
         self._head = 0
         self._size = 0
-
-    def init(self) -> Init:
-        return (
-            self._buf == (None,) * self.capacity
-            and self._head == 0
-            and self._size == 0
-        )
-
-    def shape_ok(self) -> Invariant:
-        return (
-            len(self._buf) == self.capacity
-            and 0 <= self._head < self.capacity
-            and 0 <= self._size <= self.capacity
-        )
 
     @property
     def size(self) -> Pure[int]:

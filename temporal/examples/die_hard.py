@@ -1,4 +1,4 @@
-"""DieHard water jug puzzle in both declarative and imperative Temporal styles.
+"""DieHard water jug puzzle in declarative and executable Temporal styles.
 
 Mirrors ``examples/DieHard.tla``: measure 4 gallons with a 3-gallon jug and
 a 5-gallon jug. Violating ``not_solved`` produces a trace that solves the puzzle.
@@ -7,18 +7,20 @@ a 5-gallon jug. Violating ``not_solved`` produces a trace that solves the puzzle
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Annotated, ClassVar
 
 from temporal import Action, Init, Invariant, Model, State, prime, unchanged
 
 
 class DieHardSpec:
-    """Pure declarative TLA+ style using prime() and unchanged()."""
+    """Pure declarative TLA+ model using signature-level PEP 593 annotations."""
 
     small: State[int]
     big: State[int]
 
-    def init(self) -> Init:
-        return self.small == 0 and self.big == 0
+    init: Annotated[Init, lambda self: self.small == 0 and self.big == 0]
+    type_ok: Annotated[Invariant, lambda self: 0 <= self.small <= 3 and 0 <= self.big <= 5]
+    not_solved: Annotated[Invariant, lambda self: self.big != 4]
 
     def fill_small(self) -> Action[bool]:
         return prime(self.small) == 3 and unchanged(self.big)
@@ -40,22 +42,19 @@ class DieHardSpec:
         poured = min(self.big, 3 - self.small)
         return prime(self.big) == self.big - poured and prime(self.small) == self.small + poured
 
-    def type_ok(self) -> Invariant:
-        return 0 <= self.small <= 3 and 0 <= self.big <= 5
-
-    def not_solved(self) -> Invariant:
-        return self.big != 4
-
 
 @dataclass
 class DieHard:
-    """Executable Python implementation annotated with Temporal declarations."""
+    """Executable Python implementation with signature-level specifications."""
 
     small: State[int] = 0
     big: State[int] = 0
 
-    def init(self) -> Init:
-        return self.small == 0 and self.big == 0
+    init: ClassVar[Annotated[Init, lambda self: self.small == 0 and self.big == 0]]
+    type_ok: ClassVar[
+        Annotated[Invariant, lambda self: 0 <= self.small <= 3 and 0 <= self.big <= 5]
+    ]
+    not_solved: ClassVar[Annotated[Invariant, lambda self: self.big != 4]]
 
     def fill_small(self) -> Action[None]:
         self.small = 3
@@ -78,12 +77,6 @@ class DieHard:
         poured = min(self.big, 3 - self.small)
         self.big -= poured
         self.small += poured
-
-    def type_ok(self) -> Invariant:
-        return 0 <= self.small <= 3 and 0 <= self.big <= 5
-
-    def not_solved(self) -> Invariant:
-        return self.big != 4
 
 
 spec_model = Model(DieHardSpec)

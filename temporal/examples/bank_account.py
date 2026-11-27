@@ -1,9 +1,9 @@
-"""Bank account demonstrating contracts, refined types, ghost state, and action invariants."""
+"""Bank account with signature-level contracts, refined types, ghost state, and action invariants."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from temporal import (
     Action,
@@ -36,23 +36,21 @@ class BankAccount:
     balance: State[int] = 0
     ledger: Ghost[tuple[int, ...]] = ()
 
-    def valid_owner(self) -> Assume:
-        return len(self.owner) > 0
-
-    def init(self) -> Init:
-        return self.balance == 0 and self.ledger == ()
-
-    def within_limit(self) -> Invariant:
-        return self.balance >= -self.credit_limit
-
-    def ledger_matches_balance(self) -> Invariant:
-        return sum(self.ledger) == self.balance
-
-    def ledger_append_only(self) -> ActionInvariant:
-        return (
-            len(prime(self.ledger)) >= len(self.ledger)
-            and prime(self.ledger)[: len(self.ledger)] == self.ledger
-        )
+    valid_owner: ClassVar[Annotated[Assume, lambda self: len(self.owner) > 0]]
+    init: ClassVar[Annotated[Init, lambda self: self.balance == 0 and self.ledger == ()]]
+    within_limit: ClassVar[Annotated[Invariant, lambda self: self.balance >= -self.credit_limit]]
+    ledger_matches_balance: ClassVar[
+        Annotated[Invariant, lambda self: sum(self.ledger) == self.balance]
+    ]
+    ledger_append_only: ClassVar[
+        Annotated[
+            ActionInvariant,
+            lambda self: (
+                len(prime(self.ledger)) >= len(self.ledger)
+                and prime(self.ledger)[: len(self.ledger)] == self.ledger
+            ),
+        ]
+    ]
 
     @property
     def available(self) -> Pure[NonNegative]:

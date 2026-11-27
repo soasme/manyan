@@ -1,4 +1,4 @@
-"""Tests for Temporal declaration annotations, typing integration, and zero dependencies."""
+"""Tests for PEP 593 declaration annotations, typing integration, and zero dependencies."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from typing import (
     Annotated,
+    ClassVar,
     Generic,
     Protocol,
     TypeVar,
@@ -34,44 +35,34 @@ from temporal import (
     Role,
     State,
     Where,
-    get_metadata,
-    get_role,
-    strip_temporal,
 )
 
 T = TypeVar("T")
 Positive = Annotated[int, Where(lambda x: x > 0)]
 
 
-class TestDeclarationAliases(unittest.TestCase):
+class TestDeclarationAnnotations(unittest.TestCase):
     def test_all_roles_covered(self) -> None:
         role_map = {
-            Role.CONST: Const[int],
-            Role.STATE: State[int],
-            Role.GHOST: Ghost[int],
-            Role.ASSUME: Assume,
-            Role.INIT: Init,
-            Role.PURE: Pure[int],
-            Role.ACTION: Action[None],
-            Role.INVARIANT: Invariant,
-            Role.ACTION_INVARIANT: ActionInvariant,
-            Role.PROPERTY: Property,
-            Role.FAIRNESS: Fairness,
+            Role.CONST: (Const[int], int),
+            Role.STATE: (State[int], int),
+            Role.GHOST: (Ghost[tuple[int, ...]], tuple[int, ...]),
+            Role.ASSUME: (Assume, bool),
+            Role.INIT: (Init, bool),
+            Role.PURE: (Pure[float], float),
+            Role.ACTION: (Action[None], type(None)),
+            Role.INVARIANT: (Invariant, bool),
+            Role.ACTION_INVARIANT: (ActionInvariant, bool),
+            Role.PROPERTY: (Property, bool),
+            Role.FAIRNESS: (Fairness, bool),
         }
-        self.assertEqual(set(role_map.keys()), set(Role))
-        for expected_role, ann in role_map.items():
+        self.assertEqual(set(role_map), set(Role))
+        for role, (ann, underlying) in role_map.items():
             self.assertIs(get_origin(ann), Annotated)
-            self.assertIs(get_role(ann), expected_role)
-
-    def test_underlying_types(self) -> None:
-        self.assertIs(strip_temporal(Const[str]), str)
-        self.assertIs(strip_temporal(State[int]), int)
-        self.assertEqual(strip_temporal(Ghost[tuple[int, ...]]), tuple[int, ...])
-        self.assertIs(strip_temporal(Pure[float]), float)
-        self.assertIs(strip_temporal(Action[int]), int)
-        self.assertIs(strip_temporal(Action[None]), type(None))
-        for bool_ann in (Assume, Init, Invariant, ActionInvariant, Property, Fairness):
-            self.assertIs(strip_temporal(bool_ann), bool)
+            args = get_args(ann)
+            self.assertEqual(args[0], underlying)
+            self.assertIs(args[1], role)
+            self.assertEqual(repr(role), f"Role.{role.name}")
 
     def test_annotated_flattening(self) -> None:
         req = Requires(lambda self, x: x > 0)
@@ -79,57 +70,37 @@ class TestDeclarationAliases(unittest.TestCase):
         combined = Annotated[Action[int], req, ens]
         self.assertIs(get_origin(combined), Annotated)
         self.assertEqual(get_args(combined), (int, Role.ACTION, req, ens))
-        self.assertIs(get_role(combined), Role.ACTION)
-        self.assertEqual(get_metadata(combined), (Role.ACTION, req, ens))
+
+        inv_pred = lambda self: True
+        inv_ann = Annotated[Invariant, inv_pred]
+        self.assertEqual(get_args(inv_ann), (bool, Role.INVARIANT, inv_pred))
 
     def test_composed_refined_type_alias(self) -> None:
         state_pos = State[Positive]
-        self.assertIs(get_role(state_pos), Role.STATE)
-        self.assertIs(strip_temporal(state_pos), int)
-        meta = get_metadata(state_pos)
-        self.assertEqual(len(meta), 2)
-        self.assertIsInstance(meta[0], Where)
-        self.assertIs(meta[1], Role.STATE)
+        args = get_args(state_pos)
+        self.assertIs(args[0], int)
+        self.assertIsInstance(args[1], Where)
+        self.assertIs(args[2], Role.STATE)
 
-    def test_foreign_metadata_preserved(self) -> None:
-        class ForeignTag:
-            pass
-
-        tag = ForeignTag()
-        ann = Annotated[State[int], tag, "doc"]
-        self.assertIs(get_role(ann), Role.STATE)
-        self.assertEqual(get_metadata(ann), (Role.STATE,))
-        stripped = strip_temporal(ann)
-        self.assertIs(get_origin(stripped), Annotated)
-        self.assertEqual(get_args(stripped), (int, tag, "doc"))
-
-    def test_conflicting_roles_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            get_role(State[Const[int]])
-        with self.assertRaises(ValueError):
-            get_role(Annotated[Init, Role.INVARIANT])
-
-    def test_duplicate_same_role_allowed(self) -> None:
-        self.assertIs(get_role(Annotated[State[int], Role.STATE]), Role.STATE)
-
-    def test_dataclass_interoperability(self) -> None:
+    def test_dataclass_and_signature_level_annotations(self) -> None:
         @dataclasses.dataclass
         class Jugs:
             capacity: Const[int]
             level: State[int] = 0
             moves: Ghost[int] = 0
 
-            def invariant(self) -> Invariant:
-                return 0 <= self.level <= self.capacity
+            bounded: ClassVar[Annotated[Invariant, lambda self: 0 <= self.level <= self.capacity]]
 
         j = Jugs(capacity=5)
-        self.assertEqual(j.capacity, 5)
-        self.assertEqual(j.level, 0)
-        self.assertEqual(j.moves, 0)
-        self.assertTrue(j.invariant())
         self.assertEqual(dataclasses.asdict(j), {"capacity": 5, "level": 0, "moves": 0})
-        field_names = [f.name for f in dataclasses.fields(Jugs)]
-        self.assertEqual(field_names, ["capacity", "level", "moves"])
+        self.assertEqual([f.name for f in dataclasses.fields(Jugs)], ["capacity", "level", "moves"])
+        self.assertFalse(hasattr(j, "bounded"))
+
+        hints = get_type_hints(Jugs, localns=locals(), include_extras=True)
+        self.assertIs(get_args(hints["capacity"])[1], Role.CONST)
+        self.assertIs(get_args(hints["level"])[1], Role.STATE)
+        self.assertIs(get_args(hints["moves"])[1], Role.GHOST)
+        self.assertIs(get_origin(hints["bounded"]), ClassVar)
 
     def test_protocol_and_generic_interoperability(self) -> None:
         class Box(Protocol[T]):
@@ -149,26 +120,25 @@ class TestDeclarationAliases(unittest.TestCase):
         b: SimpleBox[int] = SimpleBox(42)
         self.assertEqual(b.get(), 42)
         hints = get_type_hints(Box, localns={"T": T}, include_extras=True)
-        self.assertIs(get_role(hints["value"]), Role.STATE)
+        self.assertIs(get_args(hints["value"])[1], Role.STATE)
 
-    def test_zero_third_party_dependencies(self) -> None:
+    def test_single_module_and_zero_third_party_dependencies(self) -> None:
         pkg_dir = Path(temporal.__file__).resolve().parent
+        py_files = sorted(pkg_dir.glob("*.py"))
+        self.assertEqual([p.name for p in py_files], ["__init__.py"])
+
         stdlib = getattr(sys, "stdlib_module_names", None)
-        for py_file in sorted(pkg_dir.glob("*.py")):
-            tree = ast.parse(py_file.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        top = alias.name.split(".")[0]
-                        if stdlib is not None:
-                            self.assertIn(top, stdlib, f"Non-stdlib import {top!r} in {py_file.name}")
-                elif isinstance(node, ast.ImportFrom):
-                    if node.level > 0:
-                        continue
-                    assert node.module is not None
-                    top = node.module.split(".")[0]
+        tree = ast.parse(py_files[0].read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
                     if stdlib is not None:
-                        self.assertIn(top, stdlib, f"Non-stdlib import {top!r} in {py_file.name}")
+                        self.assertIn(top, stdlib)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                top = node.module.split(".")[0]
+                if stdlib is not None:
+                    self.assertIn(top, stdlib)
 
     def test_all_exports_present_and_sorted(self) -> None:
         self.assertEqual(temporal.__all__, sorted(temporal.__all__))

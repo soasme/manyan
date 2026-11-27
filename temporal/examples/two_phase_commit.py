@@ -1,4 +1,4 @@
-"""Two-Phase Commit protocol specification in Temporal (modeled after Lamport's TCommit/TwoPhase)."""
+"""Two-Phase Commit protocol specification in Temporal (modeled after Lamport's TwoPhase)."""
 
 from __future__ import annotations
 
@@ -38,15 +38,48 @@ class TwoPhaseCommit:
     tm_state: State[TMState]
     tm_prepared: State[frozenset[RM]]
 
-    def non_empty_rms(self) -> Assume:
-        return len(self.rms) > 0
-
-    def init(self) -> Init:
-        return (
+    non_empty_rms: Annotated[Assume, lambda self: len(self.rms) > 0]
+    init: Annotated[
+        Init,
+        lambda self: (
             self.rm_state == {r: "working" for r in self.rms}
             and self.tm_state == "init"
             and self.tm_prepared == frozenset()
-        )
+        ),
+    ]
+    consistent: Annotated[
+        Invariant,
+        lambda self: all(
+            not (self.rm_state[r1] == "committed" and self.rm_state[r2] == "aborted")
+            for r1 in self.rms
+            for r2 in self.rms
+        ),
+    ]
+    commit_requires_all_prepared: Annotated[
+        Invariant,
+        lambda self: implies(
+            self.tm_state == "committed",
+            all(self.rm_state[r] in ("prepared", "committed") for r in self.rms),
+        ),
+    ]
+    fair: Annotated[
+        Fairness,
+        lambda self: (
+            weak_fairness(self.tm_commit())
+            and all(
+                weak_fairness(self.rm_rcv_commit(r))
+                and weak_fairness(self.rm_rcv_abort(r))
+                for r in self.rms
+            )
+        ),
+    ]
+    decision_propagates: Annotated[
+        Property,
+        lambda self: implies(
+            self.tm_state == "committed",
+            eventually(all(self.rm_state[r] == "committed" for r in self.rms)),
+        ),
+    ]
 
     def rm_prepare(self, r: RM) -> Annotated[
         Action[bool],
@@ -106,36 +139,6 @@ class TwoPhaseCommit:
         return (
             prime(self.rm_state) == {**self.rm_state, r: "aborted"}
             and unchanged(self.tm_state, self.tm_prepared)
-        )
-
-    def consistent(self) -> Invariant:
-        """No resource manager commits while another aborts."""
-        return all(
-            not (self.rm_state[r1] == "committed" and self.rm_state[r2] == "aborted")
-            for r1 in self.rms
-            for r2 in self.rms
-        )
-
-    def commit_requires_all_prepared(self) -> Invariant:
-        return implies(
-            self.tm_state == "committed",
-            all(self.rm_state[r] in ("prepared", "committed") for r in self.rms),
-        )
-
-    def fair(self) -> Fairness:
-        return (
-            weak_fairness(self.tm_commit())
-            and all(
-                weak_fairness(self.rm_rcv_commit(r))
-                and weak_fairness(self.rm_rcv_abort(r))
-                for r in self.rms
-            )
-        )
-
-    def decision_propagates(self) -> Property:
-        return implies(
-            self.tm_state == "committed",
-            eventually(all(self.rm_state[r] == "committed" for r in self.rms)),
         )
 
 
