@@ -1,0 +1,37 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+<<"alias", 0>>
+State 1: <Init line 7, col 9 to line 7, col 13 of module alias_after_error_continue>
+/\ y = 0
+/\ p = TRUE
+
+<<"alias", 1>>
+State 2: <Next line 8, col 9 to line 8, col 27 of module alias_after_error_continue>
+/\ y = 1
+/\ p = TRUE
+
+<<"alias", 2>>
+State 3: <Next line 8, col 9 to line 8, col 27 of module alias_after_error_continue>
+/\ y = 2
+/\ p = TRUE
+
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+<<"alias", 0>>
+State 1: <Init line 7, col 9 to line 7, col 13 of module alias_after_error_continue>
+/\ y = 0
+/\ p = TRUE
+
+<<"alias", 1>>
+State 2: <Next line 8, col 9 to line 8, col 27 of module alias_after_error_continue>
+/\ y = 1
+/\ p = TRUE
+
+<<"alias", 2>>
+State 3: <Next line 8, col 9 to line 8, col 27 of module alias_after_error_continue>
+/\ y = 2
+/\ p = TRUE
+
+<<"post", {}>>
+exit 0

@@ -12468,8 +12468,12 @@ static void found_behavior(Value ***st, const int *act, int n, int loop, int loo
     found->length = (size_t)n, found->loop = (size_t)loop;
 }
 
+/* Whether TLC's simulator keeps no behavior of n states, as it does of a
+   safety violation's it goes on from: its CounterExample is empty. */
+static int sim_drops(int n, int loop) { return simulating && keep_going && n > 1 && loop <= 0; }
+
 static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased) {
-    aliased = alias_name ? aliased : 0;
+    aliased = alias_name && !sim_drops(n, loop) ? aliased : 0;
     Value **rec = NEWN(Value *, n);
     for (int i = 0; i < n && aliased == 1; i++) rec[i] = post_state(st, n, i, 1);
     if (!nposts) return;
@@ -12499,7 +12503,7 @@ static Value *counter_example_record(Value *states, Value *steps) {
 }
 
 static Value *counter_example(void) {
-    if (!checking_posts || !post_trace.n || (simulating && keep_going && post_trace.n > 1 && post_trace.loop <= 0)) {   /* TLC's simulator keeps no safety violation's behavior to go on */
+    if (!checking_posts || !post_trace.n || sim_drops(post_trace.n, post_trace.loop)) {
         if (!empty_counter_example) {
             Arena *saved = arena;
             arena = &perm_arena;
