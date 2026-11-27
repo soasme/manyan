@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 4, col 8 to line 4, col 8 of module name_selector_let
+A name selector here must be from a LET clause.

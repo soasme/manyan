@@ -467,9 +467,7 @@ expected output is Manyan's, and the oracle does not run it.
 Not supported, by decision, each for the reason given:
 
 - the proof language: TLC checks no proof, and neither does Manyan. It
-  parses and resolves proofs as SANY, but for an `INSTANCE` step, whose
-  names it does not bring, and a part of a step that is not an assertion
-  (`<1>1!1` of `<1>1. CASE e`), which it does not check.
+  parses and resolves proofs as SANY.
 - `-terse`: TLC prints a value as it builds it, an operator's body
   through SANY's own printing; Manyan builds its values first.
 - `-maxSetSize`: Manyan does not bound the sets it builds, where TLC

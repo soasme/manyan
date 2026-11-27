@@ -1,0 +1,4 @@
+SEMANTIC ERROR
+line 11, col 5 to line 11, col 29 of module proof_instance_step
+Multiply-defined symbol 'Leib': this definition or declaration conflicts
+with the one at line 10, col 20 to line 10, col 23 of module proof_instance_step.

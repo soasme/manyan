@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 4, col 8 to line 4, col 10 of module quantifier_selector_arity
+Selector with 1 argument(s) used for quantifier with 2 bound identifier(s).

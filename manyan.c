@@ -3935,7 +3935,25 @@ static int def_ahead(void) {
 /* A proof's steps, which X_PROOF lists. args[0] of an X_STEP is its
    proof, args[1] its DEF names (an X_PROOF of names), and the rest what it
    asserts or uses; def names a numbered step, and op is its kind. */
-enum { S_BY, S_USE, S_HIDE, S_QED, S_DEFINE, S_HAVE, S_WITNESS, S_TAKE, S_PICK, S_CASE, S_SUFFICES, S_ASSERT, S_OTHER };
+enum { S_BY, S_USE, S_HIDE, S_QED, S_DEFINE, S_HAVE, S_WITNESS, S_TAKE, S_PICK, S_CASE, S_SUFFICES, S_ASSERT, S_INSTANCE };
+
+/* What step e named at t is, for its parts: what it asserts, or one of
+   its kind of what it lists; PICK x \in S : e is \E x \in S : e, TAKE x
+   \in S its sets. USE, HIDE, DEFINE and INSTANCE have none. */
+static Expr *step_body(Expr *e, Tok *t) {
+    if (e->op == S_ASSERT) return e->args[2];
+    if (e->op != S_SUFFICES && e->op != S_CASE && e->op != S_HAVE && e->op != S_WITNESS && e->op != S_PICK && e->op != S_TAKE) return NULL;
+    Expr *w = mk_expr(X_STEP, t);
+    w->op = e->op;
+    if (e->op == S_PICK || e->op == S_TAKE) {
+        Expr *q = mk_expr(X_EXISTS, t);
+        q->bounds = e->bounds, q->nb = e->nb;
+        PUSH(q->args, q->n, e->op == S_PICK ? e->args[2] : NULL);   /* TAKE binds in nothing */
+        PUSH(w->args, w->n, q);
+    }
+    for (int i = 2; i < e->n && e->op != S_PICK; i++) PUSH(w->args, w->n, e->args[i]);
+    return w;
+}
 
 static Expr *mk_step(Tok *t, int kind) {
     Expr *e = mk_expr(X_STEP, t);
@@ -3995,7 +4013,7 @@ static Expr *parse_proof(int level);
 static Expr *parse_step(int level) {
     Tok *t = peek();
     static const char *kws[] = {"QED", "USE", "HIDE", "DEFINE", "HAVE", "WITNESS", "TAKE", "PICK", "CASE", "SUFFICES", "INSTANCE", NULL};
-    static const int kinds[] = {S_QED, S_USE, S_HIDE, S_DEFINE, S_HAVE, S_WITNESS, S_TAKE, S_PICK, S_CASE, S_SUFFICES, S_OTHER};
+    static const int kinds[] = {S_QED, S_USE, S_HIDE, S_DEFINE, S_HAVE, S_WITNESS, S_TAKE, S_PICK, S_CASE, S_SUFFICES, S_INSTANCE};
     int kind = def_ahead() ? S_DEFINE : S_ASSERT;
     for (int i = 0; kws[i]; i++) if (is_kw(t, kws[i])) kind = kinds[i];
     Expr *e = mk_step(t, kind);
@@ -4005,8 +4023,8 @@ static Expr *parse_step(int level) {
         parse_use_body(e);
     } else if (kind == S_DEFINE) {
         do PUSH(e->defs, e->ndefs, parse_definition(0)); while (def_ahead());
-    } else if (kind == S_OTHER) {
-        parse_instance(t, 0);
+    } else if (kind == S_INSTANCE) {
+        PUSH(e->defs, e->ndefs, parse_instance(t, 0));
     } else if (kind == S_TAKE || kind == S_PICK) {
         parse_bounds(e, 1);
         if (kind == S_PICK) expect_op(":"), PUSH(e->args, e->n, parse_expr());
@@ -4016,7 +4034,7 @@ static Expr *parse_step(int level) {
         Tok *a = peek();
         PUSH(e->args, e->n, is_kw(a, "ASSUME") ? parse_assume_prove(next()) : parse_expr());
     }
-    if (kind != S_USE && kind != S_HIDE && kind != S_DEFINE && kind != S_OTHER && proof_ahead(level)) e->args[0] = parse_proof(level);
+    if (kind != S_USE && kind != S_HIDE && kind != S_DEFINE && kind != S_INSTANCE && proof_ahead(level)) e->args[0] = parse_proof(level);
     finish(e);
     return e;
 }
@@ -4056,12 +4074,7 @@ static Expr *parse_proof(int level) {
             if (step_numbered(s)) {   /* <1>2. is <1>2, of the expression it asserts, if one */
                 const char *n = S(s->id);
                 step->def = thm_name(intern_n(n, (int)strlen(n) - (n[strlen(n) - 1] == '.')), s);
-                if (step->op == S_ASSERT) step->def->body = step->args[2];
-                if (step->op == S_SUFFICES) {   /* SUFFICES e: e its only part */
-                    Expr *w = step->def->body = mk_expr(X_STEP, s);
-                    w->op = S_SUFFICES;
-                    PUSH(w->args, w->n, step->args[2]);
-                }
+                step->def->body = step_body(step, s);
             }
             PUSH(e->args, e->n, step);
             if (qed) break;
@@ -4732,7 +4745,7 @@ static Module *load_module(int name, Module *from) {
 
 /* ---------------------------------------------------------------- resolver */
 
-typedef struct Scope { int name; Def *def; struct Scope *next; } Scope;
+typedef struct Scope { int name; Def *def; struct Scope *next; Expr *from; } Scope;   /* from: the INSTANCE step that brought it */
 
 static Module *cur_module;   /* the module being resolved */
 
@@ -5389,6 +5402,7 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
         root->args[0] = d->body;
     }
     Expr *cur = root;
+    if (cur->kind == X_STEP && (cur->op == S_PICK || cur->op == S_TAKE)) cur = cur->args[0];
     int names = 1, own = 0;   /* a name next is a label, else a LET definition */
     for (int k = i + 1; k < e->nseg; k++) {
         Seg *s = &e->segs[k];
@@ -5405,7 +5419,8 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
             own = 1;
         } else if (s->sel == 0) {
             Def *x = NULL;
-            for (int j = 0; cur->kind == X_LET && j < cur->ndefs && !x; j++)
+            if (cur->kind != X_LET) semantic_error(seg_at(e, s - 1), "A name selector here must be from a LET clause.");
+            for (int j = 0; j < cur->ndefs && !x; j++)
                 if (cur->defs[j]->name == s->name) x = cur->defs[j];
             if (!x || !x->body) semantic_error(seg_at(e, s), "Unknown operator: `%s'.", S(s->name));
             take(&sel, e, x->params, x->nparams, s);
@@ -5417,7 +5432,7 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
             int n = 0;
             if (cur->kind == X_NUM || cur->kind == X_STR) semantic_error(seg_at(e, s), "Selecting subexpression of expression that has none.");
             if (cur->kind == X_NEW) semantic_error(seg_at(e, s - 1), "Selected a subexpression of a NEW clause of an ASSUME.");   /* at what picked it */
-            if (cur->kind == X_STEP) {   /* SUFFICES e */
+            if (cur->kind == X_STEP && cur->op == S_SUFFICES && cur->args[0]->kind == X_ASSUMEPROVE) {
                 if (!(n = operand(s->sel, 1))) semantic_error(seg_at(e, s), "Accessing non-existent subexpression of a SUFFICES");
                 cur = cur->args[0];
             } else if (cur->kind == X_ASSUMEPROVE) {
@@ -5435,6 +5450,8 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
                             semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
                         for (int j = 0; j < cur->bounds[b].n && nbound < 64; j++) bound[nbound++] = cur->bounds[b].defs[j];
                     }
+                    if (s->sel == SEL_NULL && s->n != nbound)
+                        semantic_error(seg_at(e, s), "Selector with %d argument(s) used for quantifier with %d bound identifier(s).", s->n, nbound);
                     take(&sel, e, bound, nbound, s);
                     n = 1, cur = cur->args[0];
                 } else if ((n = operand(s->sel, cur->bounds[0].set ? cur->nb : 0))) {
@@ -5604,13 +5621,16 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
     e->nseg = np;
 }
 
+/* As SANY, step d named alone, e, as an expression or as a fact. */
+static void step_used(Expr *e, Def *d) {
+    static const char *kinds[] = {[S_HAVE] = "HAVE", [S_WITNESS] = "WITNESS", [S_TAKE] = "TAKE", [S_PICK] = "PICK", [S_CASE] = "CASE", [S_SUFFICES] = "SUFFICES"};
+    if (!d->body) semantic_error(e, e == fact_now ? "Step number of non-fact used as a fact" : "Step number of non-expression step used as an expression.");
+    if (d->body->kind != X_STEP || e == fact_now) return;
+    if (d->body->n == 1 && d->body->args[0]->kind == X_ASSUMEPROVE) semantic_error(e, "ASSUME/PROVE used where an expression is required.");
+    semantic_error(e, "%s proof step selected instead of expression.", kinds[d->body->op]);
+}
+
 static void resolve_name(Expr *e, Scope *sc, int want_arity) {
-    if (e->nseg > 1 && in_proof_expr) {   /* a part of a step or of ASSUME ... PROVE: not checked, never evaluated */
-        Def *d = scope_lookup(sc, e->segs[0].name);
-        Sym *sym = d ? NULL : module_lookup(cur_module, e->segs[0].name);
-        if (sym) d = sym->def;
-        if (d && d->kind == D_THM && !d->body) { e->kind = X_BOOL; e->num = 1; return; }
-    }
     if (e->nseg > 1) { resolve_path(e, sc, want_arity); return; }
     Seg *s = &e->segs[0];
     e->args = s->args;
@@ -5619,6 +5639,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
     if (d) {
         if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
         if (is_assume_prove(d) && e != fact_now) semantic_error(e, "ASSUME/PROVE used where an expression is required.");
+        if (d->kind == D_THM) step_used(e, d);
         int da = def_arity(d);
         if (want_arity > 0) {
             if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
@@ -6093,6 +6114,36 @@ static Scope *resolve_proof(Expr *e, Scope *sc) {
         for (int i = 0; i < e->ndefs; i++) {
             resolve_def(e->defs[i], after);
             after = bind(after, e->defs[i]->name, e->defs[i]);
+        }
+    } else if (e->op == S_INSTANCE) {   /* M's definitions, in the steps after */
+        Def *d = e->defs[0];
+        resolve_def(d, after);
+        Module *t = d->target;
+        for (int k = 0; k < t->nsyms; k++) {
+            Sym *y = &t->syms[k];
+            if (y->local || y->def->kind == D_CONST || y->def->kind == D_VAR) continue;
+            Scope *x = after;
+            while (x && x->name != y->name) x = x->next;
+            Sym *o = x ? NULL : module_lookup(cur_module, y->name);
+            Def *old = x ? x->def : o ? o->def : NULL;
+            if (!old) {
+                after = bind(after, y->name, y->def);
+                after->from = e;
+                continue;
+            }
+            /* As SANY, a definition of its arity again is a warning, the first kept. */
+            Expr span = x && x->from ? *x->from : sany_kind(old) == D_OP || old->thm ? def_span(old) : *old->where;
+            Buf here = {0}, there = {0};
+            file_loc_text(&here, e);
+            file_loc_text(&there, &span);
+            if (sany_kind(old) != D_OP || def_arity(old) != def_arity(y->def))
+                semantic_error(e, "Multiply-defined symbol '%s': this definition or declaration conflicts \nwith the one at %s.", S(y->name), there.s);
+            Module *file = file_module(cur_module);
+            buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
+                       here.s, S(y->name), there.s);
+            file->nwarnings++;
+            xfree(here.s);
+            xfree(there.s);
         }
     } else if (e->op == S_TAKE) {
         resolve_bounds(e, &after);
