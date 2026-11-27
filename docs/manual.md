@@ -466,9 +466,12 @@ expected output is Manyan's, and the oracle does not run it.
 
 Not supported, by decision, each for the reason given:
 
-- the proof language: TLC checks no proof, and Manyan skips each one,
-  with a theorem's `ASSUME ... PROVE`, unread. SANY rejects a malformed
-  proof, and so TLC; Manyan does not.
+- the proof language: TLC checks no proof, and neither does Manyan. It
+  parses proofs, and resolves a theorem's `ASSUME ... PROVE`, as SANY,
+  but not yet the names a proof's steps use: SANY rejects an unknown
+  fact or DEF name there; Manyan does not.
+- a subexpression of a function definition, `f!(3)` of `f[a \in S] ==
+  e`: SANY takes it of `[a \in S |-> e]`, Manyan refuses it.
 - `-terse`: TLC prints a value as it builds it, an operator's body
   through SANY's own printing; Manyan builds its values first.
 - `-maxSetSize`: Manyan does not bound the sets it builds, where TLC

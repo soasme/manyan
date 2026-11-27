@@ -2655,6 +2655,7 @@ typedef struct {
     int limit;        /* tokens at or left of this column end the junction item (§6.2) */
     Module *mod;
     const char *file;
+    int in_proof;     /* a step's name is an expression there, <1>2 */
 } Parser;
 
 static Parser *P;
@@ -2931,6 +2932,13 @@ static Expr **parse_args(int *count) {
     return args;
 }
 
+/* Whether t names a step, as a fact may: numbered, and without the period
+   that begins one. */
+static int step_name(Tok *t) {
+    const char *s = S(t->id), *close = strchr(s, '>');
+    return t->kind == T_STEP && isdigit((unsigned char)s[1]) && close[1] && s[strlen(s) - 1] != '.';
+}
+
 /* A name, its arguments, and instance selections: A!B(x)!C. */
 static Expr *parse_name(void) {
     Tok *start = peek();
@@ -2954,7 +2962,7 @@ static Expr *parse_name(void) {
             /* As SANY, a name, an operator, or a keyword that names one: I!+, I!SUBSET, I!TRUE. */
             int named = t->kind == T_OP || (t->kind == T_KW && (op_info(t, PREFIX) || op_info(t, INFIX) || op_info(t, POSTFIX) ||
                                                                 is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")));
-            if (t->kind == T_IDENT) s->name = t->id;
+            if (t->kind == T_IDENT || (n == 1 && t->kind == T_STEP)) s->name = t->id;
             else if (named) s->name = canonical(t->id);
             else syntax_error("expected a name");
             next();
@@ -3146,6 +3154,9 @@ static Expr *parse_primary(void) {
         e->len = t->len;
         return e;
     case T_IDENT:
+        return parse_name();
+    case T_STEP:
+        if (!P->in_proof || !step_name(t)) syntax_error("unexpected step");
         return parse_name();
     case T_KW:
         if (is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) {
@@ -3875,24 +3886,155 @@ static int at_unit_start(void) {
     return t->kind == T_EOF || t->kind == T_END || t->kind == T_SEP || t->col == 1;
 }
 
-/* The facts of a HIDE: names of theorems, assumptions, or steps, which
-   are the only expressions it may hide. */
-static void hide_facts(void) {
-    while (!at_unit_start() && !is_kw(peek(), "DEF") && !is_kw(peek(), "DEFS")) {
-        Tok *t = next();
-        if (is_kw(t, "MODULE")) next();
-        else if (t->kind != T_IDENT && t->kind != T_STEP)
-            semantic_error_later(mk_expr(X_NAME, t), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
-        while (is_op(peek(), "!") && !at_unit_start()) { next(); next(); }
-        if (!is_op(peek(), ",")) return;
-        next();
-    }
+/* The level of step t: its number, or star's for <*> and plus's for <+>. */
+static int step_level(Tok *t, int star, int plus) {
+    const char *s = S(t->id);
+    return s[1] == '*' ? star : s[1] == '+' ? plus : atoi(s + 1);
 }
 
-/* A proof, or the rest of USE, HIDE, or BY: up to the next unit. */
-static void skip_proof(void) {
-    while (!at_unit_start())
-        if (is_kw(next(), "HIDE")) hide_facts();
+/* Whether a definition begins here: F ==, F(x) ==, f[x \in S] ==, or an
+   operator's, a + b ==, -. a ==, a ^+ ==. */
+static int def_ahead(void) {
+    int k = 0;
+    Tok *t = peek_at(0);
+    if (t->kind == T_IDENT && (is_op(peek_at(1), "(") || is_op(peek_at(1), "["))) {
+        int depth = 0;
+        for (k = 1; peek_at(k)->kind != T_EOF; k++) {
+            depth += is_op(peek_at(k), "(") || is_op(peek_at(k), "[") ? 1 : is_op(peek_at(k), ")") || is_op(peek_at(k), "]") ? -1 : 0;
+            if (!depth) break;
+        }
+        return is_op(peek_at(k + 1), "==");
+    }
+    if (t->kind == T_IDENT) return is_op(peek_at(1), "==") || ((op_info(peek_at(1), INFIX) || op_info(peek_at(1), POSTFIX)) &&
+                                   (is_op(peek_at(2), "==") || (peek_at(2)->kind == T_IDENT && is_op(peek_at(3), "=="))));
+    return op_info(t, PREFIX) && peek_at(1)->kind == T_IDENT && is_op(peek_at(2), "==");
+}
+
+/* The facts and DEF names of BY, USE or HIDE; HIDE's facts are names. */
+static void parse_use_body(int hide) {
+    Tok *t = peek();
+    int none = at_unit_start() || (t->kind == T_STEP && !step_name(t)) || is_kw(t, "DEF") || is_kw(t, "DEFS");
+    static const char *ends[] = {"PROOF", "BY", "OBVIOUS", "OMITTED", "QED", "USE", "HIDE", NULL};
+    for (int i = 0; ends[i]; i++) none |= is_kw(t, ends[i]);
+    while (!none) {
+        Tok *f = peek();
+        if (is_kw(f, "MODULE")) {
+            next();
+            expect_ident();
+        } else if (parse_expr()->kind != X_NAME && hide) {
+            semantic_error_later(mk_expr(X_NAME, f), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
+        }
+        if (!is_op(peek(), ",")) break;
+        next();
+    }
+    if (!is_kw(peek(), "DEF") && !is_kw(peek(), "DEFS")) return;
+    next();
+    do {
+        Tok *d = peek();
+        if (is_kw(d, "MODULE")) next(), expect_ident();
+        else if (d->kind == T_IDENT) parse_name();
+        else if (is_op(d, "-.") || (d->kind == T_OP && !op_info(d, PREFIX) && (op_info(d, INFIX) || op_info(d, POSTFIX)))) next();
+        else syntax_error("expected a name");
+    } while (is_op(peek(), ",") && next());
+}
+
+/* Names bound by TAKE or PICK: x, y \in S, <<a, b>> \in T, or names alone. */
+static void parse_step_bounds(void) {
+    do {
+        if (is_op(peek(), "<<")) {
+            next();
+            do expect_ident(); while (is_op(peek(), ",") && next());
+            expect_op(">>");
+        } else {
+            expect_ident();
+        }
+        if (is_op(peek(), "\\in")) next(), parse_expr();
+    } while (is_op(peek(), ",") && next());
+}
+
+static Expr *parse_assume_prove(Tok *t);
+static int proof_ahead(int level);
+static void parse_proof(int level);
+
+/* What a step of level `level` asserts or does, after its name; then its
+   proof, if it may have one. */
+static void parse_step(int level) {
+    Tok *t = peek();
+    int proved = 1;
+    if (is_kw(t, "QED")) {
+        next();
+    } else if (is_kw(t, "USE") || is_kw(t, "HIDE")) {
+        next();
+        if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY only");
+        parse_use_body(is_kw(t, "HIDE"));
+        proved = 0;
+    } else if (is_kw(t, "DEFINE") || def_ahead()) {
+        if (is_kw(t, "DEFINE")) next();
+        do parse_definition(0); while (def_ahead());
+        proved = 0;
+    } else if (is_kw(t, "INSTANCE")) {
+        next();
+        parse_instance(t, 0);
+        proved = 0;
+    } else if (is_kw(t, "HAVE")) {
+        next();
+        parse_expr();
+    } else if (is_kw(t, "WITNESS")) {
+        next();
+        do parse_expr(); while (is_op(peek(), ",") && next());
+    } else if (is_kw(t, "TAKE")) {
+        next();
+        parse_step_bounds();
+    } else if (is_kw(t, "PICK")) {
+        next();
+        parse_step_bounds();
+        expect_op(":");
+        parse_expr();
+    } else if (is_kw(t, "CASE")) {
+        next();
+        parse_expr();
+    } else {
+        if (is_kw(t, "SUFFICES")) next();
+        if (is_kw(peek(), "ASSUME")) parse_assume_prove(next());
+        else parse_expr();
+    }
+    if (proved && proof_ahead(level)) parse_proof(level);
+}
+
+/* Whether a proof begins here, of a theorem (level 0) or of a step of
+   level `level`: a terminal one, or steps of a deeper level. */
+static int proof_ahead(int level) {
+    Tok *t = peek();
+    if (is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") || is_kw(t, "OMITTED")) return 1;
+    return t->kind == T_STEP && step_level(t, level ? level : 1, level + 1) > level;
+}
+
+/* A proof of a theorem (level 0) or of a step of level `level`: BY facts,
+   OBVIOUS, OMITTED, or steps of one deeper level, up to its QED. */
+static void parse_proof(int level) {
+    int saved = P->in_proof;
+    P->in_proof = 1;
+    if (is_kw(peek(), "PROOF")) next();
+    Tok *t = peek();
+    if (is_kw(t, "BY")) {
+        next();
+        if (is_kw(peek(), "ONLY")) next();
+        parse_use_body(0);
+    } else if (is_kw(t, "OBVIOUS") || is_kw(t, "OMITTED")) {
+        next();
+    } else {
+        if (t->kind != T_STEP) syntax_error("expected a proof");
+        int own = step_level(t, level + 1, level + 1);
+        for (;;) {
+            Tok *s = peek();
+            if (s->kind != T_STEP || step_level(s, own, own) != own) syntax_error("expected a step");
+            next();
+            int qed = is_kw(peek(), "QED");
+            parse_step(own);
+            if (qed) break;
+        }
+    }
+    P->in_proof = saved;
 }
 
 /* ASSUME items PROVE e, after ASSUME at t: each item a declaration, NEW c,
@@ -4026,18 +4168,21 @@ static Module *parse_module(Module *outer) {
             if (!at_unit_start() && p->kind != T_STEP && !is_kw(p, "PROOF") && !is_kw(p, "BY") && !is_kw(p, "OBVIOUS") && !is_kw(p, "OMITTED"))
                 syntax_error("expected a proof or a definition");
             int after = P->pos;
-            skip_proof();
+            if (proof_ahead(0)) parse_proof(0);
             Unit *u = add_unit(m, 6, d, body, NULL, 0);
             u->assume = assume;
             u->proved = P->pos != after;
             unit_span(u, first, prev_tok(), t->id, 0);
             continue;
         }
-        if (is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") ||
-            is_kw(t, "OMITTED") || t->kind == T_STEP) {
+        if (is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") || is_kw(t, "OMITTED") || t->kind == T_STEP)
+            syntax_error("a proof follows a theorem");   /* as SANY */
+        if (is_kw(t, "USE") || is_kw(t, "HIDE")) {
             next();
-            if (is_kw(t, "HIDE")) hide_facts();
-            skip_proof();
+            if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY only");
+            P->in_proof = 1;
+            parse_use_body(is_kw(t, "HIDE"));
+            P->in_proof = 0;
             if (fmt_mode) unit_span(add_unit(m, 6, NULL, NULL, NULL, 0), first, prev_tok(), t->id, 0);
             continue;
         }
@@ -4462,7 +4607,7 @@ static Module *find_module(int name) {
 static Module *parse_text(const char *text, const char *path) {
     int n;
     Tok *toks = lex(text, path, &n);
-    Parser p = {toks, 0, n, 0, NULL, path};
+    Parser p = {toks, 0, n, 0, NULL, path, 0};
     Parser *saved = P;
     P = &p;
     Module *m = parse_module(NULL);
@@ -5175,7 +5320,7 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     if (d->recursive == 2 || d->kind == D_RECURSIVE)
         semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
     if (d->kind != D_OP || !d->body)
-        semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
+        semantic_error(seg_at(e, &e->segs[i]), "Cannot take subexpression of `%s'.", S(d->name));
     Selection sel = {0};
     if (e->segs[i].n || !op) check_arity(e, d, e->segs[i].n, e->segs[i].args);
     take(&sel, e, d->params, d->nparams, &e->segs[i]);
