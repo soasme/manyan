@@ -1,0 +1,5 @@
+SEMANTIC ERROR
+line 5, col 1 to line 5, col 34 of module inst_nonconstant_module
+Level error in instantiating module 'NonConst':
+The level of the expression or operator substituted for 'c'
+must be at most 0.

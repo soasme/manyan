@@ -2401,9 +2401,12 @@ struct Module {
     int nunits, capunits;
     Module **nested;
     int nnested;
+    int *let_targets;     /* the modules a LET of its instantiates */
+    int nlet_targets;
     Tok *toks;
     int ntoks;
     int resolved;         /* 1 while resolving, 2 after */
+    int constant;         /* SANY's: 1 a constant module, 2 not, 0 unknown */
     int standard;         /* read from the text of a standard module */
     int instantiated;     /* the target of an INSTANCE */
     Expr *odd[3];         /* its first decimal or too big integer: in a definition, an assumption, a theorem */
@@ -3196,7 +3199,9 @@ static Expr *parse_primary(void) {
                 }
                 int loc = 0;
                 if (is_kw(peek(), "LOCAL")) { loc = 1; next(); }
-                PUSH(e->defs, e->ndefs, parse_definition(loc));
+                Def *d = parse_definition(loc);
+                if (d->kind == D_INST) PUSH(P->mod->let_targets, P->mod->nlet_targets, (int)(intptr_t)d->target);
+                PUSH(e->defs, e->ndefs, d);
             }
             next();
             e->n = 1;
@@ -4920,6 +4925,8 @@ static Def *operator_def(Expr *at, int op, Scope *sc) {
 }
 
 static int expr_level(Expr *e);
+static int def_level(Def *d);
+static int module_constant(Module *m);
 
 /* TLA+ has no raw actions in temporal formulas (§6.10). */
 static void check_temporal(Expr *e) {
@@ -5719,9 +5726,13 @@ static void resolve_def(Def *d, Scope *sc) {
             if (decl->arity > 0 && exprs[i]->kind == X_LAMBDA && exprs[i]->def->nparams != decl->arity)
                 semantic_error(exprs[i], "An operator must be substituted for symbol '%s', and it must have arity %d.", S(decl->name), decl->arity);
             resolve_arg(exprs[i], inner, decl->arity, i, S(t->name), NULL, NULL, NULL);
-            if (decl->arity > 0 && exprs[i]->def && is_non_leibniz(exprs[i]->def))
+            if (decl->arity > 0 && exprs[i]->def && is_non_leibniz(exprs[i]->def)) {
+                if (!module_constant(t) && expr_level(exprs[i]) > 0)   /* as SANY, its level first */
+                    semantic_error(d->where, "Level error in instantiating module '%s':\nThe level of the expression or operator substituted for '%s' \nmust be at most 0.",
+                                   S(t->name), S(decl->name));
                 semantic_error(d->where, "Error in instantiating module '%s':\n A non-Leibniz operator substituted for '%s'.",
                                S(t->name), S(decl->name));
+            }
         }
         d->nsubst = t->ndecls;
         d->subst_decl = decls;
@@ -5963,6 +5974,19 @@ static void resolve_module(Module *m) {
                     Buf t = {0};
                     file_loc_text(&t, &there);
                     semantic_error(&here, "Multiply-defined module '%s': this definition or declaration conflicts \nwith the one at %s.", S(u->module->name), t.s);
+                }
+            int instantiated = 0;   /* by the module itself, anywhere: then SANY takes the LET's for it */
+            for (int k = 0; k < m->nunits; k++) {
+                Def *x = m->units[k].def;
+                if ((m->units[k].kind == 1 || (m->units[k].kind == 0 && x->kind == D_INST)) &&
+                    (x->target == u->module || (int)(intptr_t)x->target == u->module->name)) instantiated = 1;
+            }
+            for (int k = 0; k < m->nlet_targets && !instantiated; k++)
+                if (m->let_targets[k] == u->module->name) {   /* SANY's: as if read again, as its own file */
+                    Module *a = u->module;
+                    Expr here = text_span(a, a->pos, a->end);
+                    semantic_error(&here, "Multiply-defined module '%s': this definition or declaration conflicts \nwith the one at line 1, col %d to line %d, col %d of module %s.",
+                                   S(a->name), here.c1, here.l2 - here.l1 + 1, here.c2, S(a->name));
                 }
             u->module->nouter_syms = m->nsyms;
             resolve_module(u->module);
@@ -6304,6 +6328,21 @@ static void check_levels_of(Expr *e, int max) {
     }
 }
 
+/* Whether m is constant, as SANY: it declares no variable, nor defines,
+   assumes or asserts anything above constant level. A constant of a module
+   that is not is substituted by a constant only. */
+static int module_constant(Module *m) {
+    if (m->constant) return m->constant == 1;
+    m->constant = 1;
+    for (int i = 0; i < m->nsyms && m->constant == 1; i++) {
+        Def *d = m->syms[i].def;
+        if (d->kind == D_VAR || (!m->syms[i].npath && (d->kind == D_OP || d->kind == D_FCN) && d->body && def_level(d) > 0)) m->constant = 2;
+    }
+    for (int i = 0; i < m->nunits && m->constant == 1; i++)
+        if ((m->units[i].kind == 2 || m->units[i].kind == 6) && m->units[i].expr && expr_level(m->units[i].expr) > 0) m->constant = 2;
+    return m->constant == 1;
+}
+
 /* A definition, once: its body, or an instance's substitutions, each of a
    level its declaration allows. */
 static void check_def_levels(Def *d) {
@@ -6313,9 +6352,10 @@ static void check_def_levels(Def *d) {
         for (int i = 0; i < d->nsubst; i++) {
             Def *decl = d->subst_decl[i];
             Expr *x = d->subst_expr[i];
-            if (expr_level(x) > level_max(decl))
+            int max = decl->kind == D_CONST && !module_constant(d->target) ? 0 : level_max(decl);
+            if (expr_level(x) > max)
                 semantic_error(d->where, "Level error in instantiating module '%s':\nThe level of the expression or operator substituted for '%s' \nmust be at most %d.",
-                               S(d->target->name), S(decl->name), level_max(decl));
+                               S(d->target->name), S(decl->name), max);
             check_levels(x, level_max(decl));
             if (decl->arity > 0)
                 check_ho_arg(d->where, S(d->target->name), 1, decl, x, d->subst_decl, d->subst_expr, d->nsubst);
