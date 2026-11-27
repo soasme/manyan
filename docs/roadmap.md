@@ -27,8 +27,9 @@ from TLC.
   random `-fp`, all print what TLC prints: Manyan orders a state's
   successors as TLC's table of them does, by TLC's fingerprints, checks
   the properties as TLC does, by its possible error models, and builds
-  TLC's tableau of particles. The rest: a simulation's counterexample,
-  which TLC finds by another search of the behavior (`LiveCheck1`).
+  TLC's tableau of particles. A simulation searches its behavior as
+  TLC's `LiveCheck1` does, and prints the lasso it finds where TLC
+  prints the behavior's first states.
 - Check Manyan against the semantics of TLA⁺, not only TLC: `make
   fuzz-prove` asks TLAPS to prove the value Manyan prints, `make
   fuzz-ref` compares it with `lean/`, a reference semantics in Lean 4,
