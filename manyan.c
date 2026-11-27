@@ -2269,7 +2269,7 @@ typedef struct { int name; int sel; Expr **args; int n; int line, col; } Seg;   
 enum { SEL_LL = -1, SEL_GG = -2, SEL_COLON = -3, SEL_AT = -4, SEL_NULL = -5 };
 
 /* lab(x, y) :: e names e, with the bound identifiers x and y, for selectors. */
-typedef struct { int name; int n; int *names; Def **defs; int line, col; } Label;   /* line, col: where it starts */
+typedef struct { int name; int n; int *names; Expr **at; Def **defs; int line, col; } Label;   /* line, col: where it starts; at: each name's */
 
 typedef struct { int n; Expr **keys; int *fields; int line, col; } Path;  /* an EXCEPT path: fields[i] >= 0 for .f; line and col of its ! */
 
@@ -3509,13 +3509,16 @@ static Expr *parse_unary(const OpInfo **prefix) {
         l->line = t->line, l->col = t->col;
         l->name = next()->id;
         int names[32];
+        Expr *at[32];
         if (is_op(peek(), "(")) {
             next();
-            do names[l->n++] = expect_ident(); while (is_op(peek(), ",") && next() && l->n < 32);
+            do at[l->n] = mk_expr(X_NAME, peek()), names[l->n++] = expect_ident(); while (is_op(peek(), ",") && next() && l->n < 32);
             expect_op(")");
         }
         l->names = NEWN(int, l->n);
         memcpy(l->names, names, sizeof(int) * (size_t)l->n);
+        l->at = NEWN(Expr *, l->n);
+        memcpy(l->at, at, sizeof(Expr *) * (size_t)l->n);
         expect_op("::");
         Expr *e = parse_expr();
         e->label = l;
@@ -5345,16 +5348,18 @@ static void resolve_expr(Expr *e, Scope *sc) {
             for (int j = 0; j < i; j++)
                 if (l->names[i] == l->names[j]) semantic_error(at, "Repeated formal parameter %s \nin label `%s'.", S(l->names[i]), S(l->name));
         l->defs = NEWN(Def *, l->n);
-        for (int i = 0; i < l->n; i++) {
-            if (!(l->defs[i] = scope_lookup(sc, l->names[i]))) semantic_error(e, "Unknown operator: `%s'.", S(l->names[i]));
-            if (!scope_lookup(label_bounds, l->names[i]))
-                semantic_error(at, "Label %s declares extra parameter(s)  %s", S(l->name), S(l->names[i]));
-        }
+        for (int i = 0; i < l->n; i++)
+            if (!(l->defs[i] = scope_lookup(sc, l->names[i])))
+                semantic_error(l->at[i], "Illegal parameter %s of label `%s'.", S(l->names[i]), S(l->name));
         for (Scope *s = label_bounds; s; s = s->next) {
             int found = 0;
             for (int i = 0; i < l->n && !found; i++) found = l->names[i] == s->name;
             if (!found) semantic_error(at, "Label %s must contain formal parameter `%s'.", S(l->name), S(s->name));
         }
+        Buf extra = {0};   /* as SANY, all of them */
+        for (int i = 0; i < l->n; i++)
+            if (!scope_lookup(label_bounds, l->names[i])) buf_printf(&extra, " %s ", S(l->names[i]));
+        if (extra.s) semantic_error(at, "Label %s declares extra parameter(s) %s ", S(l->name), extra.s);
         label_bounds = NULL;
         labeled = 1;
     }

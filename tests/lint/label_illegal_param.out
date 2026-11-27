@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 3, col 29 to line 3, col 29 of module label_illegal_param
+Illegal parameter a of label `l'.
