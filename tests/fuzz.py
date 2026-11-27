@@ -1371,6 +1371,8 @@ def fuzz_lint(engine, runs, seed, sany=None):
             if sany_cmd:
                 ours, out = lint_runner.run(engine, mod, False, MEMORY)
                 theirs, sout = lint_runner.run(sany_cmd, mod, True, MEMORY)
+                if theirs == "SEMANTIC ERROR\n":   # SANY failed within: only that there is one
+                    ours = ours.split("\n", 1)[0] + "\n"
                 bad = ours != theirs or "runtime error" in out or "Sanitizer" in out
                 if bad:
                     failed += 1

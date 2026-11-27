@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 2, col 1 to line 2, col 13 of module redef_builtin
+Operator = already defined or declared.

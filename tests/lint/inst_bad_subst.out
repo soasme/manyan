@@ -1,1 +1,5 @@
 SEMANTIC ERROR
+line 6, col 21 to line 6, col 21 of module inst_bad_subst
+Identifier 'b' is not a legal target of a substitution.
+A legal target must be a declared CONSTANT or VARIABLE in the module being instantiated.
+(Also, check for warnings about multiple declarations of this same identifier.)

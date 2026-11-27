@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 23 to line 3, col 28 of module label_in_except
+Labels inside EXCEPT clauses are not yet implemented.

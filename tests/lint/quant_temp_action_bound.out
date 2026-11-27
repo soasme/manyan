@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 15 to line 3, col 18 of module quant_temp_action_bound
+Action-level bound of quantified temporal formula.

@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 2, col 8 to line 2, col 16 of module label_not_in_def
+Label not in definition or proof step.

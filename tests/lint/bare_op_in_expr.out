@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 6 to line 3, col 6 of module bare_op_in_expr
+The operator F requires 1 arguments.

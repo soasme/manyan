@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 6, col 7 to line 6, col 12 of module nested_arity
+The operator F requires 1 arguments.

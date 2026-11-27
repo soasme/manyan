@@ -1,1 +1,5 @@
 SEMANTIC ERROR
+line 7, col 1 to line 7, col 27 of module inst_level_exceed
+Level error in instantiating module 'Inner':
+The level of the expression or operator substituted for 'v'
+must be at most 1.

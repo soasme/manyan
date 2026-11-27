@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 12 to line 3, col 12 of module ho_expr_given
+An expression appears as argument number 1 (counting from 1) to operator 'Apply', in a position an operator is required.

@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 6, col 34 to line 6, col 34 of module inst_dup_subst
+Multiple substitutions for symbol 'a' in substitution.

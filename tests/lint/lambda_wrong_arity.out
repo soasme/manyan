@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 3, col 6 to line 3, col 10 of module lambda_wrong_arity
+Lambda expression with arity 2 used as argument 1 of operator `Apply',
+but an operator of arity 1 is required.

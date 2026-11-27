@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 2, col 21 to line 2, col 36 of module label_dup_param
+Repeated formal parameter x
+in label `L'.

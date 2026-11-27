@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 6 to line 3, col 24 of module binary_temporal_action
+Action used where only temporal formula or state predicate allowed.

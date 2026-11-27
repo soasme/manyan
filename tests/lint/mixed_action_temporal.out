@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 6 to line 3, col 22 of module mixed_action_temporal
+\land has both temporal formula and action as arguments.

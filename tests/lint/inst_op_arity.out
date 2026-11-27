@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 7, col 26 to line 7, col 26 of module inst_op_arity
+Expected arity 1 but found operator of arity 2.

@@ -1,1 +1,5 @@
 SEMANTIC ERROR
+line 6, col 8 to line 6, col 15 of module ho_transitive_level
+Level error in applying operator A:
+The permitted level of argument 1 of the operator argument 1
+must be at least 2.

@@ -4,9 +4,11 @@ usage: lint_runner.py MANYAN [--oracle SANY] [--bless] [--only SUBSTRING] [--str
 
 A test is NAME.tla, a module, with the modules it uses in NAME.files.
 NAME.out is the outcome `tla2sany.SANY -error-codes` gives: normalized warnings
-and lint messages (if any), followed by `OK` or `PARSE ERROR` or `SEMANTIC ERROR`.
-Manyan's `-lint` must give the same outcome (exit 0 on OK, 150 on error) and the
-same warnings and record-field lint messages.
+and lint messages (if any), followed by `OK` or `PARSE ERROR` or `SEMANTIC ERROR`
+and the first semantic error, its location and message. Manyan's `-lint` must
+give the same outcome (exit 0 on OK, 150 on error), the same warnings and
+record-field lint messages, and the same first error; where SANY gives none (it
+fails within), only that there is one.
 
 With --oracle, SANY must give NAME.out too; --bless writes NAME.out from it.
 """
@@ -26,13 +28,31 @@ NOISE = re.compile(
     r"^(\*\*\*\*\*\* SANY2|manyan version|Parsing file|Semantic processing|Linting of module|GuardMalloc\[|Sysctl \(debug\.toggle_address_reuse\))")
 
 
+LOCATION = re.compile(r"^line \d+, col \d+ to line \d+, col \d+ of module |^Unknown location|^In module ")
+
+
+def first_error(output):
+    """The location and message of the first semantic error, a line each."""
+    if "Semantic errors:" not in output:
+        return ""
+    lines = [line.rstrip() for line in output.split("Semantic errors:", 1)[1].splitlines()]
+    error = []
+    for line in lines:
+        if not line or line.startswith("*** Errors"):
+            continue
+        if error and (LOCATION.match(line) or line.startswith(("Error: Parsing", "Semantic errors", "*** Warnings"))):
+            break
+        error.append(line)
+    return "".join(line + "\n" for line in error)
+
+
 def outcome(output, code, oracle):
     if code != 0:
         if oracle:
             if "***Parse Error***" in output or "Fatal errors while parsing" in output:
                 return "PARSE ERROR\n"
-            return "SEMANTIC ERROR\n"
-        return "SEMANTIC ERROR\n" if "Semantic errors:" in output else "PARSE ERROR\n"
+            return "SEMANTIC ERROR\n" + first_error(output)
+        return "SEMANTIC ERROR\n" + first_error(output) if "Semantic errors:" in output else "PARSE ERROR\n"
     lines = []
     for line in output.splitlines():
         if NOISE.match(line):
@@ -92,7 +112,10 @@ def main():
         if not expected_path.exists():
             return path, False, ["no " + expected_path.name], ""
         actual, output = run(engine, path, False, memory)
-        if actual != expected_path.read_text():
+        expected = expected_path.read_text()
+        if expected == "SEMANTIC ERROR\n":   # SANY failed within: only that there is one
+            actual = actual.split("\n", 1)[0] + "\n"
+        if actual != expected:
             notes.append("outcome differs: " + actual.replace("\n", " "))
         return path, not notes, notes, output
 

@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 1 to line 3, col 10 of module rec_prime_param
+Argument 1 of recursive operator F is primed

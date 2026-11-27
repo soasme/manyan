@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 3, col 1 to line 3, col 12 of module assume_not_constant
+Level error: assumptions must be level 0 (Constant),
+but this one has level 1.

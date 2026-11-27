@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 6, col 1 to line 6, col 32 of module inst_non_leibniz
+Error in instantiating module 'Inner':
+ A non-Leibniz operator substituted for 'F'.

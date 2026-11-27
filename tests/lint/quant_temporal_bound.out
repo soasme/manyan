@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 3, col 15 to line 3, col 25 of module quant_temporal_bound
+Level error in applying operator $SetEnumerate:
+The level of argument 1 exceeds the maximum level allowed by the operator.

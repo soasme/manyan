@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 4, col 6 to line 4, col 6 of module recursive_subexpr_label
+Subexpression of  `F' used inside the operator's definition.

@@ -1,1 +1,5 @@
 SEMANTIC ERROR
+line 4, col 1 to line 4, col 48 of module inst_ho_coparam_level
+Level error when instantiating module 'Sub':
+The level of the argument 0 of the operator Op'
+must be at most 2.

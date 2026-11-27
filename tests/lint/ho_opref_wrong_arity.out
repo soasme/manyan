@@ -1,1 +1,5 @@
 SEMANTIC ERROR
+line 3, col 6 to line 3, col 10 of module ho_opref_wrong_arity
+Operator with incorrect arity passed as argument.
+Operator '\land' of arity 2 is argument number 1 (counting from 1) to operator `line 2, col 1 to line 2, col 22 of module ho_opref_wrong_arity',
+but an operator of arity 1 was expected.

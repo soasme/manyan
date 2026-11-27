@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 8 to line 3, col 8 of module label_wrong_arity
+Label `L' used with wrong number of arguments.

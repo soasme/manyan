@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 3, col 1 to line 3, col 10 of module rec_section_illegal
+A VARIABLE declaration may not appear within a recursive definition section.

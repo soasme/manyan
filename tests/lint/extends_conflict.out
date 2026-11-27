@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 2, col 1 to line 2, col 6 of module ExtB
+The definition of 'X' conflicts with
+its declaration at line 2, col 10 to line 2, col 10 of module ExtA.

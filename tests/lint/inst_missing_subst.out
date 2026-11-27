@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 2, col 1 to line 2, col 17 of module inst_missing_subst
+Substitution missing for symbol Missing declared at line 2, col 10 to line 2, col 16 of module Sub
+and instantiated in module inst_missing_subst.

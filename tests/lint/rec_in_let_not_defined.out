@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 2, col 20 to line 2, col 23 of module rec_in_let_not_defined
+Symbol F declared in RECURSIVE statement but not defined.

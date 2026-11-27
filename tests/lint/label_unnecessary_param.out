@@ -1,1 +1,3 @@
 SEMANTIC ERROR
+line 2, col 10 to line 2, col 22 of module label_unnecessary_param
+Label L declares extra parameter(s)  x

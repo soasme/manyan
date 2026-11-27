@@ -1,1 +1,4 @@
 SEMANTIC ERROR
+line 3, col 6 to line 3, col 10 of module prime_in_prime
+Level error in applying operator ':
+The level of argument 1 exceeds the maximum level allowed by the operator.
