@@ -2242,6 +2242,7 @@ enum {
     X_ASSUMEPROVE,   /* a theorem's ASSUME items PROVE e: args the items, then e */
     X_NEW,           /* an item NEW c \in S: def, args the set, if any */
     X_PROOF, X_STEP, /* a proof, its steps: see parse_proof */
+    X_MODULE,        /* MODULE M, a proof's fact or DEF entry: op M */
     X_RESOLVED,
     /* resolved */
     K_BOUND,     /* a bound name or operator parameter: def */
@@ -3527,8 +3528,8 @@ static Expr *parse_primary(void) {
 
 /* A primary followed by applications f[a], fields r.f and postfix
    operators x', in any order: x'[1] is (x')[1]. */
-static Expr *parse_postfix(void) {
-    Expr *e = parse_primary();
+/* e and its postfix operators, applications, fields, and subscripts. */
+static Expr *parse_postfix_on(Expr *e) {
     for (;;) {
         Tok *t = peek();
         const OpInfo *post = op_info(t, POSTFIX);
@@ -3564,6 +3565,8 @@ static Expr *parse_postfix(void) {
         }
     }
 }
+
+static Expr *parse_postfix(void) { return parse_postfix_on(parse_primary()); }
 
 /* An operand; *prefix is its prefix operator, if it is an application of one. */
 /* lab :: or lab(x, y) :: ahead. */
@@ -3612,7 +3615,7 @@ static Expr *parse_unary(const OpInfo **prefix) {
         Expr *e = mk_op(t, intern(named->name), n, args);
         e->named = 1;
         finish(e);
-        return e;
+        return parse_postfix_on(e);
     }
     if (!info && named && !is_junction(t)) {   /* an infix or postfix operator alone */
         next();
@@ -3628,7 +3631,7 @@ static Expr *parse_unary(const OpInfo **prefix) {
         /* As SANY, a postfix operator on its operand conflicts with one
            binding as tightly: ENABLED x', [] f[x]'. */
         for (Expr *a = arg; info->hi >= 15 && !a->pl1 && (a->kind == X_APPLY || a->kind == X_DOT || a->kind == X_OP); a = a->args[0]) {
-            const OpInfo *post = a->kind == X_OP && a->n == 1 ? fmt_op_info(a->op, POSTFIX) : NULL;
+            const OpInfo *post = a->kind == X_OP && a->n == 1 && !a->named ? fmt_op_info(a->op, POSTFIX) : NULL;   /* not '(e) */
             if (post) parse_error(P->file, t->line, t->col, "Precedence conflict between ops %s and %s", info->name, post->name);
             if (a->kind == X_OP) break;
         }
@@ -3942,12 +3945,11 @@ static void parse_use_body(Expr *e) {
         e->field++;   /* what it lists */
         if (is_kw(f, "MODULE")) {
             next();
-            expect_ident();
-        } else {
-            Expr *x = parse_expr();
-            if (x->kind != X_NAME && e->op == S_HIDE)
-                semantic_error_later(mk_expr(X_NAME, f), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
+            Expr *x = mk_expr(X_MODULE, peek());
+            x->op = expect_ident();
             PUSH(e->args, e->n, x);
+        } else {
+            PUSH(e->args, e->n, parse_expr());
         }
         if (!is_op(peek(), ",")) break;
         next();
@@ -3957,8 +3959,12 @@ static void parse_use_body(Expr *e) {
     do {
         Tok *d = peek();
         e->field++;
-        if (is_kw(d, "MODULE")) next(), expect_ident();
-        else if (d->kind == T_IDENT || (P->in_proof && step_name(d))) PUSH(defs->args, defs->n, parse_name());
+        if (is_kw(d, "MODULE")) {
+            next();
+            Expr *x = mk_expr(X_MODULE, peek());
+            x->op = expect_ident();
+            PUSH(defs->args, defs->n, x);
+        } else if (d->kind == T_IDENT || (P->in_proof && step_name(d))) PUSH(defs->args, defs->n, parse_name());
         else if (is_op(d, "-.") || (d->kind == T_OP && !op_info(d, PREFIX) && (op_info(d, INFIX) || op_info(d, POSTFIX)))) {
             Expr *x = mk_expr(X_NAME, next());
             x->op = canonical(d->id);
@@ -4035,9 +4041,10 @@ static Expr *parse_proof(int level) {
             next();
             int qed = is_kw(peek(), "QED");
             Expr *step = parse_step(own);
-            if (step_numbered(s)) {   /* <1>2. is <1>2 */
+            if (step_numbered(s)) {   /* <1>2. is <1>2, of the expression it asserts, if one */
                 const char *n = S(s->id);
                 step->def = thm_name(intern_n(n, (int)strlen(n) - (n[strlen(n) - 1] == '.')), s);
+                if ((step->op == S_ASSERT || step->op == S_SUFFICES) && step->args[2]->kind != X_ASSUMEPROVE) step->def->body = step->args[2];
             }
             PUSH(e->args, e->n, step);
             if (qed) break;
@@ -5333,7 +5340,7 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     if (d->kind == D_RECURSIVE) check_arity(e, d, e->segs[i].n, e->segs[i].args);   /* never defined, as SANY: one being defined */
     if (d->recursive == 2 || d->kind == D_RECURSIVE)
         semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
-    if (d->kind != D_OP || !d->body)
+    if ((d->kind != D_OP && d->kind != D_THM) || !d->body)
         semantic_error(seg_at(e, &e->segs[i]), "Cannot take subexpression of `%s'.", S(d->name));
     Selection sel = {0};
     if (e->segs[i].n || !op) check_arity(e, d, e->segs[i].n, e->segs[i].args);
@@ -5543,7 +5550,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
         Def *d = scope_lookup(sc, e->segs[0].name);
         Sym *sym = d ? NULL : module_lookup(cur_module, e->segs[0].name);
         if (sym) d = sym->def;
-        if (d && (d->kind == D_THM || (d->thm && !d->body))) { e->kind = X_BOOL; e->num = 1; return; }
+        if (d && (d->kind == D_THM || d->thm) && !d->body) { e->kind = X_BOOL; e->num = 1; return; }
     }
     if (e->nseg > 1) { resolve_path(e, sc, want_arity); return; }
     Seg *s = &e->segs[0];
@@ -5898,9 +5905,23 @@ static Scope *resolve_assume(Expr *e, Scope *sc) {
     return sc;
 }
 
+/* MODULE M in a proof: the module itself, one it has loaded, or one
+   nested before. */
+static void resolve_module_name(Expr *x) {
+    Module *f = find_module(x->op);
+    if (f && !f->outer) return;
+    for (Module *m = cur_module; m; m = m->outer) {
+        if (m->name == x->op) return;
+        for (int k = 0; k < m->nunits; k++)
+            if (m->units[k].kind == 3 && m->units[k].module->name == x->op && m->units[k].module->pos < x->pos) return;
+    }
+    semantic_error(x, "Module `%s' used without being extended or instantiated.", S(x->op));
+}
+
 /* A DEF clause's entry: the name of an operator, function, instance,
-   theorem or assumption, which a proof may expand. */
+   theorem or assumption, which a proof may expand, or MODULE M. */
 static void resolve_def_entry(Expr *x, Scope *sc) {
+    if (x->kind == X_MODULE) { resolve_module_name(x); return; }
     if (x->nseg > 1) return;   /* I!F: not checked */
     int name = x->nseg ? x->segs[0].name : x->op;
     Def *d = scope_lookup(sc, name);
@@ -5929,6 +5950,8 @@ static Scope *resolve_proof(Expr *e, Scope *sc) {
         semantic_error(at, "Empty BY, USE, or HIDE");
     }
     Scope *after = sc, *in = sc;   /* the scope of the steps after, of its proof */
+    int saved_in_def = in_def_body;
+    in_def_body = e->def != NULL;   /* a label in a numbered step only */
     if (e->op == S_DEFINE) {
         for (int i = 0; i < e->ndefs; i++) {
             resolve_def(e->defs[i], after);
@@ -5947,11 +5970,18 @@ static Scope *resolve_proof(Expr *e, Scope *sc) {
                 Sym *sym = module_lookup(cur_module, x->segs[0].name);
                 if (sym && sym->def->thm && !sym->def->body) continue;   /* a fact: the name of ASSUME ... PROVE */
             }
-            if (x->kind != X_ASSUMEPROVE) resolve_expr(x, sc);
+            if (x->kind == X_MODULE) resolve_module_name(x);
+            else if (x->kind != X_ASSUMEPROVE) resolve_expr(x, sc);
             else if (e->op == S_SUFFICES) after = resolve_assume(x, sc);
             else in = resolve_assume(x, sc);
         }
+        for (int i = 2; e->op == S_HIDE && i < e->n; i++) {   /* once all are */
+            Expr *x = e->args[i];
+            if (x->kind != X_MODULE && !(x->def && (x->def->kind == D_THM || x->def->thm)))
+                semantic_error(x, "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
+        }
     }
+    in_def_body = saved_in_def;
     for (int i = 0; e->args[1] && i < e->args[1]->n; i++) resolve_def_entry(e->args[1]->args[i], sc);
     if (e->def) {   /* checked once */
         after = bind(after, e->def->name, e->def);
@@ -26302,7 +26332,7 @@ static int needs_parens(Fmt *f, Expr *c, const OpInfo *p, int is_right, int flat
             if ((!strcmp(p->name, "[]") && !strcmp(ci->name, "<>")) || (!strcmp(p->name, "<>") && !strcmp(ci->name, "[]"))) return 0;
             return 1;
         }
-        return 0;
+        return p->hi >= 15;   /* a postfix: as SANY, ENABLED x' is a precedence conflict */
     }
     /* INFIX parent */
     if (!is_right) {

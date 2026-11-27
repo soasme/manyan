@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 7, col 11 to line 7, col 15 of module proof_module_name
+Module `Inner' used without being extended or instantiated.
