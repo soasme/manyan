@@ -4484,6 +4484,8 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
    symbol, then at the expression it is applied in. */
 static _Noreturn void unresolved_symbol(Expr *e) {
     Expr *a = e->args[0];
+    if (a->pos == e->pos && a->end == e->end)   /* an operator argument, -. alone, applied by operator_def */
+        semantic_error(e, "Could not find declaration or definition of symbol '%s'.", S(e->op));
     int prefix = e->n == 1 && (a->pl1 ? a->ppos : a->pos) > e->pos;
     int from = prefix ? e->pos : a->pl1 ? a->pend : a->end;
     Expr at = *e;
@@ -5087,12 +5089,13 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     return f;
 }
 
-static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name);
+static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name, Def *op, Expr *call, Seg *seg);
 
-static void resolve_call_args(Def *d, Expr **args, int n, Scope *sc) {
-    for (int i = 0; i < n; i++) {
+/* The arguments of segment s of call e, which applies d. */
+static void resolve_call_args(Def *d, Seg *s, Scope *sc, Expr *e) {
+    for (int i = 0; i < s->n; i++) {
         int want = (d && (d->kind == D_OP || d->kind == D_INST) && i < d->nparams) ? d->params[i]->arity : 0;
-        resolve_arg(args[i], sc, want, i, d ? S(d->name) : "");
+        resolve_arg(s->args[i], sc, want, i, d ? S(d->name) : "", d, e, s);
     }
 }
 
@@ -5134,13 +5137,13 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
         if (!d) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
         if (i + 1 < e->nseg && d->kind == D_INST) {
             check_arity(e, d, s->n, s->args);
-            resolve_call_args(d, s->args, s->n, sc);
+            resolve_call_args(d, s, sc, e);
             pargs[np] = *s;
             path[np++] = d;
             m = d->target;
             d = NULL;
         } else if (i + 1 < e->nseg) {
-            resolve_call_args(d, s->args, s->n, sc);
+            resolve_call_args(d, s, sc, e);
             for (int k = i + 1; k < e->nseg; k++) resolve_args(e->segs[k].args, e->segs[k].n, sc);
             d = subexpression(e, d, i, &args, &nargs, want_arity > 0);
             break;
@@ -5151,7 +5154,7 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
                 if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
             } else {
                 check_arity(e, d, s->n, s->args);
-                resolve_call_args(d, s->args, s->n, sc);
+                resolve_call_args(d, s, sc, e);
             }
             args = s->args;
             nargs = s->n;
@@ -5191,11 +5194,11 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
             e->kind = K_BOUND;
         } else if (d->kind == D_PARAM) {
             check_arity(e, d, s->n, s->args);
-            resolve_call_args(d, s->args, s->n, sc);
+            resolve_call_args(d, s, sc, e);
             e->kind = K_PARAMCALL;
         } else {
             check_arity(e, d, s->n, s->args);
-            resolve_call_args(d, s->args, s->n, sc);
+            resolve_call_args(d, s, sc, e);
             e->kind = K_CALL;
         }
         e->def = d;
@@ -5216,7 +5219,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
         if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
     } else {
         check_arity(e, d, s->n, s->args);
-        resolve_call_args(d, s->args, s->n, sc);
+        resolve_call_args(d, s, sc, e);
     }
     e->def = d;
     if (d->kind == D_CONST || d->kind == D_VAR) {
@@ -5232,12 +5235,23 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
     }
 }
 
-static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name) {
+/* An operator's name inside SANY, which spells the logical ones out. */
+static const char *sany_name(int op) {
+    static const char *names[][2] = {{"/\\", "\\land"}, {"\\/", "\\lor"}, {"~", "\\lnot"}, {"<=>", "\\equiv"}, {NULL, NULL}};
+    for (int i = 0; names[i][0]; i++) if (!strcmp(S(op), names[i][0])) return names[i][1];
+    return S(op);
+}
+
+/* Argument idx of op, or of the module op_name instantiates, which takes
+   an operator of arity want there. An error of its arity is located, as
+   SANY, at the operator applied, where seg of call names it. */
+static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name, Def *op, Expr *call, Seg *seg) {
     if (!a) return;
     if (want == 0) { resolve_expr(a, sc); return; }
     if (a->kind == X_LAMBDA) {
         if (a->def->nparams != want)
-            semantic_error(a, "Lambda expression with arity %d used as argument %d of operator %s.", a->def->nparams, idx + 1, op_name);
+            semantic_error(call ? seg_at(call, seg) : a, "Lambda expression with arity %d used as argument %d of operator `%s', \nbut an operator of arity %d is required.",
+                           a->def->nparams, idx + 1, op_name, want);
         Scope *inner = sc, *saved_lb = label_bounds;
         for (int i = 0; i < a->def->nparams; i++) {
             inner = bind(inner, a->def->params[i]->name, a->def->params[i]);
@@ -5250,7 +5264,12 @@ static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_na
     }
     if (a->kind == X_OPREF) {
         a->def = operator_def(a, a->op, sc);
-        if (def_arity(a->def) != want) semantic_error(a, "Operator with incorrect arity passed as argument.");
+        if (def_arity(a->def) != want) {   /* op named by its location, as SANY does */
+            Buf where = {0};
+            if (op) { Expr span = def_span(op); file_loc_text(&where, &span); }
+            semantic_error(call ? seg_at(call, seg) : a, "Operator with incorrect arity passed as argument. \nOperator '%s' of arity %d is argument number %d (counting from 1) to operator `%s', \nbut an operator of arity %d was expected.",
+                           sany_name(canonical(a->op)), def_arity(a->def), idx + 1, op ? where.s : op_name, want);
+        }
         return;
     }
     if (a->kind == X_NAME) {
@@ -5258,8 +5277,8 @@ static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_na
         return;
     }
     resolve_expr(a, sc);
-    semantic_error(a, "An expression appears as argument number %d (counting from 1) of operator %s where an operator of arity %d is expected.",
-                   idx + 1, op_name, want);
+    semantic_error(a, "An expression appears as argument number %d (counting from 1) to operator '%s', in a position an operator is required.",
+                   idx + 1, op_name);
 }
 
 /* The function definitions being resolved: one named in its own body is
@@ -5511,7 +5530,7 @@ static void resolve_def(Def *d, Scope *sc) {
                                    S(decl->name), S(t->name));
                 exprs[i] = ref;
             }
-            resolve_arg(exprs[i], inner, decl->arity, i, S(t->name));
+            resolve_arg(exprs[i], inner, decl->arity, i, S(t->name), NULL, NULL, NULL);
             if (decl->arity > 0 && exprs[i]->def && is_non_leibniz(exprs[i]->def))
                 semantic_error(d->where, "Error in instantiating module '%s':\n A non-Leibniz operator substituted for '%s'.",
                                S(t->name), S(decl->name));
@@ -5831,14 +5850,16 @@ static void check_ho_arg(Expr *where, const char *ctx_name, int is_inst, Def *p,
         return;
     }
     if (F->kind != D_OP) return;
+    int at = 0;   /* p's place among the arguments: SANY's name of the operator argument */
+    while (at < nmap && map_decls[at] != p) at++;
     for (int j = 0; j < p->arity; j++) {
         int fmax = j < F->nparams ? level_max(F->params[j]) : 3;
         if (p->arg_min && p->arg_min[j] > fmax) {
             if (is_inst)
                 semantic_error(where, "Level error in instantiating module '%s':\nThe level of the argument %d of the operator %s \nmust be at least %d.",
                                ctx_name, j + 1, S(F->name), p->arg_min[j]);
-            semantic_error(where, "Level error in applying operator %s:\nThe permitted level of argument %d of the operator argument %s \nmust be at least %d.",
-                           ctx_name, j + 1, S(F->name), p->arg_min[j]);
+            semantic_error(where, "Level error in applying operator %s:\nThe permitted level of argument %d of the operator argument %d \nmust be at least %d.",
+                           ctx_name, j + 1, at + 1, p->arg_min[j]);
         }
     }
     for (int k = 0; k < p->ncoparams; k++) {
@@ -5846,14 +5867,16 @@ static void check_ho_arg(Expr *where, const char *ctx_name, int is_inst, Def *p,
         Def *q = p->coparams[k].param;
         int fmax = j < F->nparams ? level_max(F->params[j]) : 3;
         Expr *mapped = NULL;
-        for (int m = 0; m < nmap && !mapped; m++) if (map_decls[m] == q) mapped = map_exprs[m];
+        int m = 0;
+        while (m < nmap && map_decls[m] != q) m++;
+        if (m < nmap) mapped = map_exprs[m];
         if (mapped) {
             if (expr_level(mapped) > fmax) {
                 if (is_inst)
                     semantic_error(where, "Level error when instantiating module '%s':\nThe level of the argument %d of the operator %s \nmust be at most %d.",
                                    ctx_name, j, S(p->name), fmax);
                 semantic_error(where, "Level error in applying operator %s:\nThe level of argument %d exceeds the maximum level allowed by the operator.",
-                               ctx_name, j + 1);
+                               ctx_name, m + 1);
             }
             check_levels(mapped, fmax);
         } else if (q->kind == D_PARAM || q->kind == D_CONST || q->kind == D_VAR) {
