@@ -3331,13 +3331,14 @@ static Expr *parse_primary(void) {
             next();
             int saved = P->limit;
             P->limit = 0;
-            if (peek()->kind == T_IDENT && (is_op(peek_at(1), "|->") || is_op(peek_at(1), ":"))) {
+            /* As SANY, a record's first field may be a keyword too: [IF |-> 1]. */
+            if ((peek()->kind == T_IDENT && is_op(peek_at(1), ":")) || (is_field(peek()) && is_op(peek_at(1), "|->"))) {
                 int set = is_op(peek_at(1), ":");
                 e = mk_expr(set ? X_RCDSET : X_RECORD, t);
                 Tok *twice = NULL;   /* a field named again, an error once the constructor parses */
                 do {
                     Tok *field = peek();
-                    int name = expect_ident();
+                    int name = e->nseg ? expect_ident() : expect_field();
                     for (int i = 0; i < e->nseg && !twice; i++) if (e->segs[i].name == name) twice = field;
                     PUSH(e->segs, e->nseg, ((Seg){.name = name, .line = field->line, .col = field->col}));
                     expect_op(set ? ":" : "|->");
@@ -5644,13 +5645,19 @@ static void lint_records(Module *m) {
         }
         for (int f = 0; f < rec->nseg && !understood; f++) {
             Seg *field = &rec->segs[f];
-            Sym *sym = module_lookup(m, field->name);
-            if (!sym) continue;
-            Def *d = sym->def;
-            Expr at = d->kind == D_CONST || d->kind == D_VAR ? *d->where : def_span(d);
-            Buf there = {0};
-            file_loc_text(&there, &at);
+            static const char *const builtins[] = {"TRUE", "FALSE", "BOOLEAN", "STRING", "SUBSET", "UNION", "DOMAIN", "ENABLED", "UNCHANGED"};
             const char *n = S(field->name);
+            Sym *sym = module_lookup(m, field->name);
+            Buf there = {0};
+            if (sym) {
+                Def *d = sym->def;
+                Expr at = d->kind == D_CONST || d->kind == D_VAR ? *d->where : def_span(d);
+                file_loc_text(&there, &at);
+            } else {
+                for (size_t i = 0; i < sizeof builtins / sizeof *builtins && !there.s; i++)
+                    if (!strcmp(n, builtins[i])) buf_printf(&there, "In module --TLA+ BUILTINS--");
+                if (!there.s) continue;
+            }
             buf_printf(&lint, "line %d, col %d to line %d, col %d of module %s\n\n"
                        "The field name \"%s\" in the record constructor is identical to the existing definition or declaration\n"
                        "named %s, located at %s.\n"
