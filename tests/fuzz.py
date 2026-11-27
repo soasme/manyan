@@ -1572,7 +1572,9 @@ def fuzz_sym(engine, runs, seed):
         skind, slen = sym_summary(sout, scode)
         mismatch = False
         if mode in ("inv", "deadlock"):
-            expected_kind = ekind if (ekind != "ok" and elen <= k + 1) else "ok"
+            # As Apalache: k steps reach a state k steps out, and a deadlock there needs a step more.
+            reach = k + 1 if ekind == "inv" else k
+            expected_kind = ekind if (ekind != "ok" and elen <= reach) else "ok"
             if skind != expected_kind or (expected_kind != "ok" and slen != elen):
                 mismatch = True
         else:
