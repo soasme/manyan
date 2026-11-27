@@ -580,10 +580,20 @@ def eval (σ : St) (ρ : Env) : Expr → M Val
       if ← allOf ((← es.mapM (c.ev σ ρ)).map (c.eq v)) then pure v
       else unknown "CASE among true arms of different values: that is the choice function's"
 
+/-- `FALSE` for a value that is not a function on a finite set, as a
+sequence, a tuple and a record are. -/
+def notFinite : Val → M Bool
+  | .lazy (.fcn (.lazy d) ..) => if d.infinite then pure false
+                                 else unknown "a function on a set not enumerated where its graph is needed"
+  | _ => pure false
+
 /-- `v \in S`. -/
 def member (v : Val) : Val → M Bool
   | .set l => anyOf (l.map (c.eq v))
-  | .lazy s => match s with
+  | .lazy s => do
+    -- A recursive function on an enumerated set is as its graph.
+    let v ← c.force v
+    match s with
     | .nat => pure (match v with | .int n => n ≥ 0 | _ => false)
     | .int => pure (match v with | .int _ => true | _ => false)
     | .string => pure (match v with | .str _ => true | _ => false)
@@ -596,10 +606,10 @@ def member (v : Val) : Val → M Bool
     | .subset S => if v.isSet then c.subseteq v S else pure false
     | .product fs => match v.seq? with
       | some l => if l.length == fs.length then allOf ((l.zip fs).map fun (x, F) => c.mem x F) else pure false
-      | none => pure false
+      | none => notFinite v
     | .seq S => match v.seq? with
       | some l => allOf (l.map (c.mem · S))
-      | none => pure false
+      | none => notFinite v
     | .funSet A B => if !v.isFcn then pure false else do
       if !(← c.eq (← domain v) A) then return false
       c.all A fun k => do c.mem (← c.app v k) B
@@ -607,7 +617,7 @@ def member (v : Val) : Val → M Bool
       | .fcn g => do
         if !(← c.eq (.set (g.map Prod.fst)) (.set (fields.map (Val.str ·.1)))) then return false
         allOf (fields.map fun (f, S) => do c.mem (← c.app v (.str f)) S)
-      | _ => pure false
+      | _ => notFinite v
     | .fcn .. => undef "\\in a function"
   | _ => undef "\\in a value that is not a set"
 

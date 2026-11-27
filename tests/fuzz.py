@@ -215,7 +215,7 @@ class Gen:
             lambda: f"{self.record(d + 1)}.a",
             lambda: f"{self.fcn(d + 1)}[{r.randint(0, 4)}]",
             lambda: self.lazy_fcn(d),
-            lambda: self.recursive(d),
+            lambda: "({}{}[{}])".format(*self.recursive(d, self.rng.choice(["0..4", "Nat"])), r.randint(-1, 5)),
             lambda: f"(LET y == {n()} IN y + {n()})",
             lambda: f"(CASE {self.bool(d + 1)} -> {n()} [] {self.bool(d + 1)} -> {n()} [] OTHER -> {n()})",
             lambda: f"(IF AssertError(\"bad\", [i \\in {{1, 2}} |-> i][0]) THEN {n()} ELSE {n()})",
@@ -245,6 +245,7 @@ class Gen:
             lambda: f"({self.fcn(d + 1)} = {self.seq(d + 1)})",
             lambda: f"({self.set(d + 1)} = {self.set(d + 1)})",
             lambda: f"({self.seq(d + 1)} \\in Seq({self.set(d + 1)}))",
+            lambda: f"([a |-> {self.seq(d + 1)}] \\in [a : Seq({self.set(d + 1)})])",
             lambda: f"({self.record(d + 1)} = {self.record(d + 1)})",
             lambda: f"({self.record(d + 1)} \\in [a: {self.set(d + 1)}, b: BOOLEAN])",
             lambda: f"({r.choice(STRINGS)} = {r.choice(STRINGS)})",
@@ -285,12 +286,11 @@ class Gen:
             lambda: f"UNION {{{s()}, Nat}}",
         )
 
-    def recursive(self, d):
-        """A recursive function, which applies itself, applied."""
+    def recursive(self, d, dom):
+        """A function on dom that applies itself: the LET that defines it, and its name."""
         g = f"g{len(self.bound)}"
         x, step = self.bind(lambda: self.int(d + 1))
-        return (f"(LET {g}[{x} \\in {self.rng.choice(['0..4', 'Nat'])}] == "
-                f"IF {x} <= 0 THEN {self.int(d + 1)} ELSE {g}[{x} - 1] + {step} IN {g}[{self.rng.randint(-1, 5)}])")
+        return f"LET {g}[{x} \\in {dom}] == IF {x} <= 1 THEN {self.int(d + 1)} ELSE {g}[{x} - 1] + {step} IN ", g
 
     def lazy_fcn(self, d):
         x, e = self.bind(lambda: self.int(d + 1))
@@ -371,6 +371,7 @@ class Gen:
             lambda: f"[{q()} EXCEPT ![{r.randint(0, 4)}] = @ * 2]",
             lambda: f"[{self.fcn(d + 1)} EXCEPT ![{r.randint(0, 4)}] = {n()}]",
             lambda: f"SortSeq({q()}, {r.choice(['<', '>'])})",
+            lambda: "({}{})".format(*self.recursive(d, f"1..{r.randint(0, 3)}")),
         )
 
     def fcn(self, d=0):
@@ -492,7 +493,8 @@ def prove(engine, tlapm, runs, seed):
 def ref(engine, reference, runs, seed):
     rng = random.Random(seed)
     exprs = standard(rng, runs)
-    pairs = [(e, v) for e, v in zip(exprs, values(engine, exprs)) if v is not None]
+    # A function TLC cannot evaluate prints with its body's place: no value.
+    pairs = [(e, v) for e, v in zip(exprs, values(engine, exprs)) if v is not None and "<expression" not in v]
     done = subprocess.run([reference], input="".join(f"{e}\t{v}\n" for e, v in pairs),
                           stdout=subprocess.PIPE, text=True, timeout=600, check=True)
     answers = done.stdout.splitlines()
