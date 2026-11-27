@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 4, col 1 to line 4, col 16 of module param_own_name
+Operator a already defined or declared.

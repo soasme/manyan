@@ -2936,8 +2936,11 @@ static Expr *parse_name(void) {
         } else if (s->sel) {
             next();
         } else {
+            /* As SANY, a name, an operator, or a keyword that names one: I!+, I!SUBSET, I!TRUE. */
+            int named = t->kind == T_OP || (t->kind == T_KW && (op_info(t, PREFIX) || op_info(t, INFIX) || op_info(t, POSTFIX) ||
+                                                                is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")));
             if (t->kind == T_IDENT) s->name = t->id;
-            else if (t->kind == T_OP || t->kind == T_KW) s->name = canonical(t->id);
+            else if (named) s->name = canonical(t->id);
             else syntax_error("expected a name");
             next();
             if (is_op(peek(), "(")) s->args = parse_args(&s->n);
@@ -3008,6 +3011,7 @@ static int binder_ahead(void) {
 static _Noreturn void semantic_error(Expr *where, const char *fmt, ...);
 /* The first semantic error met as a module parses: SANY reports it once
    the module parses, after any parse error. */
+static Module *load_module(int name, Module *from);
 static Expr *parsed_error_at;
 static const char *parsed_error;
 static void semantic_error_later(Expr *where, const char *fmt, ...) {
@@ -3961,8 +3965,15 @@ static Module *parse_module(Module *outer) {
     P->mod = saved_mod;
     if (parsed_error_at) {
         Expr *at = parsed_error_at;
+        const char *msg = parsed_error;
         parsed_error_at = NULL;
-        semantic_error(at, "%s", parsed_error);
+        /* As SANY, every module parses before an error of one's meaning:
+           a module it uses that is missing, or does not parse, first. */
+        for (int i = 0; !fmt_mode && i < m->nextends; i++) load_module(m->extends[i], m);   /* -fmt reads one file */
+        for (int i = 0; !fmt_mode && i < m->nunits; i++)
+            if (m->units[i].kind == 1 || (m->units[i].kind == 0 && m->units[i].def->kind == D_INST))
+                load_module((int)(intptr_t)m->units[i].def->target, m);
+        semantic_error(at, "%s", msg);
     }
     return m;
 }
@@ -4458,14 +4469,14 @@ static void loc_line(Buf *b, Expr *e) {
 }
 
 static Module *file_module(Module *m);
-static void print_warnings(Module *m);
+static int print_warnings(Module *m);
 static void file_loc_text(Buf *b, Expr *e);
 
 /* SANY's semantic errors: n of them, each at where[i]. */
 static _Noreturn void semantic_errors(int n, Expr **where, char (*msg)[1024]) {
     if (breakpoint) breakpoint_error(0, NULL);
-    if (cur_module && file_module(cur_module)->nwarnings) print_warnings(file_module(cur_module));   /* SANY's, before its errors */
-    printf("Semantic errors:\n\n*** Errors: %d\n\n", n);
+    int warned = cur_module && file_module(cur_module)->nwarnings && print_warnings(file_module(cur_module));   /* SANY's, before its errors */
+    printf("%sSemantic errors:\n\n*** Errors: %d\n\n", warned ? "\n" : "", n);
     for (int i = 0; i < n; i++) {   /* located, as SANY, in the module of the file */
         Buf at = {0};
         if (where[i] && where[i]->mod) file_loc_text(&at, where[i]);
@@ -4636,11 +4647,13 @@ static void check_outer(Module *m, Def *d) {
 static Buf warnings;
 static int nwarnings;
 
-static void print_warnings(Module *m) {
+/* Prints SANY's warnings so far, with m's: whether there are any. */
+static int print_warnings(Module *m) {
     buf_add(&warnings, m->warnings.s ? m->warnings.s : "", m->warnings.n);
     nwarnings += m->nwarnings;
     m->nwarnings = 0, m->warnings.n = 0;
     if (nwarnings) printf("*** Warnings: %d\n\n%s", nwarnings, warnings.s);
+    return nwarnings;
 }
 
 static Sym *own_sym(Module *m, int name) {
@@ -4744,7 +4757,7 @@ static void check_arity_named(Expr *e, Def *d, int n, Expr **args, const char *n
 static void check_arity(Expr *e, Def *d, int n, Expr **args) { check_arity_named(e, d, n, args, NULL); }
 
 static void check_arity_named(Expr *e, Def *d, int n, Expr **args, const char *as) {
-    int want = d->kind == D_OP ? d->nparams : d->kind == D_PARAM || d->kind == D_CONST ? d->arity : 0;
+    int want = d->kind == D_OP ? d->nparams : d->kind == D_PARAM || d->kind == D_CONST || d->kind == D_RECURSIVE ? d->arity : 0;
     if (d->kind == D_INST) want = d->nparams;
     if (n == want) return;
     Expr at = *e;
@@ -4997,7 +5010,9 @@ static void take(Selection *sel, Expr *e, Def **defs, int n, Seg *seg) {
    identifiers !(c) or !@ bind. Its arguments, if given, are in *args;
    only an operator argument (op) may leave them out. */
 static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int op) {
-    if (d->recursive == 2) semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
+    if (d->kind == D_RECURSIVE) check_arity(e, d, e->segs[i].n, e->segs[i].args);   /* never defined, as SANY: one being defined */
+    if (d->recursive == 2 || d->kind == D_RECURSIVE)
+        semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
     if (d->kind != D_OP || d->local == 2 || !d->body)
         semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
     Selection sel = {0};
@@ -5229,7 +5244,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
         return;
     }
     Sym *sym = module_lookup(cur_module, s->name);
-    if (!sym || sym->def->kind == D_RECURSIVE) {   /* located, as SANY, at the name */
+    if (!sym) {   /* located, as SANY, at the name */
         Expr name = *e;
         name.l2 = name.l1;
         name.c2 = name.c1 + (int)strlen(S(s->name)) - 1;
@@ -5457,6 +5472,7 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
     case X_LET: {
         Scope *inner = sc;
         int nreal = 0;
+        Def *undefined = NULL;   /* as SANY, an error once the LET is resolved */
         for (int i = 0; i < e->ndefs; i++) {
             Def *d = e->defs[i];
             if (d->kind == D_RECURSIVE) {
@@ -5470,14 +5486,20 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
                 Def *found = NULL;
                 for (int k = i + 1; k < e->ndefs && !found; k++)
                     if (e->defs[k]->kind != D_RECURSIVE && e->defs[k]->name == d->name) found = e->defs[k];
-                if (!found) semantic_error(d->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(d->name));
-                Expr span = def_span(found);
-                if (def_arity(found) != d->arity)
-                    semantic_error(&span, "Definition of %s has different arity than its RECURSIVE declaration.", S(d->name));
+                if (!found) {
+                    if (!undefined) undefined = d;
+                    inner = bind(inner, d->name, d);
+                    continue;
+                }
                 found->recursive = 2;
                 inner = bind(inner, found->name, found);
                 continue;
             }
+            for (int j = 0; d->recursive == 2 && j < i; j++)   /* as SANY, where the definition is */
+                if (e->defs[j]->kind == D_RECURSIVE && e->defs[j]->name == d->name && def_arity(d) != e->defs[j]->arity) {
+                    Expr span = def_span(d);
+                    semantic_error(&span, "Definition of %s has different arity than its RECURSIVE declaration.", S(d->name));
+                }
             if (is_core_op(d->name) || builtin_name(d->name)) {
                 Expr span = def_span(d);
                 semantic_error(&span, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(d->name));
@@ -5489,6 +5511,7 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
         }
         e->ndefs = nreal;
         resolve_args(e->args, e->n, inner);
+        if (undefined) semantic_error(undefined->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(undefined->name));
         return;
     }
     case X_EXCEPT:
@@ -5523,6 +5546,14 @@ static void resolve_def(Def *d, Scope *sc) {
     int saved_in_def = in_def_body;
     label_bounds = NULL;
     in_def_body = 1;
+    for (int i = 0; d->kind == D_OP && i < d->nparams; i++)   /* as SANY, a(a) == ... */
+        if (d->params[i]->name == d->name) {
+            for (int k = 0; d->recursive == 2 && k < cur_module->nunits; k++)   /* against its RECURSIVE declaration */
+                if (cur_module->units[k].kind == 4 && cur_module->units[k].def->kind == D_RECURSIVE && cur_module->units[k].def->name == d->name)
+                    redefined(cur_module->units[k].def, d->params[i], d->params[i]->where);
+            Expr span = def_span(d);
+            semantic_error(&span, "Operator %s already defined or declared.", S(d->name));
+        }
     for (int i = 0; i < d->nparams; i++) {
         d->params[i]->var_index = -1;
         inner = bind(inner, d->params[i]->name, d->params[i]);
@@ -5722,6 +5753,8 @@ static void resolve_module(Module *m) {
     }
     /* A name is defined before it is used; RECURSIVE declares a definition to come. */
     int pending_rec = 0;
+    Def **undefined_rec = NULL;
+    int nundefined_rec = 0;
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         cur_module = m;
@@ -5740,6 +5773,15 @@ static void resolve_module(Module *m) {
                 if (own_sym(m, d->name)->def == d) add_decl(m, d);   /* not one again, which SANY ignores */
             } else if (d->kind == D_OP || d->kind == D_FCN || d->kind == D_INST) {
                 if (d->recursive && pending_rec > 0) pending_rec--;
+                for (int k = 0; d->kind != D_INST && k < m->nsyms; k++)   /* as SANY, a symbol defined again is an error before its body's */
+                    if (m->syms[k].name == d->name && m->syms[k].def != d && !m->syms[k].npath && m->syms[k].def->kind != D_RECURSIVE)
+                        redefined(m->syms[k].def, d, d->where);
+                for (int k = 0; d->recursive == 2 && k < i; k++)   /* as SANY, where the definition is */
+                    if (m->units[k].kind == 4 && m->units[k].def->kind == D_RECURSIVE && m->units[k].def->name == d->name
+                        && def_arity(d) != m->units[k].def->arity) {
+                        Expr span = def_span(d);
+                        semantic_error(&span, "Definition of %s has different arity than its RECURSIVE declaration.", S(d->name));
+                    }
                 resolve_def(d, NULL);
                 check_outer(m, d);
                 add_sym(m, d->name, d, NULL, 0, u->local, d->where);
@@ -5769,10 +5811,12 @@ static void resolve_module(Module *m) {
                 if (m->units[k].kind == 0 && m->units[k].def->name == u->def->name &&
                     (m->units[k].def->kind == D_OP || m->units[k].def->kind == D_FCN))
                     found = m->units[k].def;
-            if (!found) semantic_error(u->def->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(u->def->name));
-            Expr span = def_span(found);
-            if (def_arity(found) != u->def->arity)
-                semantic_error(&span, "Definition of %s has different arity than its RECURSIVE declaration.", S(u->def->name));
+            if (!found) {   /* as SANY, an error once the module is resolved */
+                PUSH(undefined_rec, nundefined_rec, u->def);
+                add_sym(m, u->def->name, u->def, NULL, 0, 0, u->def->where);
+                pending_rec++;   /* its section stays open */
+                continue;
+            }
             found->recursive = 2;
             pending_rec++;
             add_sym(m, u->def->name, found, NULL, 0, found->local, found->where);
@@ -5818,6 +5862,8 @@ static void resolve_module(Module *m) {
             resolve_module(u->module);
         }
     }
+    if (nundefined_rec)
+        semantic_error(undefined_rec[0]->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(undefined_rec[0]->name));
     for (int i = 0; i < m->nunits; i++) {
         Unit *u = &m->units[i];
         if (u->kind == 2) {

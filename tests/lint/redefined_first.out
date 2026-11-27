@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 4, col 1 to line 4, col 20 of module redefined_first
+Operator Init already defined or declared.
