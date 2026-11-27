@@ -549,6 +549,11 @@ Known gaps, not decisions, each to be closed:
   the model does instead. A simulation's counterexample is the lasso TLC's
   search finds; TLC prints the behavior's first states instead, as many
   as the lasso has, which may not violate the property.
+- With some `-fp` seeds, TLC closes a liveness counterexample whose cycle
+  ends where it starts, in its state but not its tableau node, by
+  printing that state again and `State N: Stuttering` with the cycle's
+  first number, where Manyan prints `Back to state N`. Both are behaviors
+  that violate the property.
 - A subexpression of a LET definition, `F(1)!1` for `LET F(x) == {x}`, is
   an error, where SANY accepts it and TLC evaluates it in the LET's scope.
 - Four of tlaplus/Examples print other output than TLC, for the reasons
