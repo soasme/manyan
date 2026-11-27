@@ -44,6 +44,9 @@ class TestPredicateClauses(unittest.TestCase):
             with self.assertRaises(dataclasses.FrozenInstanceError):
                 clause.description = "mutated"  # type: ignore[misc]
 
+        self.assertNotEqual(Where(_boom), Requires(_boom))
+        self.assertNotEqual(Requires(_boom), Ensures(_boom))
+
 
 class TestVariableClauses(unittest.TestCase):
     def test_modifies_unchanged_fairness(self) -> None:
@@ -62,6 +65,9 @@ class TestVariableClauses(unittest.TestCase):
 
             with self.assertRaises(dataclasses.FrozenInstanceError):
                 two.variables = ()  # type: ignore[misc]
+
+        self.assertNotEqual(Modifies("x"), Unchanged("x"))
+        self.assertNotEqual(WeakFairness("x"), StrongFairness("x"))
 
 
 class TestRefines(unittest.TestCase):

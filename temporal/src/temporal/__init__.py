@@ -81,7 +81,7 @@ class _PredicateClause:
         return f"{name}({self.predicate!r}, {self.description!r})"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Where(_PredicateClause):
     """Refinement predicate on a type: ``{x \\in T : predicate(x)}``."""
 
@@ -89,12 +89,12 @@ class Where(_PredicateClause):
     description: Optional[str] = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Requires(_PredicateClause):
     """Precondition or enabling guard on a function or action."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Ensures(_PredicateClause):
     """Postcondition on a function or action (``old(e)`` is pre-state, ``e`` is post-state)."""
 
@@ -111,22 +111,22 @@ class _VariableClause:
         return f"{type(self).__name__}({args})"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False, repr=False)
 class Modifies(_VariableClause):
     """Frame clause: only the named state variables may change."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False, repr=False)
 class Unchanged(_VariableClause):
     """Frame clause: the named state variables remain ``UNCHANGED``."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False, repr=False)
 class WeakFairness(_VariableClause):
     """Weak fairness metadata on an action: ``WF_v(action)``."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False, repr=False)
 class StrongFairness(_VariableClause):
     """Strong fairness metadata on an action: ``SF_v(action)``."""
 
