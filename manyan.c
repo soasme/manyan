@@ -2578,6 +2578,7 @@ static Tok *lex(const char *src, const char *file, int *count) {
                 if (s[len] == '\\') {
                     char e = s[len + 1];
                     if (!e || e == '\n' || e == '\r') parse_error(file, t->line, t->col, "Unterminated string");
+                    if (!strchr("\"\\ntrf", e)) parse_error(file, t->line, t->col, "Unknown escape \\%c in a string", e);   /* SANY's */
                     char c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e == 'f' ? '\f' : e;
                     buf_add(&b, &c, 1);
                     len += 2;
@@ -2831,6 +2832,14 @@ static int backslash_op(const char *s, int n) {
     return 0;
 }
 
+/* The operator named op_id, of fixity fix. */
+static const OpInfo *fmt_op_info(int op_id, int fix) {
+    const char *name = S(op_id);
+    for (int i = 0; op_table[i].name; i++)
+        if (op_table[i].fix == fix && strcmp(op_table[i].name, name) == 0) return &op_table[i];
+    return NULL;
+}
+
 static const OpInfo *op_info(Tok *t, int fix) {
     if (t->kind != T_OP && t->kind != T_KW) return NULL;
     int id = canonical(t->id);
@@ -3024,6 +3033,8 @@ static void semantic_error_later(Expr *where, const char *fmt, ...) {
     parsed_error_at = where, parsed_error = xstrdup(msg);
 }
 
+static void check_file_name(Module *m, const char *name);
+static const char *sany_name(int op);
 static Expr **parse_args(int *n);
 static Expr *mk_op(Tok *t, int op, int n, Expr **args);
 static void finish(Expr *e);
@@ -3068,20 +3079,29 @@ static Expr *parse_junction(Tok *bullet) {
 }
 
 /* The v of WF_v(A), [A]_v and <<A>>_v: a name, I!v, or a tuple, set,
-   bracketed or parenthesized expression, as SANY's ReducedExpression. */
-static Expr *parse_subscript(void) {
+   bracketed or parenthesized expression, as SANY's ReducedExpression.
+   Of [A]_v and <<A>>_v, applied, a name's segments may take arguments,
+   which SANY drops of the last one: [A]_I(1)!v(2) is [A]_I(1)!v. */
+static Expr *parse_subscript(int applied) {
     Tok *t = peek();
     if (t->kind == T_IDENT) {
         Expr *e = mk_expr(X_NAME, t);
         Seg segs[32];
         int n = 0;
-        do segs[n++] = (Seg){.name = expect_ident()};
-        while (n < 32 && is_op(peek(), "!") && peek_at(1)->kind == T_IDENT && next());
+        for (;;) {
+            Seg *g = &segs[n++];
+            *g = (Seg){.line = peek()->line, .col = peek()->col};
+            g->name = expect_ident();
+            finish(e);
+            if (applied && is_op(peek(), "(")) g->args = parse_args(&g->n);
+            if (n == 32 || !is_op(peek(), "!") || peek_at(1)->kind != T_IDENT) break;
+            next();
+        }
+        segs[n - 1].args = NULL, segs[n - 1].n = 0;
         e->segs = NEWN(Seg, n);
         memcpy(e->segs, segs, sizeof(Seg) * (size_t)n);
         e->nseg = n;
         e->op = segs[n - 1].name;
-        finish(e);
         return e;
     }
     if (is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) return parse_constant_kw();
@@ -3100,6 +3120,17 @@ static Expr *parse_primary(void) {
         e = mk_expr(X_NUM, t);
         e->num = t->num;
         e->op = t->id;
+        if (t->num >= 0 && is_op(peek(), ".") && peek_at(1)->kind == T_NUM && peek_at(1)->num >= 0) {
+            /* As SANY, a decimal is a number, . and a number, apart or not: 2. 3 */
+            next();
+            Tok *frac = next();
+            Buf text = {0};
+            buf_printf(&text, "%s.%s", S(t->id), S(frac->id));
+            e->num = -1;
+            e->op = intern(text.s);
+            xfree(text.s);
+            finish(e);
+        }
         if ((e->num < 0 || e->num > 2147483647) && !P->mod->odd[unit_section]) P->mod->odd[unit_section] = e;
         return e;
     case T_STR:
@@ -3112,6 +3143,7 @@ static Expr *parse_primary(void) {
         return parse_name();
     case T_KW:
         if (is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")) {
+            if (is_op(peek_at(1), "!")) return parse_name();   /* TRUE!a: as SANY, a path, to be refused */
             e = parse_constant_kw();
             applied_constant(t);
             return e;
@@ -3190,7 +3222,7 @@ static Expr *parse_primary(void) {
             next();
             e = mk_expr(is_kw(t, "WF_") ? X_WF : X_SF, t);
             Expr *a[2];
-            a[0] = parse_subscript();
+            a[0] = parse_subscript(0);
             int n;   /* as SANY, an argument: an operator symbol parses, to be refused */
             Expr **arg = parse_args(&n);
             if (n != 1) syntax_error("expected one argument");
@@ -3245,7 +3277,7 @@ static Expr *parse_primary(void) {
             if (is_op(peek(), ">>_")) {
                 next();
                 e = mk_expr(X_ANGLEACT, t);
-                Expr *b[2] = {n == 1 ? a[0] : NULL, parse_subscript()};
+                Expr *b[2] = {n == 1 ? a[0] : NULL, parse_subscript(1)};
                 if (n != 1) syntax_error("<<A>>_v takes one action");
                 e->n = 2;
                 e->args = args_array(b, 2);
@@ -3429,7 +3461,7 @@ static Expr *parse_primary(void) {
                 next();
                 P->limit = saved;
                 e = mk_expr(X_SQACT, t);
-                Expr *a[2] = {first, parse_subscript()};
+                Expr *a[2] = {first, parse_subscript(1)};
                 e->n = 2;
                 e->args = args_array(a, 2);
                 finish(e);
@@ -3552,6 +3584,13 @@ static Expr *parse_unary(const OpInfo **prefix) {
         next();
         *prefix = info;
         Expr *arg = parse_binary(info->hi);
+        /* As SANY, a postfix operator on its operand conflicts with one
+           binding as tightly: ENABLED x', [] f[x]'. */
+        for (Expr *a = arg; info->hi >= 15 && !a->pl1 && (a->kind == X_APPLY || a->kind == X_DOT || a->kind == X_OP); a = a->args[0]) {
+            const OpInfo *post = a->kind == X_OP && a->n == 1 ? fmt_op_info(a->op, POSTFIX) : NULL;
+            if (post) parse_error(P->file, t->line, t->col, "Precedence conflict between ops %s and %s", info->name, post->name);
+            if (a->kind == X_OP) break;
+        }
         Expr *e = mk_op(t, intern(info->name), 1, &arg);
         span_to(e, arg);
         return e;
@@ -3647,11 +3686,10 @@ static Def *parse_param(int kind) {
         else d->arity = 1;
         return d;
     }
-    if (op_info(t, PREFIX) && is_op(peek_at(1), "_")) {
+    if (op_info(t, PREFIX) && !is_op(t, "-") && is_op(peek_at(1), "_")) {   /* as SANY, a prefix - declared is -. */
         next();
         next();
         int name = canonical(t->id);
-        if (strcmp(S(name), "-") == 0) name = intern("-.");
         Def *d = new_def(kind, name, t);
         d->arity = 1;
         return d;
@@ -3706,9 +3744,8 @@ static Def *parse_definition(int local) {
         next();
         params[np++] = new_def(D_PARAM, peek()->id, peek());
         next();
-    } else if (op_info(t, PREFIX) && is_name(peek_at(1)) && is_op(peek_at(2), "==")) {
+    } else if (op_info(t, PREFIX) && !is_op(t, "-") && is_name(peek_at(1)) && is_op(peek_at(2), "==")) {   /* and defined */
         int name = canonical(t->id);
-        if (strcmp(S(name), "-") == 0) name = intern("-.");
         d = new_def(D_OP, name, t);
         next();
         params[np++] = new_def(D_PARAM, peek()->id, peek());
@@ -3968,7 +4005,14 @@ static Module *parse_module(Module *outer) {
         const char *msg = parsed_error;
         parsed_error_at = NULL;
         /* As SANY, every module parses before an error of one's meaning:
-           a module it uses that is missing, or does not parse, first. */
+           a module it uses that is missing, or does not parse, first, and
+           a file named otherwise. */
+        if (!outer && !fmt_mode && P->file) {
+            const char *base = strrchr(P->file, '/') ? strrchr(P->file, '/') + 1 : P->file;
+            char *name = xstrndup(base, strlen(base) > 4 ? strlen(base) - 4 : strlen(base));
+            check_file_name(m, name);
+            xfree(name);
+        }
         for (int i = 0; !fmt_mode && i < m->nextends; i++) load_module(m->extends[i], m);   /* -fmt reads one file */
         for (int i = 0; !fmt_mode && i < m->nunits; i++)
             if (m->units[i].kind == 1 || (m->units[i].kind == 0 && m->units[i].def->kind == D_INST))
@@ -4552,9 +4596,13 @@ static int defined_in(Module *m, Def *x) {
     return x->mod == m;
 }
 
-static void redefined(Def *old, Def *d, Expr *where) {
+/* old located at there, if given: an unnamed INSTANCE brought it. */
+static void redefined_at(Def *old, Def *d, Expr *where, Expr *at);
+static void redefined(Def *old, Def *d, Expr *where) { redefined_at(old, d, where, NULL); }
+
+static void redefined_at(Def *old, Def *d, Expr *where, Expr *at) {
     int defined = sany_kind(d) == D_OP && d->kind != D_RECURSIVE, spanned = defined || d->thm;
-    Expr here = spanned ? def_span(d) : *where, there = sany_kind(old) == D_OP || old->thm ? def_span(old) : *old->where;
+    Expr here = spanned ? def_span(d) : *where, there = at ? *at : sany_kind(old) == D_OP || old->thm ? def_span(old) : *old->where;
     Buf h = {0}, t = {0};
     file_loc_text(&h, &here);
     file_loc_text(&t, &there);
@@ -4580,7 +4628,7 @@ static void redefined(Def *old, Def *d, Expr *where) {
         semantic_error(&here, "Multiply-defined symbol '%s': this definition or declaration conflicts \nwith the one at %s.", S(d->name), t.s);
     }
     if (defined)
-        semantic_error(&here, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(d->name));
+        semantic_error(&here, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", sany_name(d->name));
     xfree(h.s);
     xfree(t.s);
 }
@@ -4636,6 +4684,28 @@ static Expr text_span(Module *m, int pos, int end) {
     return e;
 }
 
+/* Where SANY locates a definition m's unnamed INSTANCE instance brings,
+   one it substitutes in: at the statement. NULL: at the definition. */
+static Expr *instance_span(Module *m, Def *instance, Expr *at) {
+    for (int i = 0; instance && instance->nsubst && !instance->local && i < m->nunits; i++)
+        if (m->units[i].kind == 1 && m->units[i].def == instance) return *at = text_span(m, m->units[i].pos, m->units[i].end), at;
+    return NULL;
+}
+
+/* d, a definition or declaration of m, of a symbol m has already: as
+   SANY, from an unnamed INSTANCE located at it, and, with all, from
+   EXTENDS or m itself (else add_sym's). */
+static void builtin_again(int name, Def *def, Expr *where);
+static void defined_again(Module *m, Def *d, int all) {
+    if (all) builtin_again(d->name, d, d->where);
+    for (int k = 0; k < m->nsyms; k++) {
+        Sym *s = &m->syms[k];
+        if (s->name != d->name || s->def == d || s->def->kind == D_RECURSIVE || (!s->npath && !all)) continue;
+        Expr at;
+        redefined_at(s->def, d, d->where, s->npath ? instance_span(m, s->path[0], &at) : NULL);
+    }
+}
+
 static void check_outer(Module *m, Def *d) {
     Sym *s = m->outer ? module_lookup(m, d->name) : NULL;
     if (!s || (m->nsyms && s >= m->syms && s < m->syms + m->nsyms)) return;   /* its own: add_sym's */
@@ -4668,15 +4738,34 @@ static Sym *own_sym(Module *m, int name) {
    declarations or two definitions from EXTENDS warn. */
 static int inherited_conflict(Module *m, Def *d, Def *instance) {
     Sym *old = own_sym(m, d->name);
-    if (!old || old->def == d) return 0;
+    if (!old) return 0;
+    Expr a, b;
+    if (old->def == d && instance && old->npath && old->path[0] != instance &&
+        instance_span(m, instance, &a) && instance_span(m, old->path[0], &b)) {   /* the same INSTANCE again: as SANY, a warning */
+        Buf here = {0}, there = {0};
+        file_loc_text(&here, &a);
+        file_loc_text(&there, &b);
+        Module *file = file_module(m);
+        buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
+                   here.s, S(d->name), there.s);
+        file->nwarnings++;
+        xfree(here.s);
+        xfree(there.s);
+        return 1;
+    }
+    if (old->def == d) return 0;
     int d_decl = d->kind == D_CONST || d->kind == D_VAR;
     int o_decl = old->def->kind == D_CONST || old->def->kind == D_VAR;
-    if (instance && (d_decl || o_decl)) return 0;
+    if (instance && d_decl) return 0;
     Buf here = {0}, there = {0};
     Expr at = instance && instance->local ? *instance->where : (d_decl ? *d->where : def_span(d));
+    instance_span(m, instance, &at);
     Expr span = o_decl ? *old->def->where : def_span(old->def);
+    if (old->npath) instance_span(m, old->path[0], &span);
     file_loc_text(&here, &at);
     file_loc_text(&there, &span);
+    if (instance && o_decl)   /* a definition it brings, of a symbol declared */
+        semantic_error(&at, "Multiply-defined symbol '%s': this definition or declaration conflicts \nwith the one at %s.", S(d->name), there.s);
     if (!instance && d_decl != o_decl) {
         char *h = buf_take(&here), *t = buf_take(&there);
         semantic_error(&at, "The %s of '%s' conflicts with \nits %s at %s.",
@@ -4705,14 +4794,19 @@ static int def_arity(Def *d) {
     return 0;
 }
 
-static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int local, Expr *where) {
+/* A definition or declaration of a built-in operator's name, at where. */
+static void builtin_again(int name, Def *def, Expr *where) {
     int defined = def->kind == D_OP || def->kind == D_FCN;
-    if (npath == 0 && where && builtin_name(name) && !defined)
+    if (builtin_name(name) && !defined)
         semantic_error(where, "Symbol %s is a built-in operator, and cannot be redefined.", S(name));
-    if (npath == 0 && where && (is_core_op(name) || builtin_name(name))) {
+    if (is_core_op(name) || builtin_name(name)) {
         Expr span = defined ? def_span(def) : *where;
-        semantic_error(&span, def->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(name));
+        semantic_error(&span, def->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", sany_name(name));
     }
+}
+
+static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int local, Expr *where) {
+    if (npath == 0 && where) builtin_again(name, def, where);
     for (int i = 0; i < m->nsyms; i++)
         if (m->syms[i].name == name) {
             if (m->syms[i].def == def) return;
@@ -5119,6 +5213,12 @@ static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_na
 /* A name of path e that names nothing: as SANY, named by all the names
    of e before a selector, A!B!C, and located to the last of them. */
 static _Noreturn void unknown_path(Expr *e) {
+    const char *first = S(e->segs[0].name);
+    if (!strcmp(first, "TRUE") || !strcmp(first, "FALSE") || !strcmp(first, "BOOLEAN") || !strcmp(first, "STRING")) {
+        Expr at = *e;
+        at.l2 = at.l1, at.c2 = at.c1 + (int)strlen(first) - 1;
+        semantic_error(&at, "Cannot take subexpression of `%s'.", first);
+    }
     Buf name = {0};
     int last = 0;
     for (int k = 0; k < e->nseg && !e->segs[k].sel; last = k++)
@@ -5189,7 +5289,6 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
         } else {
             int da = def_arity(d);
             if (want_arity > 0) {
-                if (s->n != 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
                 if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
             } else {
                 check_arity(e, d, s->n, s->args);
@@ -5222,14 +5321,13 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
         if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
         int da = def_arity(d);
         if (want_arity > 0) {
-            if (s->n != 0 || da == 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
             if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
             e->kind = d->kind == D_PARAM ? K_PARAMCALL : K_CALL;
             e->def = d;
             return;
         }
         if (d->kind == D_BOUND || (d->kind == D_PARAM && d->arity == 0 && s->n == 0)) {
-            if (s->n) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
+            check_arity(e, d, s->n, s->args);   /* a bound variable: at the parentheses */
             e->kind = K_BOUND;
         } else if (d->kind == D_PARAM) {
             check_arity(e, d, s->n, s->args);
@@ -5254,7 +5352,6 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
     if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
     int da = def_arity(d);
     if (want_arity > 0) {
-        if (s->n != 0 || da == 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
         if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
     } else {
         check_arity(e, d, s->n, s->args);
@@ -5282,12 +5379,25 @@ static const char *sany_name(int op) {
     return S(op);
 }
 
+/* Whether a, where an operator is wanted, is written as one: a name
+   without arguments, an operator symbol or a LAMBDA. As SANY, an argument
+   otherwise is an error before its parts. */
+static int operator_shaped(Expr *a) {
+    return a->kind == X_LAMBDA || a->kind == X_OPREF || a->kind == X_BOOL ||
+           (a->kind == X_NAME && !a->segs[a->nseg - 1].n) || (a->kind == X_OP && !a->n && (a->op == intern("STRING") || a->op == intern("BOOLEAN")));
+}
+
 /* Argument idx of op, or of the module op_name instantiates, which takes
    an operator of arity want there. An error of its arity is located, as
    SANY, at the operator applied, where seg of call names it. */
 static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name, Def *op, Expr *call, Seg *seg) {
     if (!a) return;
     if (want == 0) { resolve_expr(a, sc); return; }
+    if (!operator_shaped(a))
+        semantic_error(a, "An expression appears as argument number %d (counting from 1) to operator '%s', in a position an operator is required.",
+                       idx + 1, op_name);
+    if (a->kind == X_BOOL || a->kind == X_OP)   /* TRUE, STRING: SANY's built-in constants */
+        semantic_error(a, "Expected arity %d but found operator of arity 0.", want);
     if (a->kind == X_LAMBDA) {
         if (a->def->nparams != want)
             semantic_error(call ? seg_at(call, seg) : a, "Lambda expression with arity %d used as argument %d of operator `%s', \nbut an operator of arity %d is required.",
@@ -5316,9 +5426,6 @@ static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_na
         resolve_name(a, sc, want);
         return;
     }
-    resolve_expr(a, sc);
-    semantic_error(a, "An expression appears as argument number %d (counting from 1) to operator '%s', in a position an operator is required.",
-                   idx + 1, op_name);
 }
 
 /* The function definitions being resolved: one named in its own body is
@@ -5502,7 +5609,7 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
                 }
             if (is_core_op(d->name) || builtin_name(d->name)) {
                 Expr span = def_span(d);
-                semantic_error(&span, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(d->name));
+                semantic_error(&span, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", sany_name(d->name));
             }
             d->local = 2;   /* a LET definition: bound in the environment */
             resolve_def(d, inner);
@@ -5552,7 +5659,7 @@ static void resolve_def(Def *d, Scope *sc) {
                 if (cur_module->units[k].kind == 4 && cur_module->units[k].def->kind == D_RECURSIVE && cur_module->units[k].def->name == d->name)
                     redefined(cur_module->units[k].def, d->params[i], d->params[i]->where);
             Expr span = def_span(d);
-            semantic_error(&span, "Operator %s already defined or declared.", S(d->name));
+            semantic_error(&span, "Operator %s already defined or declared.", sany_name(d->name));
         }
     for (int i = 0; i < d->nparams; i++) {
         d->params[i]->var_index = -1;
@@ -5611,6 +5718,10 @@ static void resolve_def(Def *d, Scope *sc) {
                 }
                 exprs[i] = ref;
             }
+            if (decl->arity > 0 && !operator_shaped(exprs[i]))
+                semantic_error(exprs[i], "Arity %d operator (not an expression) is expected \nto substitute for CONSTANT '%s'.", decl->arity, S(decl->name));
+            if (decl->arity > 0 && exprs[i]->kind == X_LAMBDA && exprs[i]->def->nparams != decl->arity)
+                semantic_error(exprs[i], "An operator must be substituted for symbol '%s', and it must have arity %d.", S(decl->name), decl->arity);
             resolve_arg(exprs[i], inner, decl->arity, i, S(t->name), NULL, NULL, NULL);
             if (decl->arity > 0 && exprs[i]->def && is_non_leibniz(exprs[i]->def))
                 semantic_error(d->where, "Error in instantiating module '%s':\n A non-Leibniz operator substituted for '%s'.",
@@ -5769,13 +5880,12 @@ static void resolve_module(Module *m) {
                 }
                 d->mod = m;
                 check_outer(m, d);
+                defined_again(m, d, 0);
                 add_sym(m, d->name, d, NULL, 0, 0, d->where);
                 if (own_sym(m, d->name)->def == d) add_decl(m, d);   /* not one again, which SANY ignores */
             } else if (d->kind == D_OP || d->kind == D_FCN || d->kind == D_INST) {
                 if (d->recursive && pending_rec > 0) pending_rec--;
-                for (int k = 0; d->kind != D_INST && k < m->nsyms; k++)   /* as SANY, a symbol defined again is an error before its body's */
-                    if (m->syms[k].name == d->name && m->syms[k].def != d && !m->syms[k].npath && m->syms[k].def->kind != D_RECURSIVE)
-                        redefined(m->syms[k].def, d, d->where);
+                if (d->kind != D_INST) defined_again(m, d, 1);   /* as SANY, an error before its body's */
                 for (int k = 0; d->recursive == 2 && k < i; k++)   /* as SANY, where the definition is */
                     if (m->units[k].kind == 4 && m->units[k].def->kind == D_RECURSIVE && m->units[k].def->name == d->name
                         && def_arity(d) != m->units[k].def->arity) {
@@ -25741,13 +25851,6 @@ static void fmt_trailing(Fmt *f, int line) {
         f->last_line = c->eline;
         if (!c->block) { f->line_commented = 1; break; }
     }
-}
-
-static const OpInfo *fmt_op_info(int op_id, int fix) {
-    const char *name = S(op_id);
-    for (int i = 0; op_table[i].name; i++)
-        if (op_table[i].fix == fix && strcmp(op_table[i].name, name) == 0) return &op_table[i];
-    return NULL;
 }
 
 static const OpInfo *expr_op_info(Expr *e) {

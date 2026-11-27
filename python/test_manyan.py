@@ -162,7 +162,7 @@ Next == x' = x""", "INIT Init\nNEXT Next\n"))
         run = check(["J"], {**spec("J", 'EXTENDS Json\nVARIABLE x\nInit == x = JsonDeserialize("d.json")\nNext == x\' = x',
                                    "INIT Init\nNEXT Next\n"), "d.json": deep})
         self.assertEqual(run.status, 75)
-        run2 = check(["J2"], {**spec("J2", 'EXTENDS Json\nVARIABLE x\nInit == x = JsonDeserialize("s.json")\nNext == x\' = x\nInv == x # "\\u2441"',
+        run2 = check(["J2"], {**spec("J2", 'EXTENDS Json\nVARIABLE x\nInit == x = JsonDeserialize("s.json")\nNext == x\' = x\nInv == x # "q"',
                                      "INIT Init\nNEXT Next\nINVARIANT Inv\n"), "s.json": '"\\uD800\\u0041"'})
         self.assertEqual(run2.status, 0)
         run3 = check(["J3"], {**spec("J3", 'EXTENDS Json\nVARIABLE x\nInit == x = JsonDeserialize("n.json")\nNext == x\' = x',

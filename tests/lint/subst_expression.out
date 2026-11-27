@@ -1,0 +1,4 @@
+SEMANTIC ERROR
+line 3, col 32 to line 3, col 34 of module subst_expression
+Arity 1 operator (not an expression) is expected
+to substitute for CONSTANT 'Op'.

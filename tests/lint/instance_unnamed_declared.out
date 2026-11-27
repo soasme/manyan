@@ -1,0 +1,4 @@
+SEMANTIC ERROR
+line 5, col 1 to line 5, col 31 of module instance_unnamed_declared
+Multiply-defined symbol 'Other': this definition or declaration conflicts
+with the one at line 4, col 10 to line 4, col 14 of module instance_unnamed_declared.

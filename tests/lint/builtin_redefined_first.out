@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 3, col 1 to line 3, col 13 of module builtin_redefined_first
+Operator UNION already defined or declared.
