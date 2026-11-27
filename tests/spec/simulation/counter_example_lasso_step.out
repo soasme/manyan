@@ -1,0 +1,16 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property P was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Init line 7, col 9 to line 7, col 13 of module counter_example_lasso_step>
+s = 2
+
+State 2: <Next line 8, col 9 to line 8, col 22 of module counter_example_lasso_step>
+s = 3
+
+State 3: <Next line 8, col 9 to line 8, col 22 of module counter_example_lasso_step>
+s = 1
+
+Back to state 1: <Next line 8, col 9 to line 8, col 22 of module counter_example_lasso_step>
+exit 13
