@@ -1,0 +1,4 @@
+SEMANTIC ERROR
+line 7, col 6 to line 7, col 19 of module inst_path_level
+Level error in applying operator I!J!Baz:
+The level of argument 2 exceeds the maximum level allowed by the operator.

@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 4, col 8 to line 4, col 14 of module symbol_argument
+Unsupported expression type `N_GenNonExpPrefixOp'.

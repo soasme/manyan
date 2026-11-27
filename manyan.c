@@ -2278,6 +2278,7 @@ struct Expr {
     unsigned char fixed;  /* fixed_expr: 0 not yet known, 1 yes, 2 no */
     unsigned char made;   /* made by manyan, not written: no frame of TLC's call stack */
     unsigned char bullet; /* parsed as a bullet list (/\ or \/) */
+    unsigned char named;  /* X_OP: an infix or postfix operator written as a name, + or +(a, b) */
     int op;               /* operator or name; field of X_DOT */
     int n;
     int field;            /* X_DOT: where the field was in the last record */
@@ -3186,12 +3187,10 @@ static Expr *parse_primary(void) {
             e = mk_expr(is_kw(t, "WF_") ? X_WF : X_SF, t);
             Expr *a[2];
             a[0] = parse_subscript();
-            expect_op("(");
-            int saved = P->limit;
-            P->limit = 0;
-            a[1] = parse_expr();
-            P->limit = saved;
-            expect_op(")");
+            int n;   /* as SANY, an argument: an operator symbol parses, to be refused */
+            Expr **arg = parse_args(&n);
+            if (n != 1) syntax_error("expected one argument");
+            a[1] = arg[0];
             e->n = 2;
             e->args = args_array(a, 2);
             finish(e);
@@ -3531,23 +3530,18 @@ static Expr *parse_unary(const OpInfo **prefix) {
     if (!info && named && !is_junction(t) && is_op(peek_at(1), "(")) {
         /* An infix or postfix operator applied to its arguments: +(a, b), ^+(a). */
         next();
-        Tok *open = peek();
-        int n, want = op_info(t, INFIX) ? 2 : 1;
+        int n;
         Expr **args = parse_args(&n);
-        if (n != want) {
-            Expr *where = mk_op(open, 0, 0, NULL);
-            finish(where);
-            semantic_error_later(where, "The operator %s requires %d arguments.", named->name, want);
-        }
         Expr *e = mk_op(t, intern(named->name), n, args);
+        e->named = 1;
         finish(e);
         return e;
     }
-    if (!info && named && !is_junction(t)) {   /* an infix or postfix operator alone: SANY's error once the module parses */
+    if (!info && named && !is_junction(t)) {   /* an infix or postfix operator alone */
         next();
-        semantic_error_later(mk_expr(X_NAME, t), "The operator %s requires %d arguments.", named->name, op_info(t, INFIX) ? 2 : 1);
-        Expr *e = mk_expr(X_BOOL, t);
-        e->num = 1;
+        Expr *e = mk_op(t, intern(named->name), 0, NULL);
+        e->named = 1;
+        finish(e);
         return e;
     }
     if (info) {
@@ -4745,8 +4739,11 @@ static Def *scope_lookup(Scope *sc, int name) {
 }
 
 /* e applies d to n arguments. As SANY, a wrong number is an error at
-   the parentheses around them, naming d as written: I!G. */
-static void check_arity(Expr *e, Def *d, int n, Expr **args) {
+   the parentheses around them, naming d name, or as written: I!G. */
+static void check_arity_named(Expr *e, Def *d, int n, Expr **args, const char *name);
+static void check_arity(Expr *e, Def *d, int n, Expr **args) { check_arity_named(e, d, n, args, NULL); }
+
+static void check_arity_named(Expr *e, Def *d, int n, Expr **args, const char *as) {
     int want = d->kind == D_OP ? d->nparams : d->kind == D_PARAM || d->kind == D_CONST ? d->arity : 0;
     if (d->kind == D_INST) want = d->nparams;
     if (n == want) return;
@@ -4767,7 +4764,7 @@ static void check_arity(Expr *e, Def *d, int n, Expr **args) {
         while (close < toks + e->mod->ntoks - 1 && close->pos < to) close++;
         at.l1 = open->line, at.c1 = open->col, at.l2 = close->eline, at.c2 = close->ecol;
     }
-    const char *written = name.s ? name.s : S(d->name);
+    const char *written = as ? as : name.s ? name.s : S(d->name);
     if (want == 0) semantic_error(&at, "The operator %s requires 0 arguments.", written);
     semantic_error(&at, "The operator %s requires %d arguments.", written, want);
 }
@@ -5104,6 +5101,20 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
 
 static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_name, Def *op, Expr *call, Seg *seg);
 
+/* A name of path e that names nothing: as SANY, named by all the names
+   of e before a selector, A!B!C, and located to the last of them. */
+static _Noreturn void unknown_path(Expr *e) {
+    Buf name = {0};
+    int last = 0;
+    for (int k = 0; k < e->nseg && !e->segs[k].sel; last = k++)
+        buf_printf(&name, "%s%s", k ? "!" : "", S(e->segs[k].name));
+    Expr at = *e;
+    Tok *t = e->mod->toks;
+    while (t->line < e->segs[last].line || (t->line == e->segs[last].line && t->col < e->segs[last].col)) t++;
+    at.l2 = t->eline, at.c2 = t->ecol;
+    semantic_error(&at, "Unknown operator: `%s'.", name.s);
+}
+
 /* The arguments of segment s of call e, which applies d. */
 static void resolve_call_args(Def *d, Seg *s, Scope *sc, Expr *e) {
     for (int i = 0; i < s->n; i++) {
@@ -5147,7 +5158,7 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
             for (int k = 0; k < sym->npath; k++) path[np++] = sym->path[k];
             d = sym->def;
         }
-        if (!d) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+        if (!d) unknown_path(e);
         if (i + 1 < e->nseg && d->kind == D_INST) {
             check_arity(e, d, s->n, s->args);
             resolve_call_args(d, s, sc, e);
@@ -5250,7 +5261,8 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
 
 /* An operator's name inside SANY, which spells the logical ones out. */
 static const char *sany_name(int op) {
-    static const char *names[][2] = {{"/\\", "\\land"}, {"\\/", "\\lor"}, {"~", "\\lnot"}, {"<=>", "\\equiv"}, {NULL, NULL}};
+    static const char *names[][2] = {{"/\\", "\\land"}, {"\\/", "\\lor"}, {"~", "\\lnot"}, {"<=>", "\\equiv"},
+                                     {"\\cup", "\\union"}, {"\\cap", "\\intersect"}, {"\\X", "\\times"}, {NULL, NULL}};
     for (int i = 0; names[i][0]; i++) if (!strcmp(S(op), names[i][0])) return names[i][1];
     return S(op);
 }
@@ -5384,6 +5396,10 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
         for (int i = 0; i < nopen_defs; i++) if (open_defs[i] == e->def) e->def->self = 1;
         return;
     case X_OPREF:
+        for (int i = 0; op_table[i].name; i++)   /* a symbol: SANY's node for it */
+            if (!strcmp(op_table[i].name, S(e->op)))
+                semantic_error(e, "Unsupported expression type `N_Gen%sOp'.",
+                               op_table[i].fix == INFIX ? "Infix" : op_table[i].fix == PREFIX ? "NonExpPrefix" : "Postfix");
         semantic_error(e, "Operator %s used where an expression is required.", S(e->op));
         return;
     case X_LAMBDA:
@@ -5391,6 +5407,19 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
         return;
     case X_OP: {
         /* As SANY, the operator before its arguments. */
+        if (e->named) {   /* +(a, b) or +: a name, so first whether it names anything, then its arity */
+            Tok *t = e->mod->toks;
+            while (t->pos < e->pos) t++;
+            Def core = {.kind = D_OP, .nparams = op_info(t, INFIX) ? 2 : 1};
+            int is_core = 0;
+            for (int i = 0; core_ops[i].name && !is_core; i++) is_core = !strcmp(core_ops[i].name, S(e->op));
+            Def *d = is_core ? &core : scope_lookup(sc, e->op);
+            Sym *sym = d ? NULL : module_lookup(cur_module, e->op);
+            if (sym) d = sym->def;
+            Expr at = text_span(e->mod, t->pos, t->end);
+            if (!d) semantic_error(&at, "Unknown operator: `%s'.", S(t->id));
+            check_arity_named(e, d, e->n, e->args, sany_name(e->op));
+        }
         for (int i = 0; core_ops[i].name; i++)
             if (strcmp(core_ops[i].name, S(e->op)) == 0) {
                 resolve_args(e->args, e->n, sc);
@@ -5809,7 +5838,12 @@ static void resolve_module(Module *m) {
    substitute may have some level; an operator applied to arguments of
    higher levels than its parameters allow is an error. */
 
-static int level_max(Def *d) { return d->level_max ? d->level_max - 1 : 3; }
+/* The greatest level an argument for d may have: a variable, at most
+   a state function. */
+static int level_max(Def *d) {
+    int max = d->level_max ? d->level_max - 1 : 3;
+    return d->kind == D_VAR && max > 1 ? 1 : max;
+}
 
 static void record_arg_min(Def *p, int j, int l) {
     if (!p || j < 0 || j >= p->arity || l <= 0) return;
@@ -5976,6 +6010,48 @@ static const char *sany_connective(int kind) {
    the parameters and declarations it uses. */
 static void check_levels_of(Expr *e, int max);
 
+/* Whether e, or a definition it names, refers to p, a parameter or
+   declaration: SANY's allParams, which bound only what a definition uses.
+   seen: the definitions already searched. */
+static int def_uses(Def *d, Def *p, List *seen);
+static int path_uses(Expr *e, int k, Def *p, List *seen);
+
+static int expr_uses(Expr *e, Def *p, List *seen) {
+    if (!e) return 0;
+    if (e->def == p) return 1;
+    if (e->def && (e->kind == K_CALL || e->kind == K_INSTCALL || e->kind == X_OPREF || e->kind == X_LAMBDA) && def_uses(e->def, p, seen)) return 1;
+    if (e->kind == K_INSTCALL && path_uses(e, 0, p, seen)) return 1;
+    for (int i = 0; i < e->n; i++) if (expr_uses(e->args[i], p, seen)) return 1;
+    for (int i = 0; i < e->nb; i++) if (expr_uses(e->bounds[i].set, p, seen)) return 1;
+    for (int k = 0; e->kind == K_INSTCALL && k < e->nseg; k++)
+        for (int i = 0; i < e->segs[k].n; i++) if (expr_uses(e->segs[k].args[i], p, seen)) return 1;
+    for (int i = 0; e->kind == X_EXCEPT && i < e->n - 1; i++)
+        for (int k = 0; k < e->paths[i].n; k++) if (expr_uses(e->paths[i].keys[k], p, seen)) return 1;
+    for (int i = 0; e->kind == X_LET && i < e->ndefs; i++) if (def_uses(e->defs[i], p, seen)) return 1;
+    return 0;
+}
+
+static int def_uses(Def *d, Def *p, List *seen) {
+    if (d == p) return 1;
+    if (d->kind != D_OP && d->kind != D_FCN) return 0;
+    for (int i = 0; i < seen->n; i++) if ((Def *)seen->v[i] == d) return 0;
+    list_add(seen, (Value *)d);
+    for (int i = 0; i < d->nb; i++) if (expr_uses(d->bounds[i].set, p, seen)) return 1;
+    return expr_uses(d->body, p, seen);
+}
+
+/* Whether what call e names past instance k of its path uses p, of the
+   module that instance is in: through a substitution of a declaration
+   used further in. */
+static int path_uses(Expr *e, int k, Def *p, List *seen) {
+    Def *in = e->defs[k];
+    for (int i = 0; i < in->nsubst; i++)
+        if (expr_uses(in->subst_expr[i], p, seen)
+            && (k + 1 < e->ndefs ? path_uses(e, k + 1, in->subst_decl[i], seen) : def_uses(e->def, in->subst_decl[i], seen)))
+            return 1;
+    return 0;
+}
+
 /* That e may be at most of level max: as SANY, its parts first. */
 static void check_levels(Expr *e, int max) {
     if (!e) return;
@@ -6004,24 +6080,41 @@ static void check_levels_of(Expr *e, int max) {
     case K_CDOT: check_operands(e, 2, 2, max); return;
     case X_SQACT: case X_ANGLEACT: check_operands(e, 2, 1, max); return;   /* [A]_v */
     case X_WF: case X_SF: check_operands(e, 1, 2, max); return;            /* WF_v(A) */
-    case K_CALL: case K_INSTCALL:
+    case K_CALL: case K_INSTCALL: {
+        /* As SANY, I(a)!D(b) applies one operator, I!D, to a and b, an
+           instance's parameter bounded only where D uses it. */
+        Buf name = {0};
+        int at = 0;
+        for (int k = 0; e->kind == K_INSTCALL && k < e->ndefs; k++) {
+            Def *in = e->defs[k];
+            check_def_levels(in);
+            buf_printf(&name, "%s!", S(in->name));
+        }
+        buf_printf(&name, "%s", S(d->name));
         check_def_levels(d);
+        for (int k = 0; e->kind == K_INSTCALL && k < e->ndefs; k++) {
+            Def *in = e->defs[k];
+            for (int i = 0; i < e->segs[k].n && i < in->nparams; i++, at++) {
+                List seen = {0};
+                int used = path_uses(e, k, in->params[i], &seen);
+                check_argument(e, name.s, at, e->segs[k].args[i], used ? level_max(in->params[i]) : 3, max);
+            }
+        }
         for (int i = 0; i < e->n; i++)
-            check_argument(e, S(d->name), i, e->args[i], i < d->nparams ? level_max(d->params[i]) : 3, max);
+            check_argument(e, name.s, at + i, e->args[i], i < d->nparams ? level_max(d->params[i]) : 3, max);
+        xfree(name.s);
         for (int i = 0; i < e->n && i < d->nparams; i++)
             if (d->params[i]->arity > 0)
                 check_ho_arg(e, S(d->name), 0, d->params[i], e->args[i], d->params, e->args, e->n < d->nparams ? e->n : d->nparams);
         for (int k = 0; e->kind == K_INSTCALL && k < e->ndefs; k++) {
             Def *in = e->defs[k];
-            check_def_levels(in);
-            for (int i = 0; i < e->segs[k].n && i < in->nparams; i++)
-                check_argument(e, S(in->name), i, e->segs[k].args[i], level_max(in->params[i]), max);
             for (int i = 0; i < e->segs[k].n && i < in->nparams; i++)
                 if (in->params[i]->arity > 0)
                     check_ho_arg(e, S(in->name), 0, in->params[i], e->segs[k].args[i], in->params, e->segs[k].args,
                                  e->segs[k].n < in->nparams ? e->segs[k].n : in->nparams);
         }
         return;
+    }
     case X_LET:
         for (int i = 0; i < e->ndefs; i++) check_def_levels(e->defs[i]);
         check_levels(e->args[0], max);

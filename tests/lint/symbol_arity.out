@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 3, col 10 to line 3, col 14 of module symbol_arity
+The operator \union requires 2 arguments.

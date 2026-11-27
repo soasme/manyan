@@ -1,0 +1,5 @@
+SEMANTIC ERROR
+line 4, col 1 to line 4, col 32 of module inst_var_action
+Level error in instantiating module 'PathC':
+The level of the expression or operator substituted for 'u'
+must be at most 1.

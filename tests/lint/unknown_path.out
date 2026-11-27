@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 3, col 6 to line 3, col 16 of module unknown_path
+Unknown operator: `M!N!Init'.
