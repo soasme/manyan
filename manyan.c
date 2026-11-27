@@ -15386,6 +15386,7 @@ typedef struct TF {
     int neg, action;   /* action: the predicate relates a state to its successor */
     int index;         /* TF_EVENTUALLY: its acceptance set; TF_ATOM: its cache slot */
     int id;            /* unique id for canonical tableau hashing */
+    struct TF *next;   /* ()this, once made */
 } TF;
 
 static TF **eventualities;
@@ -15662,8 +15663,14 @@ static int tnode_ht_size;
 
 typedef struct { TF **v; int n; } TFList;
 
+/* Whether the tableau stands for none, as TLC checks a property of only
+   []<>P and <>[]P: its nodes are then one for the same literals and next
+   formulas, so the product keeps the state graph's shape. */
+static int tnode_quotient;
+
 static void tnodes_reset(void) {
     ntnodes = 0;
+    tnode_quotient = 0;
     if (tnode_ht) memset(tnode_ht, 0, sizeof(int) * (size_t)tnode_ht_size);
 }
 
@@ -15724,14 +15731,16 @@ static void tnode_ht_grow(void) {
    checks and expands them. */
 static int tnode_add(TFList par) {
     TF **key = NEWN(TF *, par.n + 1);
-    memcpy(key, par.v, sizeof(TF *) * (size_t)par.n);
-    tf_sort(key, par.n);
-    uint64_t h = tnode_hash(key, par.n);
+    int nkey = 0;
+    for (int i = 0; i < par.n; i++)
+        if (!tnode_quotient || par.v[i]->op == TF_ATOM || par.v[i]->op == TF_NEXT) key[nkey++] = par.v[i];
+    tf_sort(key, nkey);
+    uint64_t h = tnode_hash(key, nkey);
     if (tnode_ht_size) {
         int j = (int)(h & (uint64_t)(tnode_ht_size - 1));
         while (tnode_ht[j]) {
             TNode *t = &tnodes[tnode_ht[j] - 1];
-            if (t->npar == par.n && memcmp(t->par, key, sizeof(TF *) * (size_t)par.n) == 0) return tnode_ht[j] - 1;
+            if (t->npar == nkey && memcmp(t->par, key, sizeof(TF *) * (size_t)nkey) == 0) return tnode_ht[j] - 1;
             j = (j + 1) & (tnode_ht_size - 1);
         }
     }
@@ -15741,8 +15750,8 @@ static int tnode_add(TFList par) {
     arena = &perm_arena;
     TNode *t = &tnodes[ntnodes];
     memset(t, 0, sizeof *t);
-    t->par = memcpy(NEWN(TF *, par.n + 1), key, sizeof(TF *) * (size_t)par.n);
-    t->npar = par.n;
+    t->par = memcpy(NEWN(TF *, nkey + 1), key, sizeof(TF *) * (size_t)nkey);
+    t->npar = nkey;
     t->lits = NEWN(TF *, par.n + 1);
     t->next = NEWN(TF *, par.n + 1);
     for (int i = 0; i < par.n; i++) {
@@ -15758,11 +15767,12 @@ static int tnode_add(TFList par) {
 
 /* ()f, a formula of a particle required of the next state. */
 static TF *tf_next(TF *f) {
+    if (f->next) return f->next;
     Arena *saved = arena;
     arena = &perm_arena;
-    TF *t = tf_new(TF_NEXT, f, NULL);
+    f->next = tf_new(TF_NEXT, f, NULL);
     arena = saved;
-    return t;
+    return f->next;
 }
 
 /* The second part of a formula the tableau splits: B of A /\ B and
@@ -15859,11 +15869,11 @@ static void expand(TF **v, int n, int **out_v, int *out_n) {
     arena_free(&tmp);
 }
 
-/* Whether tableau node t leaves the eventuality e unfulfilled: it has <>A
-   and not A. */
+/* Whether tableau node t leaves the eventuality <>A unfulfilled: it has
+   ()<>A and not A, as a particle has <>A and not A. */
 static int tnode_defers(int t, int e) {
     TFList par = {tnodes[t].par, tnodes[t].npar};
-    return tfl_has(par, eventualities[e]) && !tfl_has(par, eventualities[e]->a);
+    return tfl_has(par, tf_next(eventualities[e])) && !tfl_has(par, eventualities[e]->a);
 }
 
 static void tnode_expand(int i) {
@@ -16923,13 +16933,15 @@ static void print_counterexample(int *inits, int ninits) {
     else print_lasso(ls, la, n, path.n - 1, (int)cacts.v[cyc.n - 1]->u.i, path.n - 1);
 }
 
-/* Whether TLC checks a formula with a tableau: it has a temporal part
-   other than []<>P and <>[]P. */
+static int tf_has(TF *f, int temporal);
+
+/* Whether TLC checks a formula with a tableau: it has a part other than
+   []<>P and <>[]P, P no temporal formula. */
 static int tf_tableau(TF *f) {
     switch (f->op) {
     case TF_AND: case TF_OR: return tf_tableau(f->a) || tf_tableau(f->b);
     case TF_ALWAYS: case TF_EVENTUALLY:
-        return f->a->op == f->op || (f->a->op != TF_ALWAYS && f->a->op != TF_EVENTUALLY) || f->a->a->op != TF_ATOM;
+        return f->a->op == f->op || (f->a->op != TF_ALWAYS && f->a->op != TF_EVENTUALLY) || tf_has(f->a->a, 1);
     case TF_TRUE: return 1;
     case TF_ATOM: return !f->action;
     default: return 0;
@@ -17546,6 +17558,7 @@ static TF *live_setup(int p) {
     product_reset();
     TF *neg = to_tf(temporal_props[p].expr, temporal_props[p].ctx, 1);
     for (int i = nfair_rest - 1; i >= 0; i--) neg = tf_new(TF_AND, to_tf(fair_rest[i], fair_rest_c[i], 0), neg);
+    tnode_quotient = !tf_tableau(neg);
     atom_cache_reset();
     return live_negated = neg;
 }
@@ -26064,7 +26077,7 @@ static void reset_check(void) {
     Z(sim_init_arena); Z(cfg); Z(ncfg); Z(cfg_text); Z(cfg_len); Z(cfg_str); Z(cfg_scanning); Z(cfg_num);
     Z(spec_def); Z(sym_assumes); Z(nsym_assumes); Z(eventualities); Z(neventualities); Z(atoms); Z(natoms);
     Z(tf_ht); Z(tf_ht_size); Z(tf_count); Z(tf_no_intern);
-    Z(tnodes); Z(ntnodes); Z(captnodes); Z(tnode_ht); Z(tnode_ht_size); Z(atom_cache); Z(atom_cache_size); Z(step_atoms); Z(atom_slot); Z(nstate_slots);
+    Z(tnodes); Z(ntnodes); Z(captnodes); Z(tnode_ht); Z(tnode_ht_size); Z(tnode_quotient); Z(atom_cache); Z(atom_cache_size); Z(step_atoms); Z(atom_slot); Z(nstate_slots);
     Z(nstep_slots); Z(decoded); Z(decoded_arena); Z(following); Z(no_atom); Z(live_step); Z(fairs);
     Z(nfairs); Z(real_succ); Z(nreal_succ); Z(real_found); Z(product_acts); Z(pnodes); Z(npnodes);
     Z(cappnodes); Z(pnodes_mapped); Z(pnodes_of); Z(product_arena); Z(live_cap); Z(nlive_cap); Z(tlc_fps);

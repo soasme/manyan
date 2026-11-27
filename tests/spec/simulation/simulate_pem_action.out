@@ -1,0 +1,10 @@
+Finished computing initial states: 2 distinct state generated.
+Error: Temporal property P was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Init line 8, col 9 to line 8, col 20 of module simulate_pem_action>
+s = 2
+
+State 2: Stuttering
+exit 13

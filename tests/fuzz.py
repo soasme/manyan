@@ -38,11 +38,11 @@ and temporal properties).
 
 sim: runs models of tests/spec as random simulations (-simulate or
 -generate, sometimes with -continue), with random seeds and depths, with
-the engine and with TLC; they must print the same.
+the engine and with TLC; they must print the same (but see live).
 
 check: checks models of tests/spec with random options (-deadlock,
 -continue, -difftrace, -nowarning, -view), the engine with one or four
-workers, and with TLC; they must print the same.
+workers, and with TLC; they must print the same (but see live).
 
 live: checks a random temporal property (including constants, ~, LET,
 nested WF/SF, keyword subscripts, level-0 overrides, higher-order
@@ -1041,7 +1041,7 @@ def sim(engine, tlc, runs, seed):
                    "-seed", str(rng.randint(0, 999))] + ["-continue"] * (rng.random() < 0.3)
         ours = spec_runner.run(engine + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
-        if ours != theirs:
+        if ours != back_into(theirs):
             failed += 1
             print(f"DIFF {path.relative_to(ROOT)} {' '.join(options)}\n--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} simulations printed what TLC prints")
@@ -1058,7 +1058,7 @@ def check(engine, tlc, runs, seed):
         workers = rng.choice([[], ["-workers", "4"]])
         ours = spec_runner.run(engine + workers + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
-        if ours != theirs:
+        if ours != back_into(theirs):
             failed += 1
             print(f"DIFF {path.relative_to(ROOT)} {' '.join(workers + options)}\n--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} checks printed what TLC prints")
