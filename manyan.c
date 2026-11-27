@@ -4490,6 +4490,15 @@ static int sany_kind(Def *d) { return d->thm ? D_THM : d->kind == D_FCN ? D_OP :
    definition is an error, and so is a symbol of another kind or arity; a
    symbol again as it was is a warning, old kept, but for a function, which
    SANY rejects first. */
+typedef struct { const char *name; int module; int local; Def *def; } CtxName;
+typedef struct { CtxName *a; int n, cap; } CtxNames;
+static CtxNames context_enumeration(Module *m);
+/* Whether x is m's own: defined there, or a theorem it names. */
+static int defined_in(Module *m, Def *x) {
+    for (int i = 0; i < m->nunits && x->mod != m; i++) if (m->units[i].def == x) return 1;
+    return x->mod == m;
+}
+
 static void redefined(Def *old, Def *d, Expr *where) {
     int defined = sany_kind(d) == D_OP, spanned = defined || d->thm;
     Expr here = spanned ? def_span(d) : *where, there = sany_kind(old) == D_OP || old->thm ? def_span(old) : *old->where;
@@ -4498,8 +4507,19 @@ static void redefined(Def *old, Def *d, Expr *where) {
     file_loc_text(&t, &there);
     int k = sany_kind(d);
     if (k == sany_kind(old) && def_arity(old) == def_arity(d) && d->kind != D_FCN &&
-        (k == D_CONST || k == D_VAR || k == D_OP || k == D_THM)) {
-        Module *file = file_module(cur_module);
+        (k == D_CONST || k == D_VAR || k == D_OP || k == D_THM || k == D_INST)) {
+        Module *file = file_module(cur_module), *target = k == D_INST ? d->target : NULL;
+        /* An instance's I!D first, of the module's own definitions, in the
+           order its context enumerates them; those it extends are the same. */
+        CtxNames c = target ? context_enumeration(target) : (CtxNames){0};
+        for (int i = 0; i < c.n; i++) {
+            Def *x = c.a[i].def;
+            if (!x || c.a[i].local || !defined_in(target, x) || x->kind == D_CONST || x->kind == D_VAR) continue;
+            buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s!%s.  \nThis duplicates the one at %s.\n\n\n",
+                       h.s, S(d->name), c.a[i].name, t.s);
+            file->nwarnings++;
+        }
+        xfree(c.a);
         buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
                    h.s, S(d->name), t.s);
         file->nwarnings++;
@@ -15025,9 +15045,6 @@ static void check_assumptions(Module *m, int *done_status) {
    follows from the names the context holds and the order SANY put them
    in: its built-in operators, in reverse, then the module's symbols as
    SANY meets them. */
-typedef struct { const char *name; int module; int local; Def *def; } CtxName;
-typedef struct { CtxName *a; int n, cap; } CtxNames;
-
 static const char *sany_builtins[] = {
     "STRING", "FALSE", "TRUE", "BOOLEAN", "=", "/=", ".", "'", "\\lnot", "\\neg", "\\land",
     "\\lor", "\\equiv", "=>", "SUBSET", "UNION", "DOMAIN", "\\subseteq", "\\in", "\\notin", "\\",

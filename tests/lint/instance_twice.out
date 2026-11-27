@@ -1,0 +1,27 @@
+*** Warnings: 5
+
+line 5, col 1 to line 5, col 31 of module instance_twice
+
+Multiple declarations or definitions for symbol I!Mid.
+This duplicates the one at line 4, col 1 to line 4, col 31 of module instance_twice.
+
+line 5, col 1 to line 5, col 31 of module instance_twice
+
+Multiple declarations or definitions for symbol I!Zed.
+This duplicates the one at line 4, col 1 to line 4, col 31 of module instance_twice.
+
+line 5, col 1 to line 5, col 31 of module instance_twice
+
+Multiple declarations or definitions for symbol I!Alpha.
+This duplicates the one at line 4, col 1 to line 4, col 31 of module instance_twice.
+
+line 5, col 1 to line 5, col 31 of module instance_twice
+
+Multiple declarations or definitions for symbol I!Th.
+This duplicates the one at line 4, col 1 to line 4, col 31 of module instance_twice.
+
+line 5, col 1 to line 5, col 31 of module instance_twice
+
+Multiple declarations or definitions for symbol I.
+This duplicates the one at line 4, col 1 to line 4, col 31 of module instance_twice.
+OK
