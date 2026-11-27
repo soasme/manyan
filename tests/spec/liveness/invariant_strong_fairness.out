@@ -1,0 +1,15 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = <<>>
+
+State 2: <A line 7, col 6 to line 7, col 22 of module invariant_strong_fairness>
+x = <<1>>
+
+State 3: <A line 7, col 6 to line 7, col 22 of module invariant_strong_fairness>
+x = <<1, 1>>
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

@@ -17312,7 +17312,8 @@ static int live_fails(int own) {
     ErrorState first = error_save();
     const char *java = error_java;
     fp_depth = 0;
-    Arena *saved = arena;
+    Arena *saved = arena, search = scratch_arena;   /* the search's, which holds the state it reports */
+    scratch_arena = (Arena){0};
     arena = &perm_arena;
     collect_fairnesses();
     decoded_reset();
@@ -17322,6 +17323,8 @@ static int live_fails(int own) {
     if (failed) failed += fp_depth > 0;
     else live_eval(expanding, own);
     handler = outer;
+    arena_free(&scratch_arena);
+    scratch_arena = search;
     arena = saved;
     eval_restore(es);
     if (failed && live_at < expanding) xfree(first.msg.s);
