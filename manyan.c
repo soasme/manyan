@@ -5362,12 +5362,21 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     if (d->kind == D_RECURSIVE) check_arity(e, d, e->segs[i].n, e->segs[i].args);   /* never defined, as SANY: one being defined */
     if (d->recursive == 2 || d->kind == D_RECURSIVE)
         semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
-    if ((d->kind != D_OP && d->kind != D_THM) || !d->body)
+    if ((d->kind != D_OP && d->kind != D_THM && d->kind != D_FCN) || !d->body)
         semantic_error(seg_at(e, &e->segs[i]), "Cannot take subexpression of `%s'.", S(d->name));
     Selection sel = {0};
     if (e->segs[i].n || !op) check_arity(e, d, e->segs[i].n, e->segs[i].args);
     take(&sel, e, d->params, d->nparams, &e->segs[i]);
-    Expr *cur = d->body;
+    Expr *root = d->body;
+    if (d->kind == D_FCN) {   /* as SANY, f[x \in S] == e is [x \in S |-> e] */
+        root = NEW(Expr);
+        *root = *d->body;
+        root->kind = X_FCN, root->label = NULL;
+        root->bounds = d->bounds, root->nb = d->nb;
+        root->args = NEWN(Expr *, 1), root->n = 1;
+        root->args[0] = d->body;
+    }
+    Expr *cur = root;
     int names = 1, own = 0;   /* a name next is a label, else a LET definition */
     for (int k = i + 1; k < e->nseg; k++) {
         Seg *s = &e->segs[k];
@@ -5448,11 +5457,12 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     }
     if (cur->kind == X_NEW && e != fact_now) semantic_error(e, "Selected a NEW declaration as an expression or operator.");
     if (cur->kind == X_ASSUMEPROVE && e != fact_now) semantic_error(e, "Selected ASSUME/PROVE instead of expression.");
+    if (sel.missing && !op) semantic_error(e, "Expected %d arguments but found %d.", sel.np, sel.nargs);
     if (sel.missing && sel.nargs) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), sel.np);
     /* The LET definitions around the subexpression are in scope in it. */
     Expr *lets[64];
     Expr *body = cur;
-    for (int n = lets_to(d->body, cur, lets, 0); n > 0; n--) {
+    for (int n = lets_to(root, cur, lets, 0); n > 0; n--) {
         Expr *let = NEW(Expr);
         *let = *lets[n - 1];
         let->label = NULL;
@@ -5839,10 +5849,13 @@ static void resolve_expr(Expr *e, Scope *sc) {
     for (int i = 0; i < l->n; i++)
         if (!(defs[i] = scope_lookup(sc, l->names[i])))
             semantic_error(l->at[i], "Illegal parameter %s of label `%s'.", S(l->names[i]), S(l->name));
-    for (Scope *s = label_bounds; s; s = s->next) {
+    Scope *bound[64];   /* as SANY, in the order they are bound */
+    int nbound = 0;
+    for (Scope *s = label_bounds; s && nbound < 64; s = s->next) bound[nbound++] = s;
+    while (nbound--) {
         int found = 0;
-        for (int i = 0; i < l->n && !found; i++) found = l->names[i] == s->name;
-        if (!found) semantic_error(at, "Label %s must contain formal parameter `%s'.", S(l->name), S(s->name));
+        for (int i = 0; i < l->n && !found; i++) found = l->names[i] == bound[nbound]->name;
+        if (!found) semantic_error(at, "Label %s must contain formal parameter `%s'.", S(l->name), S(bound[nbound]->name));
     }
     Buf extra = {0};   /* as SANY, all of them */
     for (int i = 0; i < l->n; i++)

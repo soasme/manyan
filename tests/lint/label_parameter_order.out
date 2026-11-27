@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 3, col 16 to line 3, col 26 of module label_parameter_order
+Label lab must contain formal parameter `a'.
