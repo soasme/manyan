@@ -17175,7 +17175,10 @@ static void print_cut(int at) {
         act[n++] = (int)acts.v[i]->u.i;
     }
     replay_lasso(ls, n);
+    int saved = live_expanded;
+    live_expanded = live_cut;   /* TLCGet's counts as TLC stopped */
     print_violated(lasso_values(ls, n), n, n - 1);
+    live_expanded = saved;
     printf("Error: The following behavior constitutes a counter-example:\n\n");
     for (int i = 0; i < n; i++) print_live_state(i + 1, ls[i], i ? act[i] : -1, i ? ls[i - 1] : -1, ls[i + 1 < n ? i + 1 : i]);
     act[0] = -1;
