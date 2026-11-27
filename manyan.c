@@ -14577,8 +14577,9 @@ static int simulate(const ManyanOptions *o) {
                     States *b = sim_behavior(trace, sim_checked, cur_action);
                     print_unspecified(sim_checked);
                     sim_print(b);
-                    /* TLC's postcondition writing the behavior for its trace spec fails on it */
-                    if (!te_spec && !nposts) return MANYAN_FAILURE_EVAL;
+                    /* TLC's postcondition writing the behavior for its trace spec fails
+                       on it; without one, a configured one fails in Java, unmodelled. */
+                    if (!te_spec) return MANYAN_FAILURE_EVAL;
                     printf("\nError: Evaluating postcondition _TLCTraceSilent at line 28, col 5 to line 28, col 21 of module _TLCTrace failed.\n"
                            "Attempted to apply the operator overridden by the Java method\n"
                            "public static final tlc2.value.IValue tlc2.module._TLCTrace.ioSerialize(tlc2.value.IValue,tlc2.value.impl.StringValue) throws java.io.IOException,\n"
