@@ -292,7 +292,15 @@ partial def primary : P Expr := do
       let a ← expr
       expect ")"
       return .op (f.take 3).toString [v, a]
-    if ← isSym "(" then do let _ ← next; suffix (.op f (← list ")")) else suffix (.name f)
+    if !(← isSym "(") then return ← suffix (.name f)
+    let _ ← next
+    let mut args ← list ")"
+    -- I(p)!D(q): D of the instance I(p), whose parameters come first.
+    while (← isSym "!") && (match ← peek 1 with | .id _ => true | _ => false) do
+      let _ ← next
+      f := f ++ "!" ++ (← ident)
+      if ← isSym "(" then let _ ← next; args := args ++ (← list ")")
+    suffix (.op f args)
   | .sym "@" => suffix (.name "@")
   | t => throw s!"unexpected {repr t}"
 
@@ -384,22 +392,27 @@ partial def fields (sep : String) : P (List (String × Expr)) := do
   expect "]"
   pure out.toList
 
+/-- `(p, Op(_))`, the parameters of a definition. -/
+partial def params : P (List String) := do
+  expect "("
+  let mut ps := #[]
+  repeat
+    ps := ps.push (← ident)
+    if ← isSym "(" then   -- Op(_, _): an operator parameter
+      while !(← isSym ")") do let _ ← next
+      let _ ← next
+    if !(← isSym ",") then break
+    let _ ← next
+  expect ")"
+  pure ps.toList
+
 /-- `F == e`, `F(p, Op(_)) == e` or `f[x \in S] == e`. -/
 partial def definition : P (String × List String × Expr) := do
   let f ← ident
   if ← isSym "(" then
-    let _ ← next
-    let mut ps := #[]
-    repeat
-      ps := ps.push (← ident)
-      if ← isSym "(" then   -- Op(_, _): an operator parameter
-        while !(← isSym ")") do let _ ← next
-        let _ ← next
-      if !(← isSym ",") then break
-      let _ ← next
-    expect ")"
+    let ps ← params
     expect "=="
-    return (f, ps.toList, ← expr)
+    return (f, ps, ← expr)
   if ← isSym "[" then
     let _ ← next
     let x ← ident
@@ -423,10 +436,11 @@ def parse (s : String) : Except String Expr := runP (expr 0) s
 
 /-! ## Modules and models -/
 
-/-- `name == INSTANCE module WITH x <- e, ...`, `name` empty for an
-unnamed one. -/
+/-- `name(params) == INSTANCE module WITH x <- e, ...`, `name` empty for
+an unnamed one. -/
 structure Instance where
   name : String
+  params : List String := []
   module : String
   substs : List (String × Expr)
 
@@ -453,7 +467,7 @@ def names : P (List String) := do
     skipArity
   pure out.toList
 
-def instanceP (name : String) : P Instance := do
+def instanceP (name : String) (params : List String := []) : P Instance := do
   expect "INSTANCE"
   let module ← ident
   let mut substs := []
@@ -465,7 +479,21 @@ def instanceP (name : String) : P Instance := do
       substs := substs ++ [(x, ← expr)]
       if !(← isSym ",") then break
       let _ ← next
-  pure { name, module, substs }
+  pure { name, params, module, substs }
+
+/-- Whether `I(p, ...) == INSTANCE` comes next. -/
+def instanceAhead : P Bool := do
+  if (← peek 1) != .sym "(" then return false
+  let mut k := 2
+  let mut depth := 1
+  while depth > 0 do
+    match ← peek k with
+    | .sym "(" => depth := depth + 1
+    | .sym ")" => depth := depth - 1
+    | .sym "end" => return false
+    | _ => pure ()
+    k := k + 1
+  pure ((← peek k) == .sym "==" && (← peek (k + 1)) == .id "INSTANCE")
 
 partial def moduleP : P Module := do
   while !(← isId "MODULE") do let _ ← next
@@ -494,10 +522,13 @@ partial def moduleP : P Module := do
         let x ← ident
         expect "=="
         m := { m with instances := m.instances ++ [← instanceP x] }
+      else if ← instanceAhead then
+        let x ← ident
+        let ps ← params
+        expect "=="
+        m := { m with instances := m.instances ++ [← instanceP x ps] }
       else
-        let d ← definition
-        if let (_, _, .name "INSTANCE") := d then throw "an instance with parameters is not supported"
-        m := { m with defs := m.defs ++ [d] }
+        m := { m with defs := m.defs ++ [← definition] }
   pure m
 
 def parseModule (s : String) : Except String Module := do

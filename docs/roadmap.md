@@ -35,10 +35,9 @@ from TLC.
   fuzz-ref` compares it with `lean/`, a reference semantics in Lean 4,
   and `make fuzz-model` Manyan's verdicts, counts and traces; `lean/`
   proves that its computable oracle agrees with the classical one. Next:
-  INSTANCE with parameters in `lean/`, and a proof that its evaluator
-  respects `=` for values it keeps unevaluated (it is proved for the
-  rest; `make fuzz-ref` tests it with twins of each expression written
-  otherwise).
+  a proof that its evaluator respects `=` for values it keeps
+  unevaluated (it is proved for the rest; `make fuzz-ref` tests it with
+  twins of each expression written otherwise).
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle, the tableau, level checking and

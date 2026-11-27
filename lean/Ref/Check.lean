@@ -49,10 +49,18 @@ def asState (vars : List String) (v : Val) : M State :=
     | none => undef s!"a state without the variable {x}"
   | _ => undef "a state that is not a record of the variables"
 
-/-- `e` with each free name `x` that `f` renames, `f x`. -/
-partial def Expr.rename (f : String → Option String) (bound : List String := []) : Expr → Expr
-  | .name x => .name (if bound.contains x then x else (f x).getD x)
-  | .op o args => .op (if bound.contains o then o else (f o).getD o) (args.map (·.rename f bound))
+/-- `e` with each free name `x` that `f` renames written as `f x` says,
+alone (`none`) or applied to arguments. -/
+partial def Expr.rename (f : String → Option (Option (List Expr) → Expr)) (bound : List String := []) :
+    Expr → Expr
+  | .name x => match if bound.contains x then none else f x with
+    | some g => g none
+    | none => .name x
+  | .op o args =>
+    let args := args.map (·.rename f bound)
+    match if bound.contains o then none else f o with
+    | some g => g (some args)
+    | none => .op o args
   | .bind b x s body => .bind b x (s.rename f bound) (body.rename f (x :: bound))
   | .lambda ps body => .lambda ps (body.rename f (ps ++ bound))
   | .record fs => .record (fs.map fun (k, e) => (k, e.rename f bound))
@@ -63,10 +71,10 @@ partial def Expr.rename (f : String → Option String) (bound : List String := [
   | e => e
 
 /-- A module without instances, `mods` the modules it may use: those it
-extends declare its names; an instance `I == INSTANCE N WITH v <- e`
-defines `I!D` for each definition `D` of `N`, its variables and constants
-`I!v` the expressions substituted for them (by default, the names
-themselves). A module not in `mods` is a standard one. -/
+extends declare its names; an instance `I(p) == INSTANCE N WITH v <- e`
+defines `I!D(p, q)` for each definition `D(q)` of `N`, its variables and
+constants `I!v(p)` the expressions substituted for them (by default, the
+names themselves). A module not in `mods` is a standard one. -/
 partial def flatten (mods : List Module) (m : Module) : M Module := do
   let find (x : String) := mods.find? (·.name == x)
   let mut out : Module := { m with extends_ := [], instances := [], defs := [] }
@@ -81,11 +89,22 @@ partial def flatten (mods : List Module) (m : Module) : M Module := do
     let p := if i.name.isEmpty then "" else i.name ++ "!"
     let declared := n.vars ++ n.consts
     let own := declared ++ n.defs.map (·.1)
-    let f (x : String) := if own.contains x then some (p ++ x) else none
+    -- The instance's parameters, passed on under names no module uses.
+    let fresh := (List.range i.params.length).map (s!"#{·}")
+    let pre := fresh.map Expr.name
+    let f (x : String) : Option (Option (List Expr) → Expr) :=
+      if !own.contains x then none else some fun
+        | some args => .op (p ++ x) (pre ++ args)
+        | none => match pre, ((n.defs.find? (·.1 == x)).map (·.2.1.length)).getD 0 with
+          | [], _ => .name (p ++ x)
+          | _, 0 => .op (p ++ x) pre
+          | _, k =>   -- an operator as an argument
+            let qs := (List.range k).map (s!"#q{·}")
+            .lambda qs (.op (p ++ x) (pre ++ qs.map Expr.name))
     let substs := declared.filterMap fun v =>
       let e := (i.substs.lookup v).getD (.name v)
-      if p.isEmpty && match e with | .name y => y == v | _ => false then none else some (p ++ v, ([] : List String), e)
-    out := { out with defs := out.defs ++ substs ++ n.defs.map fun (d, ps, e) => (p ++ d, ps, e.rename f ps) }
+      if p.isEmpty && match e with | .name y => y == v | _ => false then none else some (p ++ v, i.params, e)
+    out := { out with defs := out.defs ++ substs ++ n.defs.map fun (d, ps, e) => (p ++ d, fresh ++ ps, e.rename f ps) }
   pure { out with defs := out.defs ++ m.defs }
 
 /-- The names of `e` that nothing in `defs` defines, as the model values

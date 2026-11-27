@@ -1164,10 +1164,12 @@ def live_model(rng):
     extra_files = {}
     extra_defs = "Id(v) == v\nAp(Op(_), v) == Op(v)\n"
     if rng.random() < 0.12:
-        # Two INSTANCEs with identical literal names (catches c.inst bugs in tableau)
-        extra_files["SubL.tla"] = "---- MODULE SubL ----\nVARIABLE v\nQ == v = 1\nP == <>Q\n====\n"
-        extra_defs += "I1 == INSTANCE SubL WITH v <- s\nI2 == INSTANCE SubL WITH v <- (IF s = 1 THEN 2 ELSE 1)\n"
-        prop = rng.choice(["I1!P /\\ I2!P", "I1!P ~> I2!P", "~(I1!P /\\ ~I2!P)"])
+        # INSTANCEs with identical literal names (catches c.inst bugs in tableau), one with a parameter
+        extra_files["SubL.tla"] = "---- MODULE SubL ----\nVARIABLE v\nQ == v = 1\nR(w) == v = w\nP == <>Q\n====\n"
+        extra_defs += ("I1 == INSTANCE SubL WITH v <- s\nI2 == INSTANCE SubL WITH v <- (IF s = 1 THEN 2 ELSE 1)\n"
+                       "I3(k) == INSTANCE SubL WITH v <- (IF s = k THEN 1 ELSE 2)\n")
+        prop = rng.choice(["I1!P /\\ I2!P", "I1!P ~> I2!P", "~(I1!P /\\ ~I2!P)",
+                           "I3(1)!P /\\ I3(2)!P", "[](I3(s)!Q => <>I3(2)!R(1))", "<>[]~I3(3)!R(s)"])
     model = (
         f"---- MODULE L ----\nEXTENDS Naturals\nVARIABLE s\n"
         f"{extra_defs}"
