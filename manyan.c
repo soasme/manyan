@@ -12356,7 +12356,7 @@ static Value *counter_example_record(Value *states, Value *steps) {
 }
 
 static Value *counter_example(void) {
-    if (!checking_posts || !post_trace.n || (simulating && keep_going && post_trace.n > 1)) {   /* TLC's simulator keeps no behavior to go on */
+    if (!checking_posts || !post_trace.n || (simulating && keep_going && post_trace.n > 1 && post_trace.loop <= 0)) {   /* TLC's simulator keeps no safety violation's behavior to go on */
         if (!empty_counter_example) {
             Arena *saved = arena;
             arena = &perm_arena;
