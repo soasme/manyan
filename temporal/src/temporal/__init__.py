@@ -1,21 +1,22 @@
 """Temporal: behavioural specification declarations for Python, grounded in TLA+.
 
 Temporal is a pure, passive declaration library with zero third-party
-dependencies. Specifications are expressed directly in Python using PEP 593
+dependencies. Specifications are declared at the signature level using PEP 593
 ``Annotated`` type annotations and Python expressions; verification is
 performed externally by tools such as Manyan.
 
-Declaration annotations follow TLA+'s four expression levels:
+Declarations follow TLA+'s four semantic levels:
 
-- Level 0 (Constant): ``Const[T]``, ``Assume``
-- Level 1 (State):    ``State[T]``, ``Ghost[T]``, ``Init``, ``Pure[T]``, ``Invariant``
-- Level 2 (Action):   ``Action[T]``, ``ActionInvariant``
-- Level 3 (Temporal): ``Property``, ``Fairness``
+- Level 0 (Constant): ``Constant[T]``, ``Assume``
+- Level 1 (State):    ``State[T]``, ``Ghost[T]``, ``Pure[T]``, ``Init``, ``Invariant``
+- Level 2 (Action):   ``Action``, ``ActionInvariant``, ``Requires``, ``Ensures``,
+                      ``Preserves``, ``Modifies``, ``Unchanged``
+- Level 3 (Temporal): ``Property``, ``Fairness``, ``WeakFairness``, ``StrongFairness``
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from types import ModuleType
@@ -28,45 +29,87 @@ _T_co = TypeVar("_T_co", covariant=True)
 
 
 # ---------------------------------------------------------------------------
-# Declaration roles and PEP 593 Annotated type aliases
+# Value-level type qualifiers (PEP 593 Annotated aliases)
 # ---------------------------------------------------------------------------
 
 
 class Role(Enum):
-    """TLA+ declaration role carried inside PEP 593 ``Annotated`` metadata."""
+    """TLA+ variable or operator qualifier carried in ``Annotated`` metadata."""
 
-    CONST = "const"
+    CONSTANT = "constant"
     STATE = "state"
     GHOST = "ghost"
-    ASSUME = "assume"
-    INIT = "init"
     PURE = "pure"
-    ACTION = "action"
-    INVARIANT = "invariant"
-    ACTION_INVARIANT = "action_invariant"
-    PROPERTY = "property"
-    FAIRNESS = "fairness"
 
     def __repr__(self) -> str:
         return f"Role.{self.name}"
 
 
-Const = Annotated[_T, Role.CONST]
+Constant = Annotated[_T, Role.CONSTANT]
 State = Annotated[_T, Role.STATE]
 Ghost = Annotated[_T, Role.GHOST]
-Assume = Annotated[bool, Role.ASSUME]
-Init = Annotated[bool, Role.INIT]
 Pure = Annotated[_T, Role.PURE]
-Action = Annotated[_T, Role.ACTION]
-Invariant = Annotated[bool, Role.INVARIANT]
-ActionInvariant = Annotated[bool, Role.ACTION_INVARIANT]
-Property = Annotated[bool, Role.PROPERTY]
-Fairness = Annotated[bool, Role.FAIRNESS]
 
 
 # ---------------------------------------------------------------------------
-# Contract, framing, fairness, and refinement clauses
+# Specification, contract, framing, fairness, and refinement clauses
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _OptionalPredicateClause:
+    predicate: Optional[Callable[..., bool]] = None
+    description: Optional[str] = None
+
+    def __repr__(self) -> str:
+        name = type(self).__name__
+        if self.predicate is None and self.description is None:
+            return f"{name}()"
+        if self.description is None:
+            return f"{name}({self.predicate!r})"
+        if self.predicate is None:
+            return f"{name}(description={self.description!r})"
+        return f"{name}({self.predicate!r}, {self.description!r})"
+
+
+@dataclass(frozen=True, repr=False)
+class Assume(_OptionalPredicateClause):
+    """Constant-level assumption: ``ASSUME P``."""
+
+
+@dataclass(frozen=True, repr=False)
+class Init(_OptionalPredicateClause):
+    """Initial-state predicate: ``Init``."""
+
+
+@dataclass(frozen=True, repr=False)
+class Action(_OptionalPredicateClause):
+    """Atomic state transition action (TLA+ ``Next`` disjunct).
+
+    - ``Action(predicate)`` declares an explicit two-state relation over
+      pre-state (``s.x``) and post-state (``prime(s.x)``).
+    - ``Action()`` marks a method or function whose body defines the transition.
+    """
+
+
+@dataclass(frozen=True, repr=False)
+class Invariant(_OptionalPredicateClause):
+    """State invariant verified across all reachable states: ``[]I``."""
+
+
+@dataclass(frozen=True, repr=False)
+class ActionInvariant(_OptionalPredicateClause):
+    """Two-state action invariant verified on every step: ``[][A]_vars``."""
+
+
+@dataclass(frozen=True, repr=False)
+class Property(_OptionalPredicateClause):
+    """Temporal property over infinite behaviors: ``PROPERTY P``."""
+
+
+@dataclass(frozen=True, repr=False)
+class Fairness(_OptionalPredicateClause):
+    """Fairness assumption conjoined to ``Spec`` (``WF`` / ``SF``)."""
 
 
 @dataclass(frozen=True)
@@ -91,12 +134,17 @@ class Where(_PredicateClause):
 
 @dataclass(frozen=True, repr=False)
 class Requires(_PredicateClause):
-    """Precondition or enabling guard on a function or action."""
+    """Precondition or action enabling guard."""
 
 
 @dataclass(frozen=True, repr=False)
 class Ensures(_PredicateClause):
-    """Postcondition on a function or action (``old(e)`` is pre-state, ``e`` is post-state)."""
+    """Postcondition (``old(e)`` is pre-state, bare ``e`` is post-state, ``result`` is return value)."""
+
+
+@dataclass(frozen=True, repr=False)
+class Preserves(_PredicateClause):
+    """Inductive preservation obligation across an operation: ``P(s) => P(s')``."""
 
 
 @dataclass(frozen=True)
@@ -178,7 +226,7 @@ def old(value: _T) -> _T:
 
 
 def prime(value: _T) -> _T:
-    """Next-state value ``value'`` inside an action or ``ActionInvariant``."""
+    """Next-state value ``value'`` inside an ``Action`` or ``ActionInvariant``."""
     raise _declarative("prime")
 
 
@@ -218,7 +266,7 @@ def strong_fairness(action: Any, *, on: Any = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Model configuration and symbolic values
+# Model configuration, finite domains, and symbolic values
 # ---------------------------------------------------------------------------
 
 
@@ -251,6 +299,50 @@ class Symmetry(frozenset[_T_co]):
 
     def __reduce__(self) -> tuple[type[Symmetry[_T_co]], tuple[tuple[_T_co, ...]]]:
         return (type(self), (tuple(self),))
+
+
+@dataclass(frozen=True)
+class Domain(Generic[_T_co]):
+    """Finite value domain for model checking (e.g. ``Domain.range(0, 10)``)."""
+
+    elements: Collection[_T_co]
+
+    @classmethod
+    def range(cls, start: int, stop: int) -> Domain[int]:
+        """Inclusive integer interval ``start..stop`` (matching TLA+ ``start..stop``)."""
+        return Domain(range(start, stop + 1))
+
+    @classmethod
+    def values(cls, *items: _T) -> Domain[_T]:
+        """Explicit finite set of values."""
+        return Domain(items)
+
+    @classmethod
+    def boolean(cls) -> Domain[bool]:
+        """TLA+ ``BOOLEAN`` domain ``{FALSE, TRUE}``."""
+        return Domain((False, True))
+
+    def __iter__(self) -> Iterator[_T_co]:
+        return iter(self.elements)
+
+    def __len__(self) -> int:
+        return len(self.elements)
+
+    def __contains__(self, item: object) -> bool:
+        return item in self.elements
+
+    def __repr__(self) -> str:
+        if isinstance(self.elements, range) and self.elements.step == 1:
+            return f"Domain.range({self.elements.start}, {self.elements.stop - 1})"
+        if (
+            isinstance(self.elements, tuple)
+            and len(self.elements) == 2
+            and self.elements[0] is False
+            and self.elements[1] is True
+        ):
+            return "Domain.boolean()"
+        args = ", ".join(repr(x) for x in self.elements)
+        return f"Domain.values({args})"
 
 
 def _empty_dict() -> dict[Any, Any]:
@@ -307,7 +399,8 @@ __all__ = [
     "Action",
     "ActionInvariant",
     "Assume",
-    "Const",
+    "Constant",
+    "Domain",
     "Ensures",
     "Fairness",
     "Ghost",
@@ -316,6 +409,7 @@ __all__ = [
     "Model",
     "ModelValue",
     "Modifies",
+    "Preserves",
     "Property",
     "Pure",
     "Refines",
