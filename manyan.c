@@ -13737,13 +13737,21 @@ static Value *spec_value(void) {
     for (int i = 0; i < nactions; i++) list_add(&acts, action_value(i));
     for (int i = 0; i < nfairness; i++) list_add(&fair, part_record(0, fairness[i]));
     for (int i = 0; i < nvars; i++) list_add(&vs, part_record(vars[i]->name, vars[i]->where));
-    const char *names[] = {"actions", "impliedinits", "impliedactions", "invariants", "impliedtemporals", "temporals",
-                           "inits", "variables", "actionconstraints", "constraints"};
-    Value *vals[] = {list_set(&acts), checks_value(implied_inits, nimplied_inits, 0), checks_value(action_props, naction_props, 0),
-                     checks_value(invariants, ninvariants, 0), checks_value(temporal_props, ntemporal_props, 0), list_set(&fair), list_set(&inits),
-                     list_set(&vs), checks_value(action_constraints, naction_constraints, 1),
+    const char *rest[] = {"impliedinits", "impliedactions", "invariants", "impliedtemporals", "temporals",
+                          "inits", "variables", "actionconstraints", "constraints"};
+    Value *vals[] = {checks_value(implied_inits, nimplied_inits, 0), checks_value(action_props, naction_props, 0),
+                     checks_value(invariants, ninvariants, 0), checks_value(temporal_props, ntemporal_props, 0), list_set(&fair),
+                     list_set(&inits), list_set(&vs), checks_value(action_constraints, naction_constraints, 1),
                      checks_value(constraints, nconstraints, 1)};
-    return mk_record(10, names, vals);
+    /* TLC sorts the fields as it interned them: "actions" first when it
+       sets up a trace spec, else after "temporals". */
+    const char *names[10];
+    Value *fields[10];
+    for (int i = 0, j = 0, at = te_spec ? 0 : 5; i < 10; i++) {
+        names[i] = i == at ? "actions" : rest[j];
+        fields[i] = i == at ? list_set(&acts) : vals[j++];
+    }
+    return mk_record(10, names, fields);
 }
 
 static Value *action_record(Value **st) {
