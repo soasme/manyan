@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 5, col 8 to line 5, col 8 of module proof_def_entry
+DEF clause entry should describe a defined operator.

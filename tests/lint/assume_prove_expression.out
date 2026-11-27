@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 6, col 6 to line 6, col 6 of module assume_prove_expression
+ASSUME/PROVE used where an expression is required.

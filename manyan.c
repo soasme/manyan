@@ -2241,6 +2241,7 @@ enum {
     X_SQACT, X_ANGLEACT, X_WF, X_SF, X_TFORALL, X_TEXISTS,
     X_ASSUMEPROVE,   /* a theorem's ASSUME items PROVE e: args the items, then e */
     X_NEW,           /* an item NEW c \in S: def, args the set, if any */
+    X_PROOF, X_STEP, /* a proof, its steps: see parse_proof */
     X_RESOLVED,
     /* resolved */
     K_BOUND,     /* a bound name or operator parameter: def */
@@ -2383,6 +2384,7 @@ typedef struct {
     int group;            /* declarations from one statement share a group > 0 (for -fmt) */
     int proved;           /* a theorem with a proof, which -fmt prints as written */
     Expr *assume;         /* a theorem's ASSUME ... PROVE, only resolved */
+    Expr *proof;          /* a theorem's proof, or a USE or HIDE: an X_PROOF, X_STEP, only resolved */
 } Unit;
 
 struct Module {
@@ -2932,11 +2934,16 @@ static Expr **parse_args(int *count) {
     return args;
 }
 
-/* Whether t names a step, as a fact may: numbered, and without the period
+/* Whether step t is numbered, <1>2 or <1>a., not <1> or <*>. */
+static int step_numbered(Tok *t) {
+    const char *s = S(t->id), *close = strchr(s, '>');
+    return t->kind == T_STEP && isdigit((unsigned char)s[1]) && close[1] && close[1] != '.';
+}
+
+/* Whether t names a step, as a fact may: numbered, without the period
    that begins one. */
 static int step_name(Tok *t) {
-    const char *s = S(t->id), *close = strchr(s, '>');
-    return t->kind == T_STEP && isdigit((unsigned char)s[1]) && close[1] && s[strlen(s) - 1] != '.';
+    return step_numbered(t) && S(t->id)[strlen(S(t->id)) - 1] != '.';
 }
 
 /* A name, its arguments, and instance selections: A!B(x)!C. */
@@ -3910,95 +3917,90 @@ static int def_ahead(void) {
     return op_info(t, PREFIX) && peek_at(1)->kind == T_IDENT && is_op(peek_at(2), "==");
 }
 
-/* The facts and DEF names of BY, USE or HIDE; HIDE's facts are names. */
-static void parse_use_body(int hide) {
+/* A proof's steps, which X_PROOF lists. args[0] of an X_STEP is its
+   proof, args[1] its DEF names (an X_PROOF of names), and the rest what it
+   asserts or uses; def names a numbered step, and op is its kind. */
+enum { S_BY, S_USE, S_HIDE, S_QED, S_DEFINE, S_HAVE, S_WITNESS, S_TAKE, S_PICK, S_CASE, S_SUFFICES, S_ASSERT, S_OTHER };
+
+static Expr *mk_step(Tok *t, int kind) {
+    Expr *e = mk_expr(X_STEP, t);
+    e->op = kind;
+    PUSH(e->args, e->n, NULL);
+    PUSH(e->args, e->n, NULL);
+    return e;
+}
+
+/* The facts and DEF names of BY, USE or HIDE into step e; HIDE's facts are
+   names. */
+static void parse_use_body(Expr *e) {
     Tok *t = peek();
     int none = at_unit_start() || (t->kind == T_STEP && !step_name(t)) || is_kw(t, "DEF") || is_kw(t, "DEFS");
     static const char *ends[] = {"PROOF", "BY", "OBVIOUS", "OMITTED", "QED", "USE", "HIDE", NULL};
     for (int i = 0; ends[i]; i++) none |= is_kw(t, ends[i]);
     while (!none) {
         Tok *f = peek();
+        e->field++;   /* what it lists */
         if (is_kw(f, "MODULE")) {
             next();
             expect_ident();
-        } else if (parse_expr()->kind != X_NAME && hide) {
-            semantic_error_later(mk_expr(X_NAME, f), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
+        } else {
+            Expr *x = parse_expr();
+            if (x->kind != X_NAME && e->op == S_HIDE)
+                semantic_error_later(mk_expr(X_NAME, f), "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.");
+            PUSH(e->args, e->n, x);
         }
         if (!is_op(peek(), ",")) break;
         next();
     }
     if (!is_kw(peek(), "DEF") && !is_kw(peek(), "DEFS")) return;
-    next();
+    Expr *defs = e->args[1] = mk_expr(X_PROOF, next());
     do {
         Tok *d = peek();
+        e->field++;
         if (is_kw(d, "MODULE")) next(), expect_ident();
-        else if (d->kind == T_IDENT) parse_name();
-        else if (is_op(d, "-.") || (d->kind == T_OP && !op_info(d, PREFIX) && (op_info(d, INFIX) || op_info(d, POSTFIX)))) next();
-        else syntax_error("expected a name");
+        else if (d->kind == T_IDENT || (P->in_proof && step_name(d))) PUSH(defs->args, defs->n, parse_name());
+        else if (is_op(d, "-.") || (d->kind == T_OP && !op_info(d, PREFIX) && (op_info(d, INFIX) || op_info(d, POSTFIX)))) {
+            Expr *x = mk_expr(X_NAME, next());
+            x->op = canonical(d->id);
+            PUSH(defs->args, defs->n, x);
+        } else syntax_error("expected a name");
     } while (is_op(peek(), ",") && next());
-}
-
-/* Names bound by TAKE or PICK: x, y \in S, <<a, b>> \in T, or names alone. */
-static void parse_step_bounds(void) {
-    do {
-        if (is_op(peek(), "<<")) {
-            next();
-            do expect_ident(); while (is_op(peek(), ",") && next());
-            expect_op(">>");
-        } else {
-            expect_ident();
-        }
-        if (is_op(peek(), "\\in")) next(), parse_expr();
-    } while (is_op(peek(), ",") && next());
+    finish(defs);
 }
 
 static Expr *parse_assume_prove(Tok *t);
 static int proof_ahead(int level);
-static void parse_proof(int level);
+static Expr *parse_proof(int level);
 
 /* What a step of level `level` asserts or does, after its name; then its
    proof, if it may have one. */
-static void parse_step(int level) {
+static Expr *parse_step(int level) {
     Tok *t = peek();
-    int proved = 1;
-    if (is_kw(t, "QED")) {
-        next();
-    } else if (is_kw(t, "USE") || is_kw(t, "HIDE")) {
-        next();
+    static const char *kws[] = {"QED", "USE", "HIDE", "DEFINE", "HAVE", "WITNESS", "TAKE", "PICK", "CASE", "SUFFICES", "INSTANCE", NULL};
+    static const int kinds[] = {S_QED, S_USE, S_HIDE, S_DEFINE, S_HAVE, S_WITNESS, S_TAKE, S_PICK, S_CASE, S_SUFFICES, S_OTHER};
+    int kind = def_ahead() ? S_DEFINE : S_ASSERT;
+    for (int i = 0; kws[i]; i++) if (is_kw(t, kws[i])) kind = kinds[i];
+    Expr *e = mk_step(t, kind);
+    if (kind != S_ASSERT && !(kind == S_DEFINE && !is_kw(t, "DEFINE"))) next();
+    if (kind == S_USE || kind == S_HIDE) {
         if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY only");
-        parse_use_body(is_kw(t, "HIDE"));
-        proved = 0;
-    } else if (is_kw(t, "DEFINE") || def_ahead()) {
-        if (is_kw(t, "DEFINE")) next();
-        do parse_definition(0); while (def_ahead());
-        proved = 0;
-    } else if (is_kw(t, "INSTANCE")) {
-        next();
+        parse_use_body(e);
+    } else if (kind == S_DEFINE) {
+        do PUSH(e->defs, e->ndefs, parse_definition(0)); while (def_ahead());
+    } else if (kind == S_OTHER) {
         parse_instance(t, 0);
-        proved = 0;
-    } else if (is_kw(t, "HAVE")) {
-        next();
-        parse_expr();
-    } else if (is_kw(t, "WITNESS")) {
-        next();
-        do parse_expr(); while (is_op(peek(), ",") && next());
-    } else if (is_kw(t, "TAKE")) {
-        next();
-        parse_step_bounds();
-    } else if (is_kw(t, "PICK")) {
-        next();
-        parse_step_bounds();
-        expect_op(":");
-        parse_expr();
-    } else if (is_kw(t, "CASE")) {
-        next();
-        parse_expr();
-    } else {
-        if (is_kw(t, "SUFFICES")) next();
-        if (is_kw(peek(), "ASSUME")) parse_assume_prove(next());
-        else parse_expr();
+    } else if (kind == S_TAKE || kind == S_PICK) {
+        parse_bounds(e, 1);
+        if (kind == S_PICK) expect_op(":"), PUSH(e->args, e->n, parse_expr());
+    } else if (kind == S_WITNESS) {
+        do PUSH(e->args, e->n, parse_expr()); while (is_op(peek(), ",") && next());
+    } else if (kind != S_QED) {
+        Tok *a = peek();
+        PUSH(e->args, e->n, is_kw(a, "ASSUME") ? parse_assume_prove(next()) : parse_expr());
     }
-    if (proved && proof_ahead(level)) parse_proof(level);
+    if (kind != S_USE && kind != S_HIDE && kind != S_DEFINE && kind != S_OTHER && proof_ahead(level)) e->args[0] = parse_proof(level);
+    finish(e);
+    return e;
 }
 
 /* Whether a proof begins here, of a theorem (level 0) or of a step of
@@ -4011,30 +4013,39 @@ static int proof_ahead(int level) {
 
 /* A proof of a theorem (level 0) or of a step of level `level`: BY facts,
    OBVIOUS, OMITTED, or steps of one deeper level, up to its QED. */
-static void parse_proof(int level) {
-    int saved = P->in_proof;
-    P->in_proof = 1;
+static Expr *parse_proof(int level) {
     if (is_kw(peek(), "PROOF")) next();
     Tok *t = peek();
+    Expr *e = mk_expr(X_PROOF, t);
     if (is_kw(t, "BY")) {
-        next();
+        Expr *by = mk_step(next(), S_BY);
         if (is_kw(peek(), "ONLY")) next();
-        parse_use_body(0);
+        parse_use_body(by);
+        finish(by);
+        PUSH(e->args, e->n, by);
     } else if (is_kw(t, "OBVIOUS") || is_kw(t, "OMITTED")) {
         next();
     } else {
         if (t->kind != T_STEP) syntax_error("expected a proof");
-        int own = step_level(t, level + 1, level + 1);
+        int own = step_level(t, level + 1, level + 1), saved = P->in_proof;
+        P->in_proof = 1;
         for (;;) {
             Tok *s = peek();
             if (s->kind != T_STEP || step_level(s, own, own) != own) syntax_error("expected a step");
             next();
             int qed = is_kw(peek(), "QED");
-            parse_step(own);
+            Expr *step = parse_step(own);
+            if (step_numbered(s)) {   /* <1>2. is <1>2 */
+                const char *n = S(s->id);
+                step->def = thm_name(intern_n(n, (int)strlen(n) - (n[strlen(n) - 1] == '.')), s);
+            }
+            PUSH(e->args, e->n, step);
             if (qed) break;
         }
+        P->in_proof = saved;
     }
-    P->in_proof = saved;
+    finish(e);
+    return e;
 }
 
 /* ASSUME items PROVE e, after ASSUME at t: each item a declaration, NEW c,
@@ -4168,9 +4179,10 @@ static Module *parse_module(Module *outer) {
             if (!at_unit_start() && p->kind != T_STEP && !is_kw(p, "PROOF") && !is_kw(p, "BY") && !is_kw(p, "OBVIOUS") && !is_kw(p, "OMITTED"))
                 syntax_error("expected a proof or a definition");
             int after = P->pos;
-            if (proof_ahead(0)) parse_proof(0);
+            Expr *proof = proof_ahead(0) ? parse_proof(0) : NULL;
             Unit *u = add_unit(m, 6, d, body, NULL, 0);
             u->assume = assume;
+            u->proof = proof;
             u->proved = P->pos != after;
             unit_span(u, first, prev_tok(), t->id, 0);
             continue;
@@ -4178,12 +4190,13 @@ static Module *parse_module(Module *outer) {
         if (is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") || is_kw(t, "OMITTED") || t->kind == T_STEP)
             syntax_error("a proof follows a theorem");   /* as SANY */
         if (is_kw(t, "USE") || is_kw(t, "HIDE")) {
-            next();
+            Expr *use = mk_step(next(), is_kw(t, "USE") ? S_USE : S_HIDE);
             if (is_kw(peek(), "ONLY")) syntax_error("ONLY follows BY only");
-            P->in_proof = 1;
-            parse_use_body(is_kw(t, "HIDE"));
-            P->in_proof = 0;
-            if (fmt_mode) unit_span(add_unit(m, 6, NULL, NULL, NULL, 0), first, prev_tok(), t->id, 0);
+            parse_use_body(use);
+            finish(use);
+            Unit *u = add_unit(m, 6, NULL, NULL, NULL, 0);
+            u->proof = use;
+            unit_span(u, first, prev_tok(), t->id, 0);
             continue;
         }
         if (is_kw(t, "RECURSIVE")) {
@@ -5162,6 +5175,7 @@ static void check_temporal(Expr *e) {
     }
 }
 
+static int in_proof_expr;   /* resolving a proof's: @ is the last step's right side there */
 static int in_def_body;       /* 1 inside a definition body where labels are permitted */
 static Scope *label_bounds;   /* locally-bound identifiers required as label parameters */
 
@@ -5525,6 +5539,12 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
 }
 
 static void resolve_name(Expr *e, Scope *sc, int want_arity) {
+    if (e->nseg > 1 && in_proof_expr) {   /* a part of a step or of ASSUME ... PROVE: not checked, never evaluated */
+        Def *d = scope_lookup(sc, e->segs[0].name);
+        Sym *sym = d ? NULL : module_lookup(cur_module, e->segs[0].name);
+        if (sym) d = sym->def;
+        if (d && (d->kind == D_THM || (d->thm && !d->body))) { e->kind = X_BOOL; e->num = 1; return; }
+    }
     if (e->nseg > 1) { resolve_path(e, sc, want_arity); return; }
     Seg *s = &e->segs[0];
     e->args = s->args;
@@ -5563,6 +5583,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
     }
     d = sym->def;
     if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
+    if (d->thm && !d->body) semantic_error(e, "ASSUME/PROVE used where an expression is required.");
     int da = def_arity(d);
     if (want_arity > 0) {
         if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
@@ -5720,7 +5741,7 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
     case X_NUM: case X_BOOL:
         return;
     case X_AT:
-        if (!in_except_rhs) semantic_error(e, "@ used where its meaning is not defined.");
+        if (!in_except_rhs && !in_proof_expr) semantic_error(e, "@ used where its meaning is not defined.");
         return;
     case X_STR:
         e->num = intern_n(e->text, e->len);
@@ -5862,7 +5883,7 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
 
 /* An ASSUME ... PROVE: each item, then its PROVE, with the names NEW
    declares in scope after them, but not out of an ASSUME ... PROVE item. */
-static void resolve_assume(Expr *e, Scope *sc) {
+static Scope *resolve_assume(Expr *e, Scope *sc) {
     for (int i = 0; i < e->n - 1; i++) {
         Expr *x = e->args[i];
         if (x->kind == X_ASSUMEPROVE) resolve_assume(x, sc);
@@ -5874,6 +5895,74 @@ static void resolve_assume(Expr *e, Scope *sc) {
         }
     }
     resolve_expr(e->args[e->n - 1], sc);
+    return sc;
+}
+
+/* A DEF clause's entry: the name of an operator, function, instance,
+   theorem or assumption, which a proof may expand. */
+static void resolve_def_entry(Expr *x, Scope *sc) {
+    if (x->nseg > 1) return;   /* I!F: not checked */
+    int name = x->nseg ? x->segs[0].name : x->op;
+    Def *d = scope_lookup(sc, name);
+    Sym *sym = d ? NULL : module_lookup(cur_module, name);
+    if (sym) d = sym->def;
+    if (!d && !is_core_op(name) && !builtin_name(name)) semantic_error(x, "Unknown operator: `%s'.", S(name));
+    if (!d || (d->kind != D_OP && d->kind != D_FCN && d->kind != D_INST && d->kind != D_THM) || S(name)[0] == '<')
+        semantic_error(x, "DEF clause entry should describe a defined operator.");
+}
+
+/* A proof, a step of it, or a USE or HIDE, with the names in scope at
+   it: a step's name from it on, its own proof's too; what DEFINE, TAKE,
+   PICK and SUFFICES ASSUME declare in the steps after. The scope after
+   step e. */
+static Scope *resolve_proof(Expr *e, Scope *sc) {
+    if (!e) return sc;
+    if (e->kind == X_PROOF) {
+        for (int i = 0; i < e->n; i++) sc = resolve_proof(e->args[i], sc);
+        return sc;
+    }
+    in_proof_expr++;
+    if ((e->op == S_BY || e->op == S_USE || e->op == S_HIDE) && !e->field) {
+        Expr *at = NEW(Expr);
+        *at = *e;
+        at->l2 = at->l1, at->c2 = at->c1 + (e->op == S_BY ? 1 : e->op == S_USE ? 2 : 3);
+        semantic_error(at, "Empty BY, USE, or HIDE");
+    }
+    Scope *after = sc, *in = sc;   /* the scope of the steps after, of its proof */
+    if (e->op == S_DEFINE) {
+        for (int i = 0; i < e->ndefs; i++) {
+            resolve_def(e->defs[i], after);
+            after = bind(after, e->defs[i]->name, e->defs[i]);
+        }
+    } else if (e->op == S_TAKE) {
+        resolve_bounds(e, &after);
+        in = after;
+    } else if (e->op == S_PICK) {
+        resolve_bounds(e, &after);
+        resolve_expr(e->args[2], after);
+    } else {
+        for (int i = 2; i < e->n; i++) {
+            Expr *x = e->args[i];
+            if (e->op <= S_HIDE && x->kind == X_NAME && x->nseg == 1 && !x->segs[0].n && !scope_lookup(sc, x->segs[0].name)) {
+                Sym *sym = module_lookup(cur_module, x->segs[0].name);
+                if (sym && sym->def->thm && !sym->def->body) continue;   /* a fact: the name of ASSUME ... PROVE */
+            }
+            if (x->kind != X_ASSUMEPROVE) resolve_expr(x, sc);
+            else if (e->op == S_SUFFICES) after = resolve_assume(x, sc);
+            else in = resolve_assume(x, sc);
+        }
+    }
+    for (int i = 0; e->args[1] && i < e->args[1]->n; i++) resolve_def_entry(e->args[1]->args[i], sc);
+    if (e->def) {   /* checked once */
+        after = bind(after, e->def->name, e->def);
+        Scope *s = NEW(Scope);
+        *s = *after;
+        s->next = in;
+        in = s;
+    }
+    resolve_proof(e->args[0], in);
+    in_proof_expr--;
+    return after;
 }
 
 static void resolve_def(Def *d, Scope *sc) {
@@ -6131,14 +6220,15 @@ static void resolve_module(Module *m) {
             } else {
                 resolve_def(d, NULL);
             }
-        } else if (u->kind == 4 && u->def->body) {   /* in a recursive section, the statement after it is the error */
-            /* A theorem's or assumption's name is an operator without parameters. */
+        } else if (u->kind == 4 && (u->def->body || u->def->kind == D_THM)) {   /* in a recursive section, the statement after it is the error */
+            /* A theorem's or assumption's name is an operator without parameters;
+               one of ASSUME ... PROVE, only a name. */
             Def *d = NEW(Def);
             *d = *u->def;
             d->kind = D_OP;
             d->thm = 1;
             d->level = d->var_index = -1;
-            resolve_def(d, NULL);
+            if (d->body) resolve_def(d, NULL);
             add_sym(m, d->name, d, NULL, 0, 0, d->where);
         } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
             Sym *own = own_sym(m, u->def->name);
@@ -6180,12 +6270,6 @@ static void resolve_module(Module *m) {
         } else if (u->kind == 2 || u->kind == 6) {
             Expr at = text_span(m, u->pos, u->end);
             if (pending_rec) semantic_error(&at, "A%s may not appear within a recursive definition section.", u->kind == 2 ? "n ASSUME" : " THEOREM");
-            if (u->assume) {   /* its NEW names in scope after them */
-                int saved_in_def = in_def_body;
-                in_def_body = u->def != NULL;
-                resolve_assume(u->assume, NULL);
-                in_def_body = saved_in_def;
-            }
             if (!u->def && u->expr) {   /* a named one is resolved with its name */
                 int saved_in_def = in_def_body;
                 Scope *saved_lb = label_bounds;
@@ -6196,6 +6280,14 @@ static void resolve_module(Module *m) {
                 label_bounds = saved_lb;
                 int seen[64], nseen = 0;
                 check_dup_labels(u->expr, seen, &nseen, 0);
+            }
+            if (u->assume || u->proof) {   /* the NEW names in scope after them, and in its proof */
+                int saved_in_def = in_def_body;
+                in_def_body = u->def != NULL;
+                Scope *sc = u->assume ? resolve_assume(u->assume, NULL) : NULL;
+                in_def_body = 1;   /* a proof step may have labels */
+                resolve_proof(u->proof, sc);
+                in_def_body = saved_in_def;
             }
         } else if (u->kind == 3) {
             if (pending_rec) semantic_error(NULL, "A submodule may not appear within a recursive definition section.");
@@ -27038,7 +27130,7 @@ static void reset_check(void) {
     Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
     Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(cfg_depth); Z(fmt_comments); Z(nfmt_comments); Z(fmt_mode); Z(fmt_group); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
     Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
-    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(in_def_body); Z(label_bounds); Z(lint); Z(level_probe); Z(every_argument);
+    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(in_proof_expr); Z(in_def_body); Z(label_bounds); Z(lint); Z(level_probe); Z(every_argument);
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
     Z(shifted); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);
