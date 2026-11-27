@@ -2265,11 +2265,11 @@ typedef struct {
 
 /* A segment of A!B(x)!C, or a subexpression selector (§5.7): !2, !<<, !>>,
    !:, !@ and !(x) are sel > 0 or the SEL_ kinds; a name is sel 0. */
-typedef struct { int name; int sel; Expr **args; int n; int line, col; } Seg;   /* line, col: a record field's */
+typedef struct { int name; int sel; Expr **args; int n; int line, col; } Seg;   /* line, col: where it is written */
 enum { SEL_LL = -1, SEL_GG = -2, SEL_COLON = -3, SEL_AT = -4, SEL_NULL = -5 };
 
 /* lab(x, y) :: e names e, with the bound identifiers x and y, for selectors. */
-typedef struct { int name; int n; int *names; Def **defs; } Label;
+typedef struct { int name; int n; int *names; Def **defs; int line, col; } Label;   /* line, col: where it starts */
 
 typedef struct { int n; Expr **keys; int *fields; int line, col; } Path;  /* an EXCEPT path: fields[i] >= 0 for .f; line and col of its ! */
 
@@ -2925,6 +2925,7 @@ static Expr *parse_name(void) {
         Tok *t = peek();
         Seg *s = &segs[n++];
         memset(s, 0, sizeof *s);
+        s->line = t->line, s->col = t->col;
         static const char *sels[] = {"<<", ">>", ":", "@", "("};
         for (int k = 0; k < 5 && n > 1; k++) if (is_op(t, sels[k])) s->sel = -1 - k;
         if (n > 1 && t->kind == T_NUM && t->num > 0)
@@ -3505,6 +3506,7 @@ static Expr *parse_unary(const OpInfo **prefix) {
     *prefix = NULL;
     if (label_ahead()) {
         Label *l = NEW(Label);
+        l->line = t->line, l->col = t->col;
         l->name = next()->id;
         int names[32];
         if (is_op(peek(), "(")) {
@@ -4948,12 +4950,27 @@ static int operand(int sel, int n) {
     return 0;
 }
 
+/* Where segment s of e is written: its token, or !(...)'s parentheses. */
+static Expr *seg_at(Expr *e, Seg *s) {
+    Expr *at = NEW(Expr);
+    *at = *e;
+    Tok *t = e->mod->toks, *end = t + e->mod->ntoks;
+    while (t < end - 1 && (t->line < s->line || (t->line == s->line && t->col < s->col))) t++;
+    at->l1 = t->line, at->c1 = t->col;
+    for (int depth = 0; t < end - 1; t++) {
+        if (is_op(t, "(")) depth++;
+        if (is_op(t, ")")) depth--;
+        if (depth <= 0) break;
+    }
+    at->l2 = t->eline, at->c2 = t->ecol;
+    return at;
+}
+
 /* The parameters met selecting a subexpression, and their arguments. */
 typedef struct { Def *params[64]; Expr *args[64]; int np, nargs, missing; } Selection;
 
 /* The parameters defs, with the arguments seg gives them, if any. */
 static void take(Selection *sel, Expr *e, Def **defs, int n, Seg *seg) {
-    if (seg->n && seg->n != n) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), n);
     if (sel->np + n > 64) semantic_error(e, "Too many parameters.");
     for (int k = 0; k < n; k++) {
         sel->params[sel->np++] = defs[k];
@@ -4964,11 +4981,13 @@ static void take(Selection *sel, Expr *e, Def **defs, int n, Seg *seg) {
 
 /* d(a)!lab(b)!2!(c)...: the subexpression that segments i.. of e name, as
    an operator of every parameter met on the way: d's, the labels', and the
-   identifiers !(c) or !@ bind. Its arguments, if given, are in *args. */
-static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
+   identifiers !(c) or !@ bind. Its arguments, if given, are in *args;
+   only an operator argument (op) may leave them out. */
+static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int op) {
     if (d->kind != D_OP || d->local == 2 || !d->body)
         semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
     Selection sel = {0};
+    if (e->segs[i].n || !op) check_arity(e, d, e->segs[i].n, e->segs[i].args);
     take(&sel, e, d->params, d->nparams, &e->segs[i]);
     Expr *cur = d->body;
     int names = 1, own = 0;   /* a name next is a label, else a LET definition */
@@ -4976,22 +4995,25 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
         Seg *s = &e->segs[k];
         if (s->sel == 0 && names) {
             cur = find_label(cur, s->name, own);
-            if (!cur) semantic_error(e, "Unknown label `%s'.", S(s->name));
+            if (!cur) semantic_error(seg_at(e, s), "Cannot find label `%s'.", S(s->name));
             if (cur->label->n && !cur->label->defs) semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
+            if ((s->n || !op) && s->n != cur->label->n)
+                semantic_error(seg_at(e, s), "Label `%s' used with wrong number of arguments.", S(s->name));
             take(&sel, e, cur->label->defs, cur->label->n, s);
             own = 1;
         } else if (s->sel == 0) {
             Def *x = NULL;
             for (int j = 0; cur->kind == X_LET && j < cur->ndefs && !x; j++)
                 if (cur->defs[j]->name == s->name) x = cur->defs[j];
-            if (!x || !x->body) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
+            if (!x || !x->body) semantic_error(seg_at(e, s), "Unknown operator: `%s'.", S(s->name));
             take(&sel, e, x->params, x->nparams, s);
             cur = x->body;
             names = 1, own = 0;
         } else if (s->sel == SEL_COLON) {
             names = 0;
         } else {
-            int n = 0, first = k;
+            int n = 0;
+            if (cur->kind == X_NUM || cur->kind == X_STR) semantic_error(seg_at(e, s), "Selecting subexpression of expression that has none.");
             if (cur->kind == X_LET) {
                 if (operand(s->sel, 1)) n = 1, cur = cur->args[0];
             } else if (cur->nb) {
@@ -5010,7 +5032,11 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
                 }
             } else if (cur->kind == X_CASE) {   /* an arm, then its guard or value */
                 int arm = operand(s->sel, cur->n / 2);
-                if (arm && ++k < e->nseg && (n = operand(e->segs[k].sel, 2))) cur = cur->args[2 * arm - 3 + n];
+                if (!arm || k + 1 == e->nseg) semantic_error(seg_at(e, s), "Subexpression of CASE must have form !i!j.");
+                Seg *j = &e->segs[++k];
+                if (!(n = operand(j->sel, 2)))
+                    semantic_error(seg_at(e, j), "Second selector for CASE subexpression must specify  one of two operands.");
+                if (!(cur = cur->args[2 * arm - 3 + n])) semantic_error(seg_at(e, j), "Selecting OTHER in a CASE statement.");
             } else if (cur->kind == X_DOT) {
                 if ((n = operand(s->sel, 2)) == 1) cur = cur->args[0];
                 else if (n) {
@@ -5023,7 +5049,11 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs) {
             } else if ((n = operand(s->sel, cur->n)) && (cur->kind != X_EXCEPT || n == 1)) {
                 cur = cur->args[n - 1];
             }
-            if (!n || !cur) semantic_error(e, "Nonexistent operand specified by selector %d of %s.", first - i, S(d->name));
+            if (!n || !cur) {
+                char by[32];
+                snprintf(by, sizeof by, "argument selector %d", s->sel);
+                semantic_error(seg_at(e, s), "Nonexistent operand specified by `%s'.", s->sel > 0 ? by : s->sel == SEL_LL ? "<<" : s->sel == SEL_GG ? ">>" : s->sel == SEL_AT ? "@" : "!(...)");
+            }
             names = 0, own = 0;
         }
     }
@@ -5110,7 +5140,7 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
         } else if (i + 1 < e->nseg) {
             resolve_call_args(d, s->args, s->n, sc);
             for (int k = i + 1; k < e->nseg; k++) resolve_args(e->segs[k].args, e->segs[k].n, sc);
-            d = subexpression(e, d, i, &args, &nargs);
+            d = subexpression(e, d, i, &args, &nargs, want_arity > 0);
             break;
         } else {
             int da = def_arity(d);
@@ -5237,11 +5267,19 @@ static int nopen_defs;
 
 static int in_except_rhs;   /* depth of EXCEPT value expressions where @ is defined */
 
+/* A labeled expression with its label, as SANY locates it. */
+static Expr *label_span(Expr *e) {
+    Expr *l = NEW(Expr);
+    *l = *e;
+    l->l1 = e->label->line, l->c1 = e->label->col;
+    return l;
+}
+
 static void check_dup_labels(Expr *e, int *seen, int *nseen, int own) {
     if (!e) return;
     if (e->label && !own) {
         for (int i = 0; i < *nseen; i++)
-            if (seen[i] == e->label->name) semantic_error(e, "Duplicate label `%s'.", S(e->label->name));
+            if (seen[i] == e->label->name) semantic_error(label_span(e), "Duplicate label `%s'.", S(e->label->name));
         if (*nseen < 64) seen[(*nseen)++] = e->label->name;
         int inner[64], ninner = 0;
         check_dup_labels(e, inner, &ninner, 1);
@@ -5270,21 +5308,22 @@ static void resolve_expr(Expr *e, Scope *sc) {
     int labeled = 0;
     if (e->label && !e->label->defs) {
         Label *l = e->label;
-        if (!in_def_body) semantic_error(e, "Label not in definition or proof step.");
-        if (in_except_rhs) semantic_error(e, "Labels inside EXCEPT clauses are not yet implemented.");
+        Expr *at = label_span(e);
+        if (!in_def_body) semantic_error(at, "Label not in definition or proof step.");
+        if (in_except_rhs) semantic_error(at, "Labels inside EXCEPT clauses are not yet implemented.");
         for (int i = 0; i < l->n; i++)
             for (int j = 0; j < i; j++)
-                if (l->names[i] == l->names[j]) semantic_error(e, "Repeated formal parameter %s in label `%s'.", S(l->names[i]), S(l->name));
+                if (l->names[i] == l->names[j]) semantic_error(at, "Repeated formal parameter %s \nin label `%s'.", S(l->names[i]), S(l->name));
         l->defs = NEWN(Def *, l->n);
         for (int i = 0; i < l->n; i++) {
             if (!(l->defs[i] = scope_lookup(sc, l->names[i]))) semantic_error(e, "Unknown operator: `%s'.", S(l->names[i]));
             if (!scope_lookup(label_bounds, l->names[i]))
-                semantic_error(e, "Illegal parameter %s of label `%s'.", S(l->names[i]), S(l->name));
+                semantic_error(at, "Label %s declares extra parameter(s)  %s", S(l->name), S(l->names[i]));
         }
         for (Scope *s = label_bounds; s; s = s->next) {
             int found = 0;
             for (int i = 0; i < l->n && !found; i++) found = l->names[i] == s->name;
-            if (!found) semantic_error(e, "Label %s must contain formal parameter `%s'.", S(l->name), S(s->name));
+            if (!found) semantic_error(at, "Label %s must contain formal parameter `%s'.", S(l->name), S(s->name));
         }
         label_bounds = NULL;
         labeled = 1;
