@@ -135,6 +135,8 @@ class TestMetadataHelpers(unittest.TestCase):
         self.assertEqual(get_metadata(int), ())
         self.assertIsNone(get_role(int))
         self.assertIs(strip_temporal(int), int)
+        self.assertEqual(repr(Role.STATE), "Role.STATE")
+        self.assertEqual(repr(Role.ACTION_INVARIANT), "Role.ACTION_INVARIANT")
 
 
 class TestGetContract(unittest.TestCase):
@@ -183,6 +185,19 @@ class TestGetContract(unittest.TestCase):
         self.assertIs(get_contract(bare).refines, Any)
         self.assertIs(get_contract(bare_unparam).refines, Any)
         self.assertIs(get_contract(annotated_ref).refines, AbstractCounter)
+
+    def test_callable_object(self) -> None:
+        class Adder:
+            def __call__(
+                self, x: Positive
+            ) -> Annotated[int, Ensures(lambda self, x, result: result > x)]:
+                return x + 1
+
+        c = get_contract(Adder())
+        self.assertTrue(c.is_temporal)
+        self.assertIsNone(c.role)
+        self.assertIn("x", c.param_refinements)
+        self.assertEqual(len(c.ensures), 1)
 
     def test_errors(self) -> None:
         with self.assertRaises(TypeError):
@@ -268,6 +283,26 @@ class TestGetSpec(unittest.TestCase):
         spec = get_spec(Explosive)
         self.assertEqual(set(spec.invariants.keys()), {"inv"})
         self.assertEqual(set(spec.properties.keys()), {"prop"})
+
+    def test_dunder_and_roleless_contracts(self) -> None:
+        class Service:
+            builtin_attr = len
+            type_attr = dict
+            x: State[int] = 0
+
+            def __init__(self, initial: Positive) -> Annotated[
+                None, Ensures(lambda self, initial: self.x == initial)
+            ]:
+                self.x = initial
+
+            def parse(
+                self, raw: Positive
+            ) -> Annotated[int, Ensures(lambda raw, result: result == raw)]:
+                return raw
+
+        spec = get_spec(Service)
+        self.assertEqual(set(spec.state), {"x"})
+        self.assertEqual(set(spec.contracts), {"__init__", "parse"})
 
     def test_errors(self) -> None:
         with self.assertRaises(TypeError):

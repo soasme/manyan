@@ -42,6 +42,17 @@ def _validate_variables(kind: str, variables: tuple[Any, ...]) -> tuple[str, ...
     return tuple(checked)
 
 
+def _repr_predicate(kind: str, predicate: Any, description: Optional[str]) -> str:
+    if description is None:
+        return f"{kind}({predicate!r})"
+    return f"{kind}({predicate!r}, {description!r})"
+
+
+def _repr_variables(kind: str, variables: tuple[str, ...]) -> str:
+    args = ", ".join(repr(v) for v in variables)
+    return f"{kind}({args})"
+
+
 @dataclass(frozen=True)
 class Where:
     """Refinement predicate on a type: ``{x \\in T : predicate(x)}``.
@@ -61,6 +72,9 @@ class Where:
         _check_predicate("Where", self.predicate)
         _check_description("Where", self.description)
 
+    def __repr__(self) -> str:
+        return _repr_predicate("Where", self.predicate, self.description)
+
 
 @dataclass(frozen=True)
 class Requires:
@@ -72,6 +86,9 @@ class Requires:
     def __post_init__(self) -> None:
         _check_predicate("Requires", self.predicate)
         _check_description("Requires", self.description)
+
+    def __repr__(self) -> str:
+        return _repr_predicate("Requires", self.predicate, self.description)
 
 
 @dataclass(frozen=True)
@@ -90,6 +107,9 @@ class Ensures:
         _check_predicate("Ensures", self.predicate)
         _check_description("Ensures", self.description)
 
+    def __repr__(self) -> str:
+        return _repr_predicate("Ensures", self.predicate, self.description)
+
 
 @dataclass(frozen=True)
 class Modifies:
@@ -104,6 +124,9 @@ class Modifies:
     def __init__(self, *variables: str) -> None:
         object.__setattr__(self, "variables", _validate_variables("Modifies", variables))
 
+    def __repr__(self) -> str:
+        return _repr_variables("Modifies", self.variables)
+
 
 @dataclass(frozen=True)
 class Unchanged:
@@ -113,6 +136,9 @@ class Unchanged:
 
     def __init__(self, *variables: str) -> None:
         object.__setattr__(self, "variables", _validate_variables("Unchanged", variables))
+
+    def __repr__(self) -> str:
+        return _repr_variables("Unchanged", self.variables)
 
 
 @dataclass(frozen=True)
@@ -130,6 +156,9 @@ class WeakFairness:
             self, "variables", _validate_variables("WeakFairness", variables)
         )
 
+    def __repr__(self) -> str:
+        return _repr_variables("WeakFairness", self.variables)
+
 
 @dataclass(frozen=True)
 class StrongFairness:
@@ -145,6 +174,9 @@ class StrongFairness:
         object.__setattr__(
             self, "variables", _validate_variables("StrongFairness", variables)
         )
+
+    def __repr__(self) -> str:
+        return _repr_variables("StrongFairness", self.variables)
 
 
 class Refines(Generic[_S_co]):

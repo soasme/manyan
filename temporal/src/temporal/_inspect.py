@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType, ModuleType
+from types import FunctionType, MappingProxyType, MethodType, ModuleType
 from typing import (
     Annotated,
     Any,
@@ -119,11 +119,20 @@ def _unwrap_callable(member: object) -> Optional[Callable[..., Any]]:
         return member.fget
     if isinstance(member, (staticmethod, classmethod)):
         fn: object = member.__dict__.get("__func__", getattr(member, "__func__", None))  # pyright: ignore[reportUnknownArgumentType]
-        return fn if callable(fn) else None
-    if isinstance(member, type):
-        return None
-    if callable(member):
+        return fn if isinstance(fn, (FunctionType, MethodType)) else None
+    if isinstance(member, (FunctionType, MethodType)):
         return member
+    return None
+
+
+def _unwrap_contract_target(func: object) -> Optional[Callable[..., Any]]:
+    fn = _unwrap_callable(func)
+    if fn is not None:
+        return fn
+    if not isinstance(func, type) and callable(func):
+        call_attr: object = type(func).__call__
+        if isinstance(call_attr, (FunctionType, MethodType)):
+            return call_attr
     return None
 
 
@@ -184,6 +193,7 @@ class SpecInfo:
     action_invariants: Mapping[str, ContractInfo] = field(default_factory=_empty_mapping)
     properties: Mapping[str, ContractInfo] = field(default_factory=_empty_mapping)
     fairness: Mapping[str, ContractInfo] = field(default_factory=_empty_mapping)
+    contracts: Mapping[str, ContractInfo] = field(default_factory=_empty_mapping)
     refinements: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
 
@@ -194,9 +204,11 @@ def get_contract(
     localns: Optional[Mapping[str, Any]] = None,
 ) -> ContractInfo:
     """Extract Temporal contract metadata from a function, method, or descriptor."""
-    fn = _unwrap_callable(func)
+    fn = _unwrap_contract_target(func)
     if fn is None:
-        raise TypeError(f"Expected a callable or property, got {type(func).__name__}")
+        raise TypeError(
+            f"Expected a Python function, method, callable object, or property, got {type(func).__name__}"
+        )
     hints = get_type_hints(fn, globalns=globalns, localns=localns, include_extras=True)
 
     param_refinements: dict[str, tuple[Where, ...]] = {}
@@ -246,7 +258,7 @@ def _iter_members(target: Union[type[Any], ModuleType]) -> list[tuple[str, Any]]
         if cls is object or cls.__module__ == "typing":
             continue
         for name, value in cls.__dict__.items():
-            if name.startswith("__") and name.endswith("__"):
+            if _unwrap_callable(value) is None:
                 continue
             seen[name] = value
     return list(seen.items())
@@ -302,6 +314,7 @@ def get_spec(
         Role.PROPERTY: {},
         Role.FAIRNESS: {},
     }
+    contracts: dict[str, ContractInfo] = {}
     refinements: dict[str, Any] = {}
 
     for name, member in _iter_members(resolved):
@@ -310,6 +323,8 @@ def get_spec(
         contract = get_contract(member, globalns=globalns, localns=localns)
         if contract.role is not None:
             buckets[contract.role][name] = contract
+        elif contract.refines is None and contract.is_temporal:
+            contracts[name] = contract
         if contract.refines is not None:
             refinements[name] = contract.refines
 
@@ -326,5 +341,6 @@ def get_spec(
         action_invariants=MappingProxyType(buckets[Role.ACTION_INVARIANT]),
         properties=MappingProxyType(buckets[Role.PROPERTY]),
         fairness=MappingProxyType(buckets[Role.FAIRNESS]),
+        contracts=MappingProxyType(contracts),
         refinements=MappingProxyType(refinements),
     )

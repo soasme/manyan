@@ -33,6 +33,9 @@ class Role(Enum):
     PROPERTY = "property"
     FAIRNESS = "fairness"
 
+    def __repr__(self) -> str:
+        return f"Role.{self.name}"
+
 
 # Variable and constant declarations (class or module attributes)
 Const = Annotated[_T, Role.CONST]

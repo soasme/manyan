@@ -394,5 +394,5 @@ Refinement is declared in either of two ways:
 - `get_metadata(annotation)` — returns all Temporal metadata items on an annotation (ignoring foreign metadata).
 - `get_role(annotation)` — returns the single `Role` on an annotation or `None` (raising `ValueError` on conflicting roles).
 - `strip_temporal(annotation)` — removes Temporal metadata while preserving the base type and any non-Temporal `Annotated` metadata.
-- `get_contract(func)` — returns a frozen `ContractInfo` describing a function, method, `@property`, `@staticmethod`, or `@classmethod`.
-- `get_spec(target)` — returns a frozen `SpecInfo` describing all Temporal declarations on a class, `Protocol`, generic alias, or module.
+- `get_contract(func)` — returns a frozen `ContractInfo` describing a function, method, callable object, `@property`, `@staticmethod`, or `@classmethod`.
+- `get_spec(target)` — returns a frozen `SpecInfo` describing all Temporal declarations on a class, `Protocol`, generic alias, or module (including role-less contracted methods in `contracts`).

@@ -313,3 +313,29 @@ class Model(Generic[_S]):
             if isinstance(candidate, Symmetry) and candidate not in seen:
                 seen.append(cast("Symmetry[object]", candidate))
         return tuple(seen)
+
+    def __repr__(self) -> str:
+        parts = [repr(self.spec)]
+        if self.constants:
+            parts.append(f"constants={dict(self.constants)!r}")
+        if self.domains:
+            parts.append(f"domains={dict(self.domains)!r}")
+        for attr in (
+            "init",
+            "actions",
+            "invariants",
+            "properties",
+            "state_constraint",
+            "action_constraint",
+            "view",
+            "alias",
+            "postcondition",
+        ):
+            val = getattr(self, attr)
+            if val is not None:
+                parts.append(f"{attr}={val!r}")
+        if self.symmetry:
+            parts.append(f"symmetry={self.symmetry!r}")
+        if not self.check_deadlock:
+            parts.append("check_deadlock=False")
+        return f"Model({', '.join(parts)})"

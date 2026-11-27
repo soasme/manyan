@@ -36,6 +36,8 @@ class TestPredicateClauses(unittest.TestCase):
             no_desc = cls(_boom)
             self.assertIsNone(no_desc.description)
             self.assertNotEqual(clause, no_desc)
+            self.assertEqual(repr(no_desc), f"{cls.__name__}({_boom!r})")
+            self.assertEqual(repr(clause), f"{cls.__name__}({_boom!r}, 'must not run')")
 
     def test_predicate_validation(self) -> None:
         for cls in (Where, Requires, Ensures):
@@ -52,10 +54,13 @@ class TestVariableClauses(unittest.TestCase):
         for cls in (Modifies, Unchanged, WeakFairness, StrongFairness):
             empty = cls()
             self.assertEqual(empty.variables, ())
+            self.assertEqual(repr(empty), f"{cls.__name__}()")
             one = cls("balance")
             self.assertEqual(one.variables, ("balance",))
+            self.assertEqual(repr(one), f"{cls.__name__}('balance')")
             two = cls("small", "big")
             self.assertEqual(two.variables, ("small", "big"))
+            self.assertEqual(repr(two), f"{cls.__name__}('small', 'big')")
             self.assertEqual(two, cls("small", "big"))
             self.assertEqual(hash(two), hash(cls("small", "big")))
             self.assertNotEqual(two, cls("big", "small"))

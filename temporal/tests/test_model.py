@@ -123,6 +123,12 @@ class TestModel(unittest.TestCase):
         self.assertIsNone(m.alias)
         self.assertIsNone(m.postcondition)
         self.assertTrue(m.check_deadlock)
+        self.assertEqual(repr(m), f"Model({DummySpec!r})")
+        m_custom = Model(DummySpec, constants={"N": 3}, check_deadlock=False)
+        self.assertEqual(
+            repr(m_custom),
+            f"Model({DummySpec!r}, constants={{'N': 3}}, check_deadlock=False)",
+        )
 
         with self.assertRaises(dataclasses.FrozenInstanceError):
             m.check_deadlock = False  # type: ignore[misc]
