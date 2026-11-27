@@ -893,7 +893,10 @@ product with the behavior: a node of the product, a state with a tableau
 node, gets its successors when it is first met at a position of the
 behavior, by the state stuttering or taking the behavior's next step there
 (only stuttering at the last state), and keeps them; a later position of
-the same state adds none. Which lasso is reported is not specified.
+the same state adds none. Which lasso is reported is not specified. The
+states printed are the lasso's: TLC's simulator prints the behavior's
+first states instead, as many as the lasso has, which need not be a
+counterexample.
 
 A violation prints the behavior up to the bad state, each state labeled
 with the action it was taken by (the first by the last initial predicate:
