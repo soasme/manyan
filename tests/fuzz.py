@@ -61,7 +61,9 @@ What TLAPS proves neither way is inconclusive and left out.
 ref: makes the expressions of prove and asks REF, the reference semantics
 of lean/, whether each equals the value the engine prints. Another value
 is a finding; an expression whose value TLA+ leaves unspecified, or the
-reference cannot compute, is left out.
+reference cannot compute, is left out. The reference also compares each
+expression with twins written otherwise, its sets kept unevaluated or
+its functions recursive: where both have a value, it is one.
 
 diff: makes random constant expressions (including lazy functions in
 sets, out-of-domain EXCEPT, nested @, empty lazy sets, and AssertError
@@ -461,11 +463,32 @@ def unproved(tlapm, claims):
     return {i for i in failing if 0 <= i < len(claims)}
 
 
-def standard(rng, n):
+class Unevaluated(Gen):
+    """Gen's expressions, with each set kept unevaluated: the same value written otherwise."""
+
+    def set(self, d=0):
+        return f"({super().set(d)} \\cup {{u \\in Nat : FALSE}})"
+
+
+class Recursive(Gen):
+    """Gen's expressions, with each function and sequence a recursive function."""
+
+    def fcn(self, d=0):
+        return self.recursive_twin(super().fcn(d))
+
+    def seq(self, d=0):
+        return self.recursive_twin(super().seq(d))
+
+    @staticmethod
+    def recursive_twin(f):
+        return f"(LET h[k \\in DOMAIN {f}] == {f}[k] IN h)"
+
+
+def standard(rng, n, gen=Gen):
     """n random expressions of the standard modules."""
     exprs = []
     while len(exprs) < n:
-        e = Gen(rng).any()
+        e = gen(rng).any()
         if not NONSTANDARD.search(e):
             exprs.append(e)
     return exprs
@@ -506,6 +529,19 @@ def ref(engine, reference, runs, seed):
             print(f"FAIL {e}\n--- manyan\n{v}\n--- lean/\n{a}")
     same = sum(a == "same" for a in answers)
     print(f"{same}/{runs} random expressions have manyan's value by lean/, {failed} another")
+    # An expression's value cannot depend on how its values are written.
+    for gen in Unevaluated, Recursive:
+        twins = standard(random.Random(seed), runs, gen)
+        done = subprocess.run([reference], input="".join(f"{t}\t{e}\n" for t, e in zip(twins, exprs)),
+                              stdout=subprocess.PIPE, text=True, timeout=600, check=True)
+        answers = done.stdout.splitlines()
+        assert len(answers) == runs, done.stdout
+        wrong = [(t, a) for t, a in zip(twins, answers) if not a.startswith(("same", "undefined:", "unknown:"))]
+        for t, a in wrong:
+            print(f"FAIL {t}\n--- lean/, written as {gen.__name__}\n{a}")
+        same = sum(a == "same" for a in answers)
+        print(f"{same}/{runs} have that value by lean/ written as {gen.__name__}, {len(wrong)} another")
+        failed += len(wrong)
     return failed
 
 

@@ -22,14 +22,13 @@ from TLC.
   that stops early is TLC's threads' timing.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
-- Give TLC's counterexample to a temporal property. Of 900 random graphs
-  `tests/fuzz.py live` makes on three seeds, each checked with the same
+- Give TLC's counterexample to a temporal property. Of 1500 random graphs
+  `tests/fuzz.py live` makes on five seeds, each checked with the same
   random `-fp`, all print what TLC prints: Manyan orders a state's
-  successors as TLC's table of them does, by TLC's fingerprints, and
-  checks the properties as TLC does, by its possible error models. The
-  rest: TLC's tableau is built of particles, its successors linked in the
-  order of their index, so its product may have other nodes and edges
-  than Manyan's.
+  successors as TLC's table of them does, by TLC's fingerprints, checks
+  the properties as TLC does, by its possible error models, and builds
+  TLC's tableau of particles. The rest: a simulation's counterexample,
+  which TLC finds by another search of the behavior (`LiveCheck1`).
 - Check Manyan against the semantics of TLA⁺, not only TLC: `make
   fuzz-prove` asks TLAPS to prove the value Manyan prints, `make
   fuzz-ref` compares it with `lean/`, a reference semantics in Lean 4,
@@ -37,7 +36,8 @@ from TLC.
   proves that its computable oracle agrees with the classical one. Next:
   INSTANCE with parameters in `lean/`, and a proof that its evaluator
   respects `=` for values it keeps unevaluated (it is proved for the
-  rest).
+  rest; `make fuzz-ref` tests it with twins of each expression written
+  otherwise).
 - Model more of Manyan's algorithms in `tests/tla`, such as symmetry, and
   fuzz what the models cannot reach. The parallel search, the slicing of
   Init, the search for a fair cycle, the tableau, level checking and

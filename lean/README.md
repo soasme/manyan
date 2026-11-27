@@ -79,7 +79,10 @@ values the evaluator computes are the same if they are equal
 (`computed_eq`, `computed_eq_eval`), so nothing it computes from them
 can differ, and sorting does not change what a value is (`canon_feq`).
 Not proved: the same of a value kept unevaluated, as `{x \in Nat : x <
-2}`, which equals `{0, 1}` though it is written otherwise.
+2}`, which equals `{0, 1}` though it is written otherwise. `make
+fuzz-ref` tests it instead: each random expression has twins, its sets
+kept unevaluated (`S \cup {u \in Nat : FALSE}`) or its functions
+recursive, and where the reference gives both a value, it is the same.
 
 ## What it decides
 
