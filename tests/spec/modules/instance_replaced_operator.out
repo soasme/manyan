@@ -1,0 +1,15 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+v = 1
+
+State 2: <I!Next line 9, col 1 to line 9, col 21 of module instance_replaced_operator>
+v = 2
+
+State 3: <I!Next line 9, col 1 to line 9, col 21 of module instance_replaced_operator>
+v = 3
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 11

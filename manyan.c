@@ -7583,7 +7583,7 @@ static Def *const_operator(Def *d, Ctx c, Ctx *at) {
         if (i >= 0) {
             Expr *x = in->def->subst_expr[i];
             *at = (Ctx){in->env, in->parent};
-            if (x->kind != X_OPREF && !(x->kind == K_CALL && x->n == 0)) return NULL;
+            if (x->kind != X_OPREF && !((x->kind == K_CALL || (x->kind == K_PARAMCALL && x->def->kind == D_CONST)) && x->n == 0)) return NULL;
             return x->def->kind == D_CONST ? const_operator(x->def, *at, at) : x->def;
         }
     }
