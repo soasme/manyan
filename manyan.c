@@ -2658,7 +2658,7 @@ typedef struct {
     int limit;        /* tokens at or left of this column end the junction item (§6.2) */
     Module *mod;
     const char *file;
-    int in_proof;     /* a step's name is an expression there, <1>2 */
+    int in_proof;     /* a step's name is an expression there, <1>2: 1 + the level of the steps */
 } Parser;
 
 static Parser *P;
@@ -2935,16 +2935,27 @@ static Expr **parse_args(int *count) {
     return args;
 }
 
-/* Whether step t is numbered, <1>2 or <1>a., not <1> or <*>. */
+/* Whether step t is named, <1>2, <1>a. or <*>a, not <1> or <*>. */
 static int step_numbered(Tok *t) {
-    const char *s = S(t->id), *close = strchr(s, '>');
-    return t->kind == T_STEP && isdigit((unsigned char)s[1]) && close[1] && close[1] != '.';
+    const char *close = strchr(S(t->id), '>');
+    return t->kind == T_STEP && close[1] && close[1] != '.';
 }
 
-/* Whether t names a step, as a fact may: numbered, without the period
-   that begins one. */
+/* Whether t names a step, as a fact may: named, not of <+>, without the
+   period that begins one. */
 static int step_name(Tok *t) {
-    return step_numbered(t) && S(t->id)[strlen(S(t->id)) - 1] != '.';
+    const char *s = S(t->id);
+    return step_numbered(t) && s[1] != '+' && s[strlen(s) - 1] != '.';
+}
+
+/* The name step t refers to: <*>a, as SANY, of the level of the steps
+   it is among. */
+static int step_ref(Tok *t) {
+    const char *s = S(t->id);
+    if (s[1] != '*') return t->id;
+    char name[256];
+    snprintf(name, sizeof name, "<%d>%s", P->in_proof - 1, s + 3);
+    return intern(name);
 }
 
 /* A name, its arguments, and instance selections: A!B(x)!C. */
@@ -2970,7 +2981,8 @@ static Expr *parse_name(void) {
             /* As SANY, a name, an operator, or a keyword that names one: I!+, I!SUBSET, I!TRUE. */
             int named = t->kind == T_OP || (t->kind == T_KW && (op_info(t, PREFIX) || op_info(t, INFIX) || op_info(t, POSTFIX) ||
                                                                 is_kw(t, "TRUE") || is_kw(t, "FALSE") || is_kw(t, "BOOLEAN") || is_kw(t, "STRING")));
-            if (t->kind == T_IDENT || (n == 1 && t->kind == T_STEP)) s->name = t->id;
+            if (t->kind == T_IDENT) s->name = t->id;
+            else if (n == 1 && t->kind == T_STEP) s->name = step_ref(t);
             else if (named) s->name = canonical(t->id);
             else syntax_error("expected a name");
             next();
@@ -4009,8 +4021,8 @@ static Expr *parse_step(int level) {
     return e;
 }
 
-/* Whether a proof begins here, of a theorem (level 0) or of a step of
-   level `level`: a terminal one, or steps of a deeper level. */
+/* Whether a proof begins here, of a step of level `level`: a terminal
+   one, or steps of a deeper level. */
 static int proof_ahead(int level) {
     Tok *t = peek();
     if (is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") || is_kw(t, "OMITTED")) return 1;
@@ -4034,7 +4046,7 @@ static Expr *parse_proof(int level) {
     } else {
         if (t->kind != T_STEP) syntax_error("expected a proof");
         int own = step_level(t, level + 1, level + 1), saved = P->in_proof;
-        P->in_proof = 1;
+        P->in_proof = own + 1;
         for (;;) {
             Tok *s = peek();
             if (s->kind != T_STEP || step_level(s, own, own) != own) syntax_error("expected a step");
@@ -4191,7 +4203,7 @@ static Module *parse_module(Module *outer) {
             if (!at_unit_start() && p->kind != T_STEP && !is_kw(p, "PROOF") && !is_kw(p, "BY") && !is_kw(p, "OBVIOUS") && !is_kw(p, "OMITTED"))
                 syntax_error("expected a proof or a definition");
             int after = P->pos;
-            Expr *proof = proof_ahead(0) ? parse_proof(0) : NULL;
+            Expr *proof = p->kind == T_STEP || proof_ahead(0) ? parse_proof(0) : NULL;   /* a theorem's steps may be <0> */
             Unit *u = add_unit(m, 6, d, body, NULL, 0);
             u->assume = assume;
             u->proof = proof;
@@ -6067,6 +6079,7 @@ static Scope *resolve_proof(Expr *e, Scope *sc) {
         return sc;
     }
     in_proof_expr++;
+    if (e->def && strchr("*+", S(e->def->name)[1])) semantic_error(e->def->where, "<*> and <+> cannot be used for a named step.");
     if ((e->op == S_BY || e->op == S_USE || e->op == S_HIDE) && !e->field) {
         Expr *at = NEW(Expr);
         *at = *e;
