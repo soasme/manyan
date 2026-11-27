@@ -1,0 +1,31 @@
+Finished computing initial states: 2 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 9, col 9 to line 9, col 51 of module lazy_init_continue>
+/\ f = ({} :> FALSE @@ {m1} :> FALSE @@ {m2} :> TRUE @@ {m1, m2} :> TRUE)
+/\ m = m2
+
+State 2: <Next line 10, col 9 to line 10, col 31 of module lazy_init_continue>
+/\ f = ({} :> FALSE @@ {m1} :> FALSE @@ {m2} :> TRUE @@ {m1, m2} :> TRUE)
+/\ m = m1
+
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 9, col 9 to line 9, col 51 of module lazy_init_continue>
+/\ f = ({} :> FALSE @@ {m1} :> TRUE @@ {m2} :> FALSE @@ {m1, m2} :> TRUE)
+/\ m = m1
+
+State 2: <Next line 10, col 9 to line 10, col 31 of module lazy_init_continue>
+/\ f = ({} :> FALSE @@ {m1} :> TRUE @@ {m2} :> FALSE @@ {m1, m2} :> TRUE)
+/\ m = m2
+
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Init line 9, col 9 to line 9, col 51 of module lazy_init_continue>
+/\ f = ({} :> FALSE @@ {m1} :> TRUE @@ {m2} :> FALSE @@ {m1, m2} :> TRUE)
+/\ m = m1
+
+State 2: <Next line 10, col 9 to line 10, col 31 of module lazy_init_continue>
+/\ f = ({} :> FALSE @@ {m1} :> TRUE @@ {m2} :> FALSE @@ {m1, m2} :> TRUE)
+/\ m = m2
+exit 0

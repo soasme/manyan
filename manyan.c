@@ -53,7 +53,11 @@ typedef struct Chunk { struct Chunk *next; size_t used, size; _Alignas(16) char 
 typedef struct { Chunk *head, *spare; } Arena;   /* spare: a chunk a region dropped, for the next */
 
 static Arena perm_arena, scratch_arena;
+static Arena sim_init_arena;     /* a simulation's initial states, kept for good */
 static Arena *arena = &perm_arena;
+/* Whether what is made now lasts past the search's scratch: a lazy value
+   made there may not keep what it computes in the scratch. */
+static int lasting(void) { return arena == &perm_arena || arena == &sim_init_arena; }
 
 /* An error that ends a check returns its exit status from manyan_check,
    by this; outside one, as in a worker, it exits. */
@@ -645,7 +649,7 @@ static Value *mk_lazy(int kind) {
     Value *v = NEW(Value);
     v->kind = V_LAZY;
     v->lazy = (unsigned char)kind;
-    v->perm = arena == &perm_arena;
+    v->perm = lasting();
     return v;
 }
 
@@ -6113,7 +6117,7 @@ static Value *boolean_set;
 static Env *mk_binding(Def *d, Value *v, Env *next) {
     Env *b = NEW(Env);
     b->def = d; b->v = v; b->next = next;
-    b->perm = arena == &perm_arena;
+    b->perm = lasting();
     return b;
 }
 
@@ -6215,7 +6219,7 @@ static Value *mk_lambda(Value *dom, Expr *e, Def *d, Ctx c) {
     f->u.l.env = c.env;
     f->u.l.inst = c.inst;
     f->keep = keep_lazy || (d && d->self);
-    f->perm = arena == &perm_arena;
+    f->perm = lasting();
     f->u.l.made_in = made_in();
     return f;
 }
@@ -6297,7 +6301,7 @@ static __attribute__((cold)) Value *realize_lambda(Value *f) {
 static Env *mk_thunk(Def *d, Expr *e, Ctx c, Env *next) {
     Env *b = NEW(Env);
     b->def = d; b->e = e; b->ctx_env = c.env; b->ctx_inst = c.inst; b->next = next;
-    b->perm = arena == &perm_arena;
+    b->perm = lasting();
     return b;
 }
 
@@ -14006,7 +14010,6 @@ static void sim_write(const char *file, long t, States *trace) {
 
 static States sim_init_states;   /* read after an error jumps back */
 static EvalState sim_fresh;
-static Arena sim_init_arena;     /* the initial states, kept for good */
 /* Random simulation (§10.8): TLC's behaviors for the seed, from one worker.
    The initial states are kept for good; a behavior, with all it
    evaluates, until it ends. */
