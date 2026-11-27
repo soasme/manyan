@@ -4,8 +4,8 @@
 
 A fast model checker for TLA⁺, compatible with TLC and Apalache.
 
-Website: [soasme.github.io/manyan](https://soasme.github.io/manyan/), with
-the manual and a [playground](https://soasme.github.io/manyan/playground.html).
+Website: [manyan.julin.ai](https://manyan.julin.ai), with
+the manual and a [playground](https://manyan.julin.ai/playground.html).
 
 Manyan checks TLA⁺ specifications and model configurations with the same
 semantics and default reporting behavior as TLC, and checks them
@@ -33,7 +33,7 @@ pip install manyan            # or uv tool install manyan
 ```
 
 `npm install @soasme/manyan` is Manyan compiled to WebAssembly, for a web page or
-Node.js; the [playground](https://soasme.github.io/manyan/playground.html) checks a spec
+Node.js; the [playground](https://manyan.julin.ai/playground.html) checks a spec
 in your browser with it. To build it instead:
 
 ```sh
