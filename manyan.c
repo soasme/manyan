@@ -4456,17 +4456,44 @@ static void loc_line(Buf *b, Expr *e) {
 
 static Module *file_module(Module *m);
 static void print_warnings(Module *m);
-static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
+/* SANY's semantic errors: n of them, each at where[i]. */
+static _Noreturn void semantic_errors(int n, Expr **where, char (*msg)[1024]) {
     if (breakpoint) breakpoint_error(0, NULL);
-    char msg[1024];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(msg, sizeof msg, fmt, ap);
-    va_end(ap);
     if (cur_module && file_module(cur_module)->nwarnings) print_warnings(file_module(cur_module));   /* SANY's, before its errors */
-    printf("Semantic errors:\n\n*** Errors: 1\n\n%s\n\n%s\n\n", loc_str(where), msg);
+    printf("Semantic errors:\n\n*** Errors: %d\n\n", n);
+    for (int i = 0; i < n; i++) printf("%s\n\n%s\n\n", loc_str(where[i]), msg[i]);
     printf("Error: Parsing or semantic analysis failed.\n");
     stop(MANYAN_ERROR_PARSE);
+}
+
+static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
+    char msg[1][1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg[0], sizeof msg[0], fmt, ap);
+    va_end(ap);
+    semantic_errors(1, &where, msg);
+}
+
+/* An operator symbol, as +, that nothing defines: SANY's error at the
+   symbol, then at the expression it is applied in. */
+static _Noreturn void unresolved_symbol(Expr *e) {
+    Expr *a = e->args[0];
+    int prefix = e->n == 1 && (a->pl1 ? a->ppos : a->pos) > e->pos;
+    int from = prefix ? e->pos : a->pl1 ? a->pend : a->end;
+    Expr at = *e;
+    int name = e->op;   /* an infix or postfix one as written: (+), not \oplus */
+    for (int i = 0; i < e->mod->ntoks; i++) {
+        Tok *t = &e->mod->toks[i];
+        if (t->pos < from) continue;
+        at.l1 = t->line, at.c1 = t->col, at.l2 = t->eline, at.c2 = t->ecol;
+        if (!prefix) name = t->id;
+        break;
+    }
+    char msg[2][1024];
+    snprintf(msg[0], sizeof msg[0], "Could not find declaration or definition of symbol '%s'.", S(name));
+    snprintf(msg[1], sizeof msg[1], "Couldn't resolve %s operator symbol `%s'.", e->n == 2 ? "infix" : prefix ? "prefix" : "postfix", S(name));
+    semantic_errors(2, (Expr *[]){&at, e}, msg);
 }
 
 static Def *scope_lookup(Scope *sc, int name);
@@ -4696,13 +4723,32 @@ static Def *scope_lookup(Scope *sc, int name) {
     return NULL;
 }
 
-static void check_arity(Expr *e, Def *d, int n) {
+/* e applies d to n arguments. As SANY, a wrong number is an error at
+   the parentheses around them, naming d as written: I!G. */
+static void check_arity(Expr *e, Def *d, int n, Expr **args) {
     int want = d->kind == D_OP ? d->nparams : d->kind == D_PARAM || d->kind == D_CONST ? d->arity : 0;
     if (d->kind == D_INST) want = d->nparams;
-    if (n != want) {
-        if (want == 0) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
-        semantic_error(e, "The operator %s requires %d arguments.", S(d->name), want);
+    if (n == want) return;
+    Expr at = *e;
+    Buf name = {0};
+    if (n) {
+        Expr *a = args[0], *z = args[n - 1];
+        int from = a->pl1 ? a->ppos : a->pos, to = z->pl1 ? z->pend : z->end, depth = 0;
+        Tok *toks = e->mod->toks, *open = NULL;
+        for (int i = 0; i < e->mod->ntoks && toks[i].pos < from; i++) open = &toks[i];
+        for (Tok *t = toks; t < open; t++) {
+            if (t->pos < e->pos) continue;
+            int paren = t->kind == T_OP && (!strcmp(S(t->id), "(") || !strcmp(S(t->id), ")"));
+            if (paren) depth += S(t->id)[0] == '(' ? 1 : -1;
+            else if (!depth) buf_puts(&name, S(t->id));
+        }
+        Tok *close = open;
+        while (close < toks + e->mod->ntoks - 1 && close->pos < to) close++;
+        at.l1 = open->line, at.c1 = open->col, at.l2 = close->eline, at.c2 = close->ecol;
     }
+    const char *written = name.s ? name.s : S(d->name);
+    if (want == 0) semantic_error(&at, "The operator %s requires 0 arguments.", written);
+    semantic_error(&at, "The operator %s requires %d arguments.", written, want);
 }
 
 static void resolve_args(Expr **args, int n, Scope *sc) {
@@ -5052,7 +5098,7 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
         }
         if (!d) semantic_error(e, "Unknown operator: `%s'.", S(s->name));
         if (i + 1 < e->nseg && d->kind == D_INST) {
-            check_arity(e, d, s->n);
+            check_arity(e, d, s->n, s->args);
             resolve_call_args(d, s->args, s->n, sc);
             pargs[np] = *s;
             path[np++] = d;
@@ -5069,7 +5115,7 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
                 if (s->n != 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
                 if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
             } else {
-                check_arity(e, d, s->n);
+                check_arity(e, d, s->n, s->args);
                 resolve_call_args(d, s->args, s->n, sc);
             }
             args = s->args;
@@ -5109,11 +5155,11 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
             if (s->n) semantic_error(e, "The operator %s requires 0 arguments.", S(d->name));
             e->kind = K_BOUND;
         } else if (d->kind == D_PARAM) {
-            check_arity(e, d, s->n);
+            check_arity(e, d, s->n, s->args);
             resolve_call_args(d, s->args, s->n, sc);
             e->kind = K_PARAMCALL;
         } else {
-            check_arity(e, d, s->n);
+            check_arity(e, d, s->n, s->args);
             resolve_call_args(d, s->args, s->n, sc);
             e->kind = K_CALL;
         }
@@ -5134,7 +5180,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
         if (s->n != 0 || da == 0) semantic_error(e, "An expression appears as argument where an operator of arity %d is expected.", want_arity);
         if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
     } else {
-        check_arity(e, d, s->n);
+        check_arity(e, d, s->n, s->args);
         resolve_call_args(d, s->args, s->n, sc);
     }
     e->def = d;
@@ -5266,14 +5312,21 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
         semantic_error(e, "LAMBDA expression used where an expression is required.");
         return;
     case X_OP: {
-        resolve_args(e->args, e->n, sc);
+        /* As SANY, the operator before its arguments. */
         for (int i = 0; core_ops[i].name; i++)
-            if (strcmp(core_ops[i].name, S(e->op)) == 0) { e->kind = (short)core_ops[i].kind; return; }
+            if (strcmp(core_ops[i].name, S(e->op)) == 0) {
+                resolve_args(e->args, e->n, sc);
+                e->kind = (short)core_ops[i].kind;
+                return;
+            }
         Def *d = scope_lookup(sc, e->op);
         Sym *sym = d ? NULL : module_lookup(cur_module, e->op);
         if (sym) d = sym->def;
-        if (!d) semantic_error(e, "Unknown operator: `%s'.", S(e->op));
-        check_arity(e, d, e->n);
+        const char *name = S(e->op);
+        if (!d && (e->n == 1 || e->n == 2) && !isalpha((unsigned char)name[0]) && name[0] != '_') unresolved_symbol(e);
+        if (!d) semantic_error(e, "Unknown operator: `%s'.", name);
+        resolve_args(e->args, e->n, sc);
+        check_arity(e, d, e->n, e->args);
         e->def = d;
         if (d->kind == D_PARAM || d->kind == D_CONST) e->kind = K_PARAMCALL;
         else if (sym && sym->npath) {
