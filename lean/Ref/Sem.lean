@@ -544,7 +544,10 @@ def op (σ : St) (ρ : Env) (o : String) (args : List Expr) : M Val :=
     | _ => strictOp
   | none, _ => strictOp
 where
-  strictOp := do c.strict o (← (← args.mapM (c.ev σ ρ)).mapM c.force)
+  -- A function applied is not forced: a recursive one applies itself.
+  strictOp := do
+    let vs ← args.mapM (c.ev σ ρ)
+    c.strict o (← if o == "app" then pure vs else vs.mapM c.force)
 
 def eval (σ : St) (ρ : Env) : Expr → M Val
   | .bool b => pure (.bool b)

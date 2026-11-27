@@ -215,18 +215,11 @@ class Gen:
             lambda: f"{self.record(d + 1)}.a",
             lambda: f"{self.fcn(d + 1)}[{r.randint(0, 4)}]",
             lambda: self.lazy_fcn(d),
+            lambda: self.recursive(d),
             lambda: f"(LET y == {n()} IN y + {n()})",
             lambda: f"(CASE {self.bool(d + 1)} -> {n()} [] {self.bool(d + 1)} -> {n()} [] OTHER -> {n()})",
             lambda: f"(IF AssertError(\"bad\", [i \\in {{1, 2}} |-> i][0]) THEN {n()} ELSE {n()})",
         )
-
-    def bound(self, form, *parts):
-        """form with parts, {j} a fresh bound name: nested binders may not share one."""
-        self.lets += 1
-        return form.format(*parts, j=f"j{self.lets}")
-
-    def let(self, e, k):
-        return self.bound("(LET w{j} == {} IN (w{j} + 1) % {})", e, k)
 
     def bool(self, d=0):
         r = self.rng
@@ -291,6 +284,13 @@ class Gen:
             lambda: f"({s()} \\cup Int)",
             lambda: f"UNION {{{s()}, Nat}}",
         )
+
+    def recursive(self, d):
+        """A recursive function, which applies itself, applied."""
+        g = f"g{len(self.bound)}"
+        x, step = self.bind(lambda: self.int(d + 1))
+        return (f"(LET {g}[{x} \\in {self.rng.choice(['0..4', 'Nat'])}] == "
+                f"IF {x} <= 0 THEN {self.int(d + 1)} ELSE {g}[{x} - 1] + {step} IN {g}[{self.rng.randint(-1, 5)}])")
 
     def lazy_fcn(self, d):
         x, e = self.bind(lambda: self.int(d + 1))
