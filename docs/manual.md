@@ -515,7 +515,11 @@ check them either. `RandomElement`, `RandomSubset` and
 `RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
 and constants when model checking. A temporal property's counterexample
 whose cycle comes back into the state it starts in goes back to it;
-TLC prints it stuttering there, a behavior fairness may rule out.
+TLC prints it stuttering there, a behavior fairness may rule out. With
+`-view`, a VIEW whose value is a tuple as long as the constants and
+variables it depends on TLC prints as `/\ name = value` lines, pairing
+the tuple's values with them in the order of a Java hash set, which no
+specification determines; Manyan prints the value.
 
 Known gaps, not decisions, each to be closed:
 
