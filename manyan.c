@@ -17127,10 +17127,16 @@ static int tf_promise_box(TF *f) {
     return f && ((f->op == TF_EVENTUALLY && tf_box(f->a)) || tf_promise_box(f->a) || tf_promise_box(f->b));
 }
 
+/* The error model whose counterexample is printed, if one is. */
+typedef struct Pem Pem;
+static Pem *shown_pem;
+static int pem_conditions(Pem *p);
+
 /* TLC's warning after a counterexample that ends stuttering, that the
-   behavior specification may lack fairness. */
+   behavior specification may lack fairness: where the error model that
+   found it, or else the negation, has cycle conditions. */
 static void warn_stuttering(void) {
-    if (simulating || !tf_conditions(live_negated)) return;
+    if (simulating || !(shown_pem ? pem_conditions(shown_pem) : tf_conditions(live_negated))) return;
     if (!spec_def) {
         warning("The stuttering counterexample above may be caused by the absence of a behavior specification "
                 "(SPECIFICATION). Only INIT and NEXT have been provided, so TLC permits infinite stuttering. "
@@ -17645,7 +17651,13 @@ static int live_cut_violated(void) {
    negated properties is a conjunction of <>[]X, []<>S and []<>A
    (Liveness.processLiveness): each disjunct is a possible error model,
    searched in turn on the state graph (LiveWorker). */
-typedef struct { TFList ea, aes, aea, tf; uint64_t s_bits, ea_bits, aea_bits; } Pem;   /* <>[]X, []<>S, []<>A, the rest, for a tableau; bits of conds */
+struct Pem { TFList ea, aes, aea, tf; uint64_t s_bits, ea_bits, aea_bits; };   /* <>[]X, []<>S, []<>A, the rest, for a tableau; bits of conds */
+
+static int pem_conditions(Pem *p) {
+    int c = p->ea.n || p->aes.n || p->aea.n;
+    for (int i = 0; i < p->tf.n && !c; i++) c = tf_conditions(p->tf.v[i]);
+    return c;
+}
 typedef struct { TFList *v; int n; } Dnf;     /* n negative: too large */
 
 static Dnf dnf_one(TF *f) {
@@ -18324,9 +18336,11 @@ static void pem_print(int root, int *roots, int nroots) {
         la[k++] = act;
         if (i < path.n) at = k - 1;
     }
+    shown_pem = pem;
     if (k - 1 == at) print_lasso(ls, la, k, -1, la[k - 1], k - 1);   /* the cycle is the root's state */
     else if (ls[k - 1] == pnodes[root].state) print_lasso(ls, la, k - 1, at, la[k - 1], at);   /* back into it */
     else print_lasso(ls, la, k, at, edge_act(prev, root), at);
+    shown_pem = NULL;
 }
 
 /* The error models of the group of pems[i], those sharing its tableau,
@@ -26356,7 +26370,7 @@ static void reset_check(void) {
     Z(ntlc_fps); Z(order_slot); Z(order_cap); Z(order_used); Z(order_pend); Z(order_ncap); Z(steps_found);
     Z(steps_cap); Z(steps_order); Z(steps_ncap); Z(sim_edges); Z(nsim_edges); Z(fair_rest); Z(fair_rest_c);
     Z(nfair_rest); Z(search_arena); Z(pem_off); Z(pem_blocked); Z(npem_blocked); Z(accepted); Z(naccepted);
-    Z(live_negated); Z(snum); Z(sn1); Z(sn2); Z(sn3); Z(snfirst); Z(snsecond); Z(snstart2); Z(snstart3);
+    Z(live_negated); Z(shown_pem); Z(snum); Z(sn1); Z(sn2); Z(sn3); Z(snfirst); Z(snsecond); Z(snstart2); Z(snstart3);
     Z(scom); Z(build_stack); Z(nbuild_stack); Z(init_lits); Z(ninit_lits); Z(live_at); Z(eval_on_state);
     Z(nfollowed); Z(ngrown); Z(pem); Z(promises); Z(pem_in); Z(pem_job); Z(pem_njob); Z(pem_nroots);
     Z(pem_roots); Z(pem_models); Z(pem_found); Z(conds_s); Z(conds_e); Z(offers); Z(noffers); Z(pem_comp);
