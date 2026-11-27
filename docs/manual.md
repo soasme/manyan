@@ -554,8 +554,6 @@ Known gaps, not decisions, each to be closed:
   printing that state again and `State N: Stuttering` with the cycle's
   first number, where Manyan prints `Back to state N`. Both are behaviors
   that violate the property.
-- A subexpression of a LET definition, `F(1)!1` for `LET F(x) == {x}`, is
-  an error, where SANY accepts it and TLC evaluates it in the LET's scope.
 - Four of tlaplus/Examples print other output than TLC, for the reasons
   the [full benchmark](fullbench.md) gives.
 - `-symbolic` and `-typecheck`: what Apalache does that they do not is in

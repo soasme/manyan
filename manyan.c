@@ -2346,6 +2346,7 @@ struct Def {
     unsigned char memo;   /* 0 unknown, 1 its calls are memoized, 2 not */
     unsigned char unkept; /* calls in a row whose arguments were not of one value each */
     int local;
+    int scoped;           /* D_OP: a subexpression of a LET definition, evaluated in its call's scope */
     Expr *local_at;       /* a LOCAL definition's LOCAL, where SANY's location of it begins */
     int thm;              /* D_OP: a theorem's or assumption's name */
     int recursive;        /* declared RECURSIVE: in scope before it; 2 until it is resolved */
@@ -5107,7 +5108,7 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     if (d->kind == D_RECURSIVE) check_arity(e, d, e->segs[i].n, e->segs[i].args);   /* never defined, as SANY: one being defined */
     if (d->recursive == 2 || d->kind == D_RECURSIVE)
         semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
-    if (d->kind != D_OP || d->local == 2 || !d->body)
+    if (d->kind != D_OP || !d->body)
         semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
     Selection sel = {0};
     if (e->segs[i].n || !op) check_arity(e, d, e->segs[i].n, e->segs[i].args);
@@ -5198,6 +5199,7 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     f->mod = d->mod;
     f->where = d->where;
     f->level = f->var_index = -1;
+    f->scoped = d->local == 2 || d->scoped;   /* a call of it is in the LET, which binds all its body sees */
     f->nparams = sel.np;
     f->params = NEWN(Def *, sel.np);
     memcpy(f->params, sel.params, sizeof(Def *) * (size_t)sel.np);
@@ -8063,7 +8065,7 @@ static inline Value *eval(Expr *e, Ctx c) { return eval_fns[e->kind](e, c); }
 /* An argument for an operator parameter: an operator. */
 static Value *eval_operator_arg(Expr *a, Ctx c) {
     if (a->kind == X_LAMBDA || a->kind == X_OPREF) return eval(a, c);
-    if (a->kind == K_CALL && a->n == 0) return mk_oper(a->def, (Ctx){a->def->local == 2 ? c.env : NULL, c.inst});
+    if (a->kind == K_CALL && a->n == 0) return mk_oper(a->def, (Ctx){a->def->local == 2 || a->def->scoped ? c.env : NULL, c.inst});
     if (a->kind == K_PARAMCALL && a->n == 0 && a->def->kind == D_PARAM) {
         Env *b = env_find(c.env, a->def);
         if (!b) fail_at(a, "Unbound operator parameter %s.", S(a->def->name));
@@ -8199,7 +8201,7 @@ static Value *call_own(Def *d, Expr **args, int n, Ctx c, Expr *call) {
         Env *b = env_find(c.env, d);
         return force(b);
     }
-    if (n < d->nparams && n == 0) return mk_oper(d, (Ctx){d->local == 2 ? c.env : NULL, c.inst});
+    if (n < d->nparams && n == 0) return mk_oper(d, (Ctx){d->local == 2 || d->scoped ? c.env : NULL, c.inst});
     if (d->local == 2) {
         /* A LET definition: its parameters, then its closure. */
         Env *b = env_find(c.env, d);
@@ -8224,11 +8226,11 @@ static Value *call_own(Def *d, Expr **args, int n, Ctx c, Expr *call) {
     }
     Inst *in = c.inst;
     while (in && in->def == &enabled_mark) in = in->parent;
-    if (n == 0 && !in) {   /* a definition of the spec, computed once if constant */
+    if (n == 0 && !in && !d->scoped) {   /* a definition of the spec, computed once if constant */
         if (d->cache) return d->cache;
         if (def_level(d) == 0 && !keep_lazy && !d->uncached) return cache_def(d);
     }
-    Env *env = NULL;
+    Env *env = d->scoped ? c.env : NULL;
     for (int i = 0; i < n; i++) {
         if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(args[i], c), env);
         else env = mk_arg(d->params[i], args[i], c, env);
@@ -10813,7 +10815,7 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
         int whole = d->native != NULL;
         for (int i = 0; i < e->n; i++) whole |= expr_level(e->args[i]) > 0;
         if (whole) { add_action(e, c, e->def->name, e, NULL); return; }
-        Env *volatile env = d->local == 2 ? c.env : NULL;   /* a LET definition sees the LET */
+        Env *volatile env = d->local == 2 || d->scoped ? c.env : NULL;   /* a LET definition sees the LET */
         EvalState es = eval_save();
         ErrorState er = error_save();
         sigjmp_buf here;
@@ -10943,7 +10945,7 @@ static int arg_pure(Expr *e, Env *env) {
     }
     if (e->kind == K_PARAMCALL || e->kind == X_LET || e->kind == X_LAMBDA || e->nb) return 0;   /* names bound inside, or unknown */
     if (e->kind == K_CALL || e->kind == K_INSTCALL || e->kind == X_OPREF) {
-        if (!e->def || e->def->local == 2 || (def_scan(e->def) & SCAN_IMPURE)) return 0;
+        if (!e->def || e->def->local == 2 || e->def->scoped || (def_scan(e->def) & SCAN_IMPURE)) return 0;
         for (int i = 0; i < e->ndefs; i++) if (e->defs[i]->nsubst) return 0;
     }
     for (int i = 0; i < e->n; i++) if (!arg_pure(e->args[i], env)) return 0;
@@ -10968,7 +10970,7 @@ static Memo *memos;
 static size_t nmemos, capmemos;
 
 static int memo_candidate(Def *d) {
-    if (d->kind != D_OP || d->native || d->replacement || !d->body || d->local == 2 || d->nparams < 1 || d->nparams > MEMO_ARGS) return 0;
+    if (d->kind != D_OP || d->native || d->replacement || !d->body || d->local == 2 || d->scoped || d->nparams < 1 || d->nparams > MEMO_ARGS) return 0;
     for (int i = 0; i < d->nparams; i++) if (d->params[i]->arity) return 0;
     return def_level(d) == 0 && (def_scan(d) & SCAN_LOOPS);
 }
