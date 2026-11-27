@@ -2239,6 +2239,8 @@ enum {
     X_SETENUM, X_TUPLE, X_RECORD, X_RCDSET, X_FCNSET, X_FCN, X_APPLY, X_DOT, X_EXCEPT,
     X_FILTER, X_MAP, X_FORALL, X_EXISTS, X_CHOOSE, X_IF, X_CASE, X_LET,
     X_SQACT, X_ANGLEACT, X_WF, X_SF, X_TFORALL, X_TEXISTS,
+    X_ASSUMEPROVE,   /* a theorem's ASSUME items PROVE e: args the items, then e */
+    X_NEW,           /* an item NEW c \in S: def, args the set, if any */
     X_RESOLVED,
     /* resolved */
     K_BOUND,     /* a bound name or operator parameter: def */
@@ -2380,6 +2382,7 @@ typedef struct {
     int kw;               /* statement keyword id (for -fmt) */
     int group;            /* declarations from one statement share a group > 0 (for -fmt) */
     int proved;           /* a theorem with a proof, which -fmt prints as written */
+    Expr *assume;         /* a theorem's ASSUME ... PROVE, only resolved */
 } Unit;
 
 struct Module {
@@ -2423,7 +2426,7 @@ static const char *keywords[] = {
     "STRING", "SUBSET", "THEN", "THEOREM", "TRUE", "UNCHANGED", "UNION", "VARIABLE", "VARIABLES",
     "WITH", "WF_", "SF_", "LAMBDA", "RECURSIVE", "LEMMA", "PROPOSITION", "COROLLARY", "PROOF", "BY",
     "OBVIOUS", "OMITTED", "QED", "USE", "HIDE", "DEFS", "DEF", "SUFFICES", "HAVE", "TAKE", "WITNESS",
-    "PICK", "NEW", "ACTION", "STATE", "TEMPORAL", "ONLY", NULL};
+    "PICK", "NEW", "ACTION", "STATE", "TEMPORAL", "ONLY", "PROVE", "DEFINE", NULL};
 
 static const char *symbols[] = {
     "(\\X)", "-+->", "<=>", "...", "::=", "|->", "(+)", "(-)", "(.)", "(/)",
@@ -3892,6 +3895,47 @@ static void skip_proof(void) {
         if (is_kw(next(), "HIDE")) hide_facts();
 }
 
+/* ASSUME items PROVE e, after ASSUME at t: each item a declaration, NEW c,
+   NEW c \in S, NEW VARIABLE v, NEW F(_)..., an ASSUME ... PROVE, or an
+   expression. */
+static Expr *parse_assume_prove(Tok *t) {
+    Expr *e = mk_expr(X_ASSUMEPROVE, t);
+    do {
+        Tok *s = peek();
+        if (is_kw(s, "ASSUME")) {
+            next();
+            PUSH(e->args, e->n, parse_assume_prove(s));
+            continue;
+        }
+        int decl = is_kw(s, "NEW"), kind = D_CONST, constant = 1;
+        if (decl) next();
+        Tok *k = peek();
+        if (is_kw(k, "CONSTANT") || is_kw(k, "VARIABLE") || is_kw(k, "STATE") || is_kw(k, "ACTION") || is_kw(k, "TEMPORAL")) {
+            decl = 1, kind = is_kw(k, "VARIABLE") ? D_VAR : D_CONST, constant = is_kw(k, "CONSTANT");
+            next();
+        }
+        if (!decl) {
+            PUSH(e->args, e->n, parse_expr());
+            continue;
+        }
+        Expr *x = mk_expr(X_NEW, peek());
+        x->def = parse_param(kind);
+        if (x->def->arity && kind == D_VAR) syntax_error("expected a variable");
+        if (is_op(peek(), "\\in")) {   /* of a constant only */
+            if (!constant || x->def->arity) syntax_error("expected , or PROVE");
+            next();
+            Expr *set = parse_expr();
+            PUSH(x->args, x->n, set);
+        }
+        finish(x);
+        PUSH(e->args, e->n, x);
+    } while (is_op(peek(), ",") && next());
+    expect_kw("PROVE");
+    PUSH(e->args, e->n, parse_expr());
+    finish(e);
+    return e;
+}
+
 /* A module: ---- MODULE Name ---- units ====. */
 static Module *parse_module(Module *outer) {
     Module *m = NEW(Module);
@@ -3972,18 +4016,19 @@ static Module *parse_module(Module *outer) {
             next();
             Def *d = NULL;
             if (peek()->kind == T_IDENT && is_op(peek_at(1), "==")) { d = thm_name(next()->id, t); next(); add_name(m, d); }
-            /* A theorem's statement is kept for its subexpressions; ASSUME ... PROVE is not. */
-            Expr *body = NULL;
-            if (!is_kw(peek(), "ASSUME")) {
-                body = parse_expr();
-                if (d) d->body = body;
-                Tok *p = peek();   /* then its proof, if any */
-                if (!at_unit_start() && p->kind != T_STEP && !is_kw(p, "PROOF") && !is_kw(p, "BY") && !is_kw(p, "OBVIOUS") && !is_kw(p, "OMITTED"))
-                    syntax_error("expected a proof or a definition");
-            }
+            /* A theorem's statement is kept for its subexpressions; ASSUME ... PROVE is
+               only resolved. */
+            Expr *body = NULL, *assume = NULL;
+            if (is_kw(peek(), "ASSUME")) assume = parse_assume_prove(next());
+            else body = parse_expr();
+            if (d) d->body = body;
+            Tok *p = peek();   /* then its proof, if any */
+            if (!at_unit_start() && p->kind != T_STEP && !is_kw(p, "PROOF") && !is_kw(p, "BY") && !is_kw(p, "OBVIOUS") && !is_kw(p, "OMITTED"))
+                syntax_error("expected a proof or a definition");
             int after = P->pos;
             skip_proof();
             Unit *u = add_unit(m, 6, d, body, NULL, 0);
+            u->assume = assume;
             u->proved = P->pos != after;
             unit_span(u, first, prev_tok(), t->id, 0);
             continue;
@@ -5670,6 +5715,22 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
     }
 }
 
+/* An ASSUME ... PROVE: each item, then its PROVE, with the names NEW
+   declares in scope after them, but not out of an ASSUME ... PROVE item. */
+static void resolve_assume(Expr *e, Scope *sc) {
+    for (int i = 0; i < e->n - 1; i++) {
+        Expr *x = e->args[i];
+        if (x->kind == X_ASSUMEPROVE) resolve_assume(x, sc);
+        else if (x->kind != X_NEW) resolve_expr(x, sc);
+        else {
+            if (x->n) resolve_expr(x->args[0], sc);
+            x->def->mod = cur_module;
+            sc = bind(sc, x->def->name, x->def);
+        }
+    }
+    resolve_expr(e->args[e->n - 1], sc);
+}
+
 static void resolve_def(Def *d, Scope *sc) {
     d->mod = cur_module;
     Scope *inner = sc, *saved_lb = label_bounds;
@@ -5974,6 +6035,12 @@ static void resolve_module(Module *m) {
         } else if (u->kind == 2 || u->kind == 6) {
             Expr at = text_span(m, u->pos, u->end);
             if (pending_rec) semantic_error(&at, "A%s may not appear within a recursive definition section.", u->kind == 2 ? "n ASSUME" : " THEOREM");
+            if (u->assume) {   /* its NEW names in scope after them */
+                int saved_in_def = in_def_body;
+                in_def_body = u->def != NULL;
+                resolve_assume(u->assume, NULL);
+                in_def_body = saved_in_def;
+            }
             if (!u->def && u->expr) {   /* a named one is resolved with its name */
                 int saved_in_def = in_def_body;
                 Scope *saved_lb = label_bounds;

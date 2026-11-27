@@ -1,0 +1,4 @@
+SEMANTIC ERROR
+line 4, col 20 to line 4, col 20 of module assume_new_conflict
+Multiply-defined symbol 'x': this definition or declaration conflicts
+with the one at line 3, col 10 to line 3, col 10 of module assume_new_conflict.
