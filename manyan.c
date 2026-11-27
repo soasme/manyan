@@ -12158,6 +12158,9 @@ static int continued_trace(const char *check, int name, Value **st) {
 }
 
 static int live_fails(int own);
+static int live_fails_from(int lo, int own);
+static void live_print(int fp);
+static void live_watch(int n);
 static void live_first(void);
 
 /* Whether a step to st violates an action property, which TLC checks
@@ -13352,25 +13355,32 @@ static int search(void) {
            With -continue it reports the deadlock, which replaces the error,
            or else reports the error again as it replays it: of one it
            cannot fingerprint, only the behavior. */
-        if (succ_count == 0 && check_deadlock && keep_going) {
+        int deadlocked = succ_count == 0 && check_deadlock;
+        if (deadlocked && keep_going) {
             printf("Error: Deadlock reached.\n");
             reported_trace(expanding, NULL, 0);
+        }
+        if (deadlocked && !keep_going) rebuild_for_posts(expanding, NULL, 0);
+        ErrorState first = error_save();
+        /* With -continue TLC replays the step, its properties on the state
+           first: an error there it reports, then the first again. */
+        int replayed = keep_going ? live_fails_from(expanding, 1) : 0;
+        if (replayed) live_print(replayed == 2);
+        else if (deadlocked && keep_going) {
+            xfree(first.msg.s);
             print_counts(nstates - expanded);
             return MANYAN_VIOLATION_DEADLOCK;
-        }
-        if (succ_count == 0 && check_deadlock) rebuild_for_posts(expanding, NULL, 0);
-        ErrorState first = error_save();
-        replay_error(from);
+        } else replay_error(from);
         if (keep_going) {   /* the error first found, as TLC reports it again */
-            ErrorState replayed = error_save();
+            ErrorState again = error_save();
             error_restore(&first);
             if (nfp) print_trace(expanding, NULL, 0);
             else print_next_failure(expanding, NULL, 0, status);
-            error_restore(&replayed);
+            error_restore(&again);
         } else xfree(first.msg.s);
         print_unfingerprinted(fps, nfp);
         print_counts(nstates - expanded);
-        if (status == MANYAN_FAILURE_EVAL && (error_module == 1 || live_fails(1))) status = MANYAN_ERROR;
+        if (status == MANYAN_FAILURE_EVAL && !keep_going && (error_module == 1 || live_fails(1))) status = MANYAN_ERROR;
         return status;
     }
     gen_target = succ;
@@ -13413,6 +13423,7 @@ static int search(void) {
         if (exit_requested) break;
         growth = (double)(nstates - hi) / (hi - lo);
         lo = hi;
+        live_watch(lo);
     }
     expanding = -1;
     if (ntemporal_props) {
@@ -13777,7 +13788,7 @@ static void report_exception(int in_behavior) {
 /* A simulated behavior: its states and the actions into them. */
 static int *sim_order, *sim_acts, sim_n;
 
-static void live_eval(int n, int own);
+static void live_eval(int lo, int n, int own);
 
 /* Whether a temporal property fails on the behavior, as TLC checks one:
    without its finite stuttering, each state may stutter or take its
@@ -13811,7 +13822,7 @@ static int sim_violates(States *trace) {
     if (sigsetjmp(here, 0)) {   /* the error TLC meets first */
         handler = outer;
         ErrorState first = error_save();
-        live_eval(nstates, 0);
+        live_eval(0, nstates, 0);
         error_restore(&first);
         raise_error();
     }
@@ -17253,8 +17264,8 @@ static void live_eval_on(int s) {
             holds_in(atoms[i]->atom, atoms[i]->c, state_values(s), NULL);
 }
 
-/* TLC's evaluation on the first n states, then on state n's own if own. */
-static void live_eval(int n, int own) {
+/* TLC's evaluation on states lo to n, then on state n's own if own. */
+static void live_eval(int lo, int n, int own) {
     tf_reset();
     for (int p = 0; p < ntemporal_props; p++) {
         int from = natoms;
@@ -17262,7 +17273,7 @@ static void live_eval(int n, int own) {
         eval_on_state = xrealloc(eval_on_state, (size_t)natoms + 1);
         memset(eval_on_state + from, flat, (size_t)(natoms - from));
     }
-    for (live_at = 0; live_at < n; live_at++) {
+    for (live_at = lo; live_at < n; live_at++) {
         int s = live_at;
         Edges *r = &state_edges[s];
         for (int e = 0; e <= r->nedges; e++) {
@@ -17285,15 +17296,18 @@ static void live_eval(int n, int own) {
 
 /* TLC's report of the error live_eval met at live_at: of a value it
    cannot fingerprint (fp), only the behavior. */
-static int live_report(int fp) {
-    handler = NULL;
+static void live_print(int fp) {
     if (!fp) {
-        printf("\n");
         if (eval_failure_status() == MANYAN_FAILURE_EVAL && error_module != 1) print_exception("java.lang.RuntimeException", ": ");
         else printf("Error: ");
         print_error_text();
     }
     print_trace(live_at, NULL, 0);
+}
+static int live_report(int fp) {
+    handler = NULL;
+    if (!fp) printf("\n");
+    live_print(fp);
     print_counts_after(live_at);
     return MANYAN_ERROR;
 }
@@ -17303,11 +17317,10 @@ static int live_report(int fp) {
    on a state expanded before it, or (own) on its own predicates, which TLC
    evaluates first as it replays an error in Next, but for a value it cannot
    fingerprint. Live_at is where, and 2 is returned for a value it cannot
-   fingerprint; the error is the one met first but for one of the states
-   expanded before. Not with -continue, which goes on with the properties
-   as they are. */
-static int live_fails(int own) {
-    if (!ntemporal_props || simulating || keep_going || expanding < 0) return 0;
+   fingerprint; the error is the one met, or else the one before. Lo is
+   the first state not yet evaluated. */
+static int live_fails_from(int lo, int own) {
+    if (!ntemporal_props || simulating || expanding < 0) return 0;
     EvalState es = eval_save();
     ErrorState first = error_save();
     const char *java = error_java;
@@ -17321,29 +17334,51 @@ static int live_fails(int own) {
     handler = &here;
     volatile int failed = sigsetjmp(here, 0) != 0;
     if (failed) failed += fp_depth > 0;
-    else live_eval(expanding, own);
+    else live_eval(lo, expanding, own);
     handler = outer;
     arena_free(&scratch_arena);
     scratch_arena = search;
     arena = saved;
     eval_restore(es);
-    if (failed && live_at < expanding) xfree(first.msg.s);
+    if (failed) xfree(first.msg.s);
     else error_restore(&first), error_java = java;
-    return live_at < expanding || failed == 1 ? failed : 0;
+    return failed;
 }
 
 /* Before the search reports what it meets expanding a state: an error
    TLC met before it, which it reports instead. */
+static int live_clean;   /* the states before it evaluated without an error */
+static int live_fails(int own) {
+    int failed = live_fails_from(live_clean, own);
+    if (!failed) live_clean = expanding;
+    return live_at < expanding || failed == 1 ? failed : 0;
+}
 static void live_first(void) {
     int failed = live_fails(0);
     if (failed) stop(live_report(failed == 2));
+}
+
+/* TLC evaluates the properties on each state it expands and stops at an
+   error there, where Manyan evaluates them after the search. So that it
+   stops too on a state space without end, it tries the last state
+   expanded once there are 2^16, and each time they double; at an error
+   there, it finds the first as TLC does. */
+static int live_watched;
+static void live_watch(int n) {
+    if (n < 65536 || n < 2 * live_watched) return;
+    live_watched = n;
+    expanding = n;
+    if (live_fails_from(n - 1, 0)) {
+        int failed = live_fails_from(live_clean, 0);
+        stop(live_report(failed == 2));
+    }
 }
 
 static int live_error(void) {
     sigjmp_buf here;
     handler = &here;
     if (sigsetjmp(here, 0)) return live_report(fp_depth > 0);
-    live_eval(nstates, 0);
+    live_eval(0, nstates, 0);
     /* Not found so: as it came. */
     handler = NULL;
     print_error_message();
@@ -26208,6 +26243,7 @@ static void reset_check(void) {
     sim_traces_max = -1, sim_depth = 100;
     live_expanded = -1;
     live_cut = -1;
+    live_watched = live_clean = 0;
     live_step = -1;
     follow = -1;
     growth = 1;
