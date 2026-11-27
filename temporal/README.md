@@ -2,20 +2,20 @@
 
 Declare behavioural specifications in Python using the semantics of TLA⁺.
 
-Python's standard `typing` module describes the types of values a program accepts
-and produces. `temporal` extends that idea to state transitions, invariants,
-function contracts, temporal properties, behavioural protocols, and model
-configurations—written directly in Python using standard PEP 593 type
-annotations and ordinary Python expressions.
+Python's standard `typing` module describes the types of values that a program
+accepts and produces. `temporal` extends that idea to state transitions,
+invariants, function contracts, temporal properties, behavioural protocols, and
+model configurations—declared directly at the signature level using PEP 593
+`Annotated` type annotations and ordinary Python expressions.
 
 ```sh
 pip install temporal
 ```
 
-`temporal` is purely a declaration library with **zero third-party dependencies**.
-It does not implement a compiler, static analyser, model checker, or runtime
-verification engine. Verification is performed externally by tools such as
-[Manyan](https://github.com/soasme/manyan):
+`temporal` is purely a passive declaration library with **zero third-party
+dependencies**. It does not implement a compiler, static analyser, runtime
+inspector, model checker, or runtime verification engine. Verification is
+performed externally by tools such as [Manyan](https://github.com/soasme/manyan):
 
 | Declaration library | Verification tool |
 | --- | --- |
@@ -24,11 +24,11 @@ verification engine. Verification is performed externally by tools such as
 
 ## Quick start
 
-### Executable state machine with contracts
+### Signature-level specifications on an executable class
 
 ```python
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, ClassVar
 from temporal import (
     Action, ActionInvariant, Const, Ensures, Ghost, Init, Invariant,
     Model, Modifies, Requires, State, Where, old, prime,
@@ -43,14 +43,11 @@ class BankAccount:
     balance: State[int] = 0
     ledger: Ghost[tuple[int, ...]] = ()
 
-    def init(self) -> Init:
-        return self.balance == 0 and self.ledger == ()
-
-    def non_negative(self) -> Invariant:
-        return self.balance >= 0
-
-    def ledger_append_only(self) -> ActionInvariant:
-        return len(prime(self.ledger)) >= len(self.ledger)
+    init: ClassVar[Annotated[Init, lambda self: self.balance == 0 and self.ledger == ()]]
+    non_negative: ClassVar[Annotated[Invariant, lambda self: self.balance >= 0]]
+    ledger_append_only: ClassVar[
+        Annotated[ActionInvariant, lambda self: len(prime(self.ledger)) >= len(self.ledger)]
+    ]
 
     def deposit(self, amount: Positive) -> Annotated[
         Action[None],
@@ -78,11 +75,12 @@ model = Model(BankAccount, constants={"owner": "alice"}, domains={int: range(1, 
 
 Annotated classes remain ordinary Python:
 
-- They execute natively with zero runtime validation overhead.
+- They execute natively with zero runtime overhead or predicate evaluation.
+- Specifications live at the signature level without polluting runtime attributes or methods.
 - They work with `@dataclass`, `Protocol`, `Generic`, inheritance, and `from __future__ import annotations`.
 - They pass `mypy --strict` and `Pyright` because every declaration annotation (`State[T]`, `Const[T]`, `Action[T]`, `Invariant`, ...) is a PEP 593 `Annotated` alias over its underlying Python type.
 
-### Declarative TLA⁺ specification with fairness and liveness
+### Behavioural protocol with fairness and liveness
 
 ```python
 from typing import Annotated, Optional
@@ -102,11 +100,19 @@ class Mutex:
     holder: State[Optional[Proc]]
     waiting: State[frozenset[Proc]]
 
-    def non_empty(self) -> Assume:
-        return len(self.procs) > 0
-
-    def init(self) -> Init:
-        return self.holder is None and self.waiting == frozenset()
+    non_empty: Annotated[Assume, lambda self: len(self.procs) > 0]
+    init: Annotated[Init, lambda self: self.holder is None and self.waiting == frozenset()]
+    fair: Annotated[
+        Fairness,
+        lambda self: all(
+            strong_fairness(self.acquire(p)) and weak_fairness(self.release(p))
+            for p in self.procs
+        ),
+    ]
+    starvation_free: Annotated[
+        Property,
+        lambda self: all(leads_to(p in self.waiting, self.holder == p) for p in self.procs),
+    ]
 
     def request(self, p: Proc) -> Annotated[
         Action[bool],
@@ -126,15 +132,6 @@ class Mutex:
     ]:
         return prime(self.holder) is None and unchanged(self.waiting)
 
-    def fair(self) -> Fairness:
-        return all(
-            strong_fairness(self.acquire(p)) and weak_fairness(self.release(p))
-            for p in self.procs
-        )
-
-    def starvation_free(self) -> Property:
-        return all(leads_to(p in self.waiting, self.holder == p) for p in self.procs)
-
 
 PROCS = Symmetry({Proc("p1"), Proc("p2"), Proc("p3")})
 mutex_model = Model(Mutex, constants={"procs": PROCS}, domains={Proc: PROCS})
@@ -143,6 +140,8 @@ mutex_model = Model(Mutex, constants={"procs": PROCS}, domains={Proc: PROCS})
 ## API overview
 
 ### Declaration annotations (TLA⁺'s four levels)
+
+Every declaration alias carries a `Role` marker inside `typing.Annotated`:
 
 | Annotation | Underlying type | TLA⁺ level | Meaning |
 | --- | --- | --- | --- |
@@ -169,30 +168,24 @@ mutex_model = Model(Mutex, constants={"procs": PROCS}, domains={Proc: PROCS})
 - `StrongFairness(*variables)` — strong fairness metadata on an action (`SF_v(A)`)
 - `Refines[Spec]` — refinement mapping to an abstract specification (`INSTANCE ... WITH`)
 
-### Expression primitives
+### Expression primitives (passive TLA⁺ stubs)
 
-- Single-state (executable at runtime): `implies(p, q)`, `iff(p, q)`, `choose(domain, predicate=None)`
-- Action-level (declarative only): `old(x)`, `prime(x)`, `unchanged(*xs)`, `enabled(action)`
-- Temporal-level (declarative only): `always(p)`, `eventually(p)`, `leads_to(p, q)`, `weak_fairness(action, *, on=None)`, `strong_fairness(action, *, on=None)`
+- Logical: `implies(p, q)`, `iff(p, q)`, `choose(domain, predicate=None)`
+- Action-level: `old(x)`, `prime(x)`, `unchanged(*xs)`, `enabled(action)`
+- Temporal-level: `always(p)`, `eventually(p)`, `leads_to(p, q)`, `weak_fairness(action, *, on=None)`, `strong_fairness(action, *, on=None)`
 
-Calling a declarative-only primitive directly at runtime raises `SpecificationError`.
+All expression primitives are purely declarative and raise `NotImplementedError` if called directly at runtime.
 
 ### Model configuration
 
 - `ModelValue(name)` — uninterpreted TLA⁺ model value (subclass for disjoint sorts)
 - `Symmetry(iterable)` — `frozenset` subclass marking a `SYMMETRY` set
-- `Model(spec, *, constants=..., domains=..., ...)` — immutable `.cfg` declaration
-
-### Passive reflection
-
-- `Role`, `TemporalMetadata`, `FieldInfo`, `ContractInfo`, `SpecInfo`
-- `is_temporal_metadata`, `get_metadata`, `get_role`, `strip_temporal`
-- `get_contract(func)`, `get_spec(cls_or_module)`
+- `Model(spec, *, constants=..., domains=..., ...)` — frozen `.cfg` declaration
 
 ## Documentation and examples
 
-- [Specification Semantics](docs/semantics.md) — formal TLA⁺ semantics of every declaration, operator, contract, refinement, and model configuration.
-- [User Guide](docs/guide.md) — patterns for state machines, contracts, protocols, refinement, and model configurations.
+- [Specification Semantics](docs/semantics.md) — formal TLA⁺ semantics of every declaration, contract clause, refinement, expression mapping, and model configuration.
+- [User Guide](docs/guide.md) — practical patterns for signature-level specs, contracts, protocols, refinement, and models.
 - [Examples](examples/) — `die_hard.py`, `bank_account.py`, `bounded_queue.py`, `mutex.py`, `two_phase_commit.py`, `contracts.py`.
 
 ## License
