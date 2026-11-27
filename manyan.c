@@ -2256,7 +2256,7 @@ typedef struct {
     Expr *set;      /* NULL for an unbounded binding */
     int line, col;  /* of its first name */
     int pos;        /* byte offset of its start (for -fmt) */
-    Expr *builtin;  /* where its first name is TRUE, FALSE, BOOLEAN or STRING */
+    Expr **at;      /* where each name is */
 } Bound;
 
 /* A segment of A!B(x)!C, or a subexpression selector (§5.7): !2, !<<, !>>,
@@ -2948,10 +2948,10 @@ static Expr *parse_name(void) {
 /* A bound name, which SANY rejects as it resolves it if TRUE, FALSE,
    BOOLEAN or STRING. */
 static void bound_name(Bound *b) {
-    Tok *t = peek();
-    int id = expect_ident();
-    if (t->kind == T_KW && !b->builtin) b->builtin = mk_expr(X_BOOL, t), b->builtin->op = id;
-    PUSH(b->names, b->n, id);
+    Expr *at = mk_expr(X_NAME, peek());
+    int n = b->n;
+    PUSH(b->at, n, at);
+    PUSH(b->names, b->n, expect_ident());
 }
 
 /* `x, y \in S, <<a, b>> \in T` or, unbounded, `x, y`. */
@@ -4444,6 +4444,8 @@ static void loc_line(Buf *b, Expr *e) {
     node_text(b, e);
 }
 
+static Module *file_module(Module *m);
+static void print_warnings(Module *m);
 static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
     if (breakpoint) breakpoint_error(0, NULL);
     char msg[1024];
@@ -4451,6 +4453,7 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
+    if (cur_module && file_module(cur_module)->nwarnings) print_warnings(file_module(cur_module));   /* SANY's, before its errors */
     printf("Semantic errors:\n\n*** Errors: 1\n\n%s\n\n%s\n\n", loc_str(where), msg);
     printf("Error: Parsing or semantic analysis failed.\n");
     stop(MANYAN_ERROR_PARSE);
@@ -4459,14 +4462,47 @@ static _Noreturn void semantic_error(Expr *where, const char *fmt, ...) {
 static Def *scope_lookup(Scope *sc, int name);
 static Sym *module_lookup(Module *m, int name);
 
+/* A definition's location as SANY gives it: from its name to the end of its body. */
+static Expr def_span(Def *d) {
+    Expr e = *d->where;
+    Expr *b = d->body;
+    if (b) { e.l2 = b->pl2 ? b->pl2 : b->l2; e.c2 = b->pl2 ? b->pc2 : b->c2; }
+    return e;
+}
+
+static void file_loc_text(Buf *b, Expr *e);
+static int def_arity(Def *d);
+/* d, at where, has the name of old, in its scope. As SANY: an operator's
+   definition is an error, and so is a symbol of another kind or arity; a
+   declaration or definition again as it was is a warning, old kept. */
+static void redefined(Def *old, Def *d, Expr *where) {
+    int defined = d->kind == D_OP || d->kind == D_FCN;
+    Expr here = defined ? def_span(d) : *where, there = old->kind == D_OP || old->kind == D_FCN ? def_span(old) : *old->where;
+    Buf h = {0}, t = {0};
+    file_loc_text(&h, &here);
+    file_loc_text(&t, &there);
+    if (old->kind == d->kind && def_arity(old) == def_arity(d) && (d->kind == D_CONST || d->kind == D_VAR || d->kind == D_OP)) {
+        Module *file = file_module(cur_module);
+        buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
+                   h.s, S(d->name), t.s);
+        file->nwarnings++;
+    } else if (!defined) {
+        semantic_error(where, "Multiply-defined symbol '%s': this definition or declaration conflicts \nwith the one at %s.", S(d->name), t.s);
+    }
+    if (defined)
+        semantic_error(&here, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(d->name));
+    xfree(h.s);
+    xfree(t.s);
+}
+
 /* A new name in scope, which must not hide one (§5.6). */
 static Scope *bind(Scope *sc, int name, Def *d) {
     if (builtin_name(name) && d->where && d->kind != D_OP && d->kind != D_FCN)
         semantic_error(d->where, "Symbol %s is a built-in operator, and cannot be redefined.", S(name));
     Def *old = scope_lookup(sc, name);
     Sym *sym = old || !cur_module ? NULL : module_lookup(cur_module, name);
-    if ((old && old != d) || (sym && sym->def != d))
-        semantic_error(d->where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(name));
+    if (old && old != d) redefined(old, d, d->where);
+    else if (sym && sym->def != d) redefined(sym->def, d, d->where);
     Scope *s = NEW(Scope);
     s->name = name; s->def = d; s->next = sc;
     return s;
@@ -4524,6 +4560,7 @@ static int nwarnings;
 static void print_warnings(Module *m) {
     buf_add(&warnings, m->warnings.s ? m->warnings.s : "", m->warnings.n);
     nwarnings += m->nwarnings;
+    m->nwarnings = 0, m->warnings.n = 0;
     if (nwarnings) printf("*** Warnings: %d\n\n%s", nwarnings, warnings.s);
 }
 
@@ -4532,13 +4569,6 @@ static Sym *own_sym(Module *m, int name) {
     return NULL;
 }
 
-/* A definition's location as SANY gives it: from its name to the end of its body. */
-static Expr def_span(Def *d) {
-    Expr e = *d->where;
-    Expr *b = d->body;
-    if (b) { e.l2 = b->pl2 ? b->pl2 : b->l2; e.c2 = b->pl2 ? b->pc2 : b->c2; }
-    return e;
-}
 
 /* Whether the symbol d, which m extends or, with instance, instantiates,
    gives way to another of its name m has: as SANY, with a warning, keeping
@@ -4594,8 +4624,10 @@ static void add_sym(Module *m, int name, Def *def, Def **path, int npath, int lo
     for (int i = 0; i < m->nsyms; i++)
         if (m->syms[i].name == name) {
             if (m->syms[i].def == def) return;
-            if (def->kind != D_RECURSIVE && m->syms[i].def->kind != D_RECURSIVE && npath == 0 && m->syms[i].npath == 0)
-                semantic_error(where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(name));
+            if (def->kind != D_RECURSIVE && m->syms[i].def->kind != D_RECURSIVE && npath == 0 && m->syms[i].npath == 0) {
+                redefined(m->syms[i].def, def, where);
+                return;
+            }
             m->syms[i].def = def; m->syms[i].path = path; m->syms[i].npath = npath; m->syms[i].local = local;
             return;
         }
@@ -4724,12 +4756,12 @@ static void resolve_bounds(Expr *e, Scope **sc) {
     for (int i = 0; i < e->nb; i++) if (e->bounds[i].set) resolve_expr(e->bounds[i].set, outer);
     for (int i = 0; i < e->nb; i++) {
         Bound *b = &e->bounds[i];
-        if (b->builtin) semantic_error(b->builtin, "Symbol %s is a built-in operator, and cannot be redefined.", S(b->builtin->op));
         b->defs = NEWN(Def *, b->n);
         for (int j = 0; j < b->n; j++) {
             Def *d = NEW(Def);
             d->kind = D_BOUND;
             d->name = b->names[j];
+            d->where = b->at[j];
             d->var_index = -1;
             b->defs[j] = d;
             *sc = bind(*sc, d->name, d);
@@ -5233,7 +5265,7 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
             if (d->kind == D_RECURSIVE) {
                 for (int j = 0; j < i; j++)
                     if (e->defs[j]->name == d->name)
-                        semantic_error(d->where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(d->name));
+                        redefined(e->defs[j], d, d->where);
                 Def *found = NULL;
                 for (int k = i + 1; k < e->ndefs && !found; k++)
                     if (e->defs[k]->kind != D_RECURSIVE && e->defs[k]->name == d->name) found = e->defs[k];
@@ -5487,7 +5519,7 @@ static void resolve_module(Module *m) {
                 d->mod = m;
                 check_outer(m, d);
                 add_sym(m, d->name, d, NULL, 0, 0, d->where);
-                add_decl(m, d);
+                if (own_sym(m, d->name)->def == d) add_decl(m, d);   /* not one again, which SANY ignores */
             } else if (d->kind == D_OP || d->kind == D_FCN || d->kind == D_INST) {
                 if (d->recursive && pending_rec > 0) pending_rec--;
                 resolve_def(d, NULL);
@@ -5507,8 +5539,8 @@ static void resolve_module(Module *m) {
             resolve_def(d, NULL);
             add_sym(m, d->name, d, NULL, 0, 0, d->where);
         } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
-            if (own_sym(m, u->def->name))
-                semantic_error(u->def->where, "Multiply-defined symbol '%s': this definition or declaration conflicts with another one.", S(u->def->name));
+            Sym *own = own_sym(m, u->def->name);
+            if (own) redefined(own->def, u->def, u->def->where);
             Def *found = NULL;
             for (int k = i + 1; k < m->nunits && !found; k++)
                 if (m->units[k].kind == 0 && m->units[k].def->name == u->def->name &&

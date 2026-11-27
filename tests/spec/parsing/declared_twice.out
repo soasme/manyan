@@ -1,0 +1,27 @@
+*** Warnings: 2
+
+line 5, col 13 to line 5, col 13 of module declared_twice
+
+Multiple declarations or definitions for symbol N.
+This duplicates the one at line 5, col 10 to line 5, col 10 of module declared_twice.
+
+line 6, col 13 to line 6, col 13 of module declared_twice
+
+Multiple declarations or definitions for symbol x.
+This duplicates the one at line 6, col 10 to line 6, col 10 of module declared_twice.
+
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 8, col 9 to line 8, col 27 of module declared_twice>
+x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 27 of module declared_twice>
+x = 2
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

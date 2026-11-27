@@ -520,6 +520,10 @@ TLC prints it stuttering there, a behavior fairness may rule out. With
 variables it depends on TLC prints as `/\ name = value` lines, pairing
 the tuple's values with them in the order of a Java hash set, which no
 specification determines; Manyan prints the value.
+SANY reads `{y \in E}`, with no colon, with all of `E` as the right side
+of `\in`, unchecked for precedence: `{y \in S /\ P}` is `{y \in (S /\
+P)}` to TLC, and `{y \in S = T}` parses. Manyan follows TLA⁺'s
+precedence: the first is `{(y \in S) /\ P}`, the second a conflict.
 
 Known gaps, not decisions, each to be closed:
 
