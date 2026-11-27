@@ -1,0 +1,101 @@
+"""Tests for contract, framing, fairness, and refinement clauses."""
+
+from __future__ import annotations
+
+import dataclasses
+import unittest
+from typing import Any
+
+from temporal import (
+    Ensures,
+    Modifies,
+    Refines,
+    Requires,
+    StrongFairness,
+    Unchanged,
+    WeakFairness,
+    Where,
+)
+
+
+def _boom(*args: Any, **kwargs: Any) -> bool:
+    raise AssertionError("Predicate must never be executed by Temporal")
+
+
+class TestPredicateClauses(unittest.TestCase):
+    def test_where_requires_ensures_passive_and_immutable(self) -> None:
+        for cls in (Where, Requires, Ensures):
+            clause = cls(_boom, "must not run")
+            self.assertIs(clause.predicate, _boom)
+            self.assertEqual(clause.description, "must not run")
+            self.assertEqual(clause, cls(_boom, "must not run"))
+            self.assertEqual(hash(clause), hash(cls(_boom, "must not run")))
+            with self.assertRaises(dataclasses.FrozenInstanceError):
+                clause.description = "mutated"  # type: ignore[misc]
+
+            no_desc = cls(_boom)
+            self.assertIsNone(no_desc.description)
+            self.assertNotEqual(clause, no_desc)
+
+    def test_predicate_validation(self) -> None:
+        for cls in (Where, Requires, Ensures):
+            with self.assertRaises(TypeError):
+                cls(True)  # type: ignore[arg-type]
+            with self.assertRaises(TypeError):
+                cls("x > 0")  # type: ignore[arg-type]
+            with self.assertRaises(TypeError):
+                cls(_boom, 123)  # type: ignore[arg-type]
+
+
+class TestVariableClauses(unittest.TestCase):
+    def test_modifies_unchanged_fairness(self) -> None:
+        for cls in (Modifies, Unchanged, WeakFairness, StrongFairness):
+            empty = cls()
+            self.assertEqual(empty.variables, ())
+            one = cls("balance")
+            self.assertEqual(one.variables, ("balance",))
+            two = cls("small", "big")
+            self.assertEqual(two.variables, ("small", "big"))
+            self.assertEqual(two, cls("small", "big"))
+            self.assertEqual(hash(two), hash(cls("small", "big")))
+            self.assertNotEqual(two, cls("big", "small"))
+            with self.assertRaises(dataclasses.FrozenInstanceError):
+                two.variables = ()  # type: ignore[misc]
+
+    def test_variable_validation(self) -> None:
+        for cls in (Modifies, Unchanged, WeakFairness, StrongFairness):
+            with self.assertRaises(TypeError):
+                cls(123)  # type: ignore[arg-type]
+            with self.assertRaises(TypeError):
+                cls(["balance"])  # type: ignore[arg-type]
+            for bad in ("", " ", "1abc", "a-b", "self.x"):
+                with self.assertRaises(ValueError):
+                    cls(bad)
+
+
+class TestRefines(unittest.TestCase):
+    def test_identity_and_mapping(self) -> None:
+        empty: Refines[Any] = Refines()
+        self.assertEqual(dict(empty.mapping), {})
+        self.assertEqual(repr(empty), "Refines()")
+
+        r: Refines[Any] = Refines(capacity=3, items=(1, 2))
+        self.assertEqual(r.mapping["capacity"], 3)
+        self.assertEqual(r.mapping["items"], (1, 2))
+        self.assertEqual(r, Refines(capacity=3, items=(1, 2)))
+        self.assertNotEqual(r, Refines(capacity=4, items=(1, 2)))
+        self.assertNotEqual(r, {"capacity": 3, "items": (1, 2)})
+        self.assertEqual(repr(r), "Refines(capacity=3, items=(1, 2))")
+
+    def test_immutability(self) -> None:
+        r: Refines[Any] = Refines(x=1)
+        with self.assertRaises(TypeError):
+            r.mapping["x"] = 2  # type: ignore[index]
+        with self.assertRaises(AttributeError):
+            r.x = 2  # type: ignore[attr-defined]
+        with self.assertRaises(AttributeError):
+            del r.mapping  # type: ignore[misc]
+
+
+if __name__ == "__main__":
+    unittest.main()

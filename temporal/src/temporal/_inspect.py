@@ -105,7 +105,7 @@ def strip_temporal(annotation: Any) -> Any:
 
 
 def _extract_refines_target(annotation: Any) -> Optional[Any]:
-    base = strip_temporal(annotation)
+    base = get_args(annotation)[0] if get_origin(annotation) is Annotated else annotation
     if base is Refines:
         return Any
     if get_origin(base) is Refines:
