@@ -419,17 +419,18 @@ def Model.inModel (md : Model) (s : Option State) (t : State) : M Bool := do
           | none => pure true))
 
 /-- The reachable states, breadth first, and the depth each is found at;
-then the states found by steps outside the constraints, with theirs:
-TLC checks each state's invariants as it finds it, and keeps only those
-its constraints allow. -/
-def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) := do
+then the states found outside the constraints, with theirs and the state
+each is a step from, if any: TLC checks each state's invariants and each
+step's action properties as it finds them, and keeps only the states its
+constraints allow. -/
+def Model.explore (md : Model) : M (Graph × Array Nat × List (Option State × State × Nat)) := do
   let mut states : Array State := #[]
   let mut ids : Std.HashMap (List (List Int)) Nat := {}
   let mut depth : Array Nat := #[]
-  let mut outside : List (State × Nat) := []
+  let mut outside : List (Option State × State × Nat) := []
   for s in md.univ do
     if !(← md.init.allM (·.holdsInit md.c s)) then continue
-    if !(← md.inModel none s) then outside := (s, 1) :: outside; continue
+    if !(← md.inModel none s) then outside := (none, s, 1) :: outside; continue
     ids := ids.insert (stateKey s) states.size
     states := states.push s
     depth := depth.push 1
@@ -441,7 +442,7 @@ def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) :
     for t in ← md.steps states[i]! do
       -- TLC's behaviors may always stutter, whatever the action constraints.
       if stateKey t != stateKey states[i]! && !(← md.inModel (some states[i]!) t) then
-        outside := (t, depth[i]! + 1) :: outside; continue
+        outside := (some states[i]!, t, depth[i]! + 1) :: outside; continue
       let j ← match ids.get? (stateKey t) with
         | some j => pure j
         | none => do
@@ -455,17 +456,19 @@ def Model.explore (md : Model) : M (Graph × Array Nat × List (State × Nat)) :
     i := i + 1
   pure ({ states, init, succ }, depth, outside)
 
-/-- `P` of a property `[]P`, `P` a state predicate. -/
-def invariantOf (c : Ctx) (e : Expr) : M (Option (Expr × Env)) := do
+/-- `P` of a property `[]P`, `P` a state predicate or `[A]_v`, and
+whether it is an action. -/
+def boxOf (c : Ctx) (e : Expr) : M (Option (Expr × Env × Bool)) := do
   match ← toLtl c [] true e with
-  | .always (.atom (.op "[A]_" _) _ _) => pure none
-  | .always (.atom p ρ true) => pure (some (p, ρ))
+  | .always (.atom p@(.op "[A]_" _) ρ true) => pure (some (p, ρ, true))
+  | .always (.atom p ρ true) => pure (some (p, ρ, false))
   | _ => pure none
 
 def Model.check (md : Model) : M Verdict := do
   let (g, depth, outside) ← md.explore
   let c := md.c
-  let least (ρ : Env) (e : Expr) (among := (List.range g.states.size).map (fun i => (g.states[i]!, depth[i]!)) ++ outside) :
+  let least (ρ : Env) (e : Expr) (among := (List.range g.states.size).map (fun i => (g.states[i]!, depth[i]!)) ++
+      outside.map fun (_, t, d) => (t, d)) :
       M (Option Nat) :=
     among.foldlM (init := none) fun l (s, d) => do
       pure (if ← holds c s none ρ e then l else some (min d (l.getD d)))
@@ -481,9 +484,13 @@ def Model.check (md : Model) : M Verdict := do
         if !moves then deadlock := some (min depth[i]! (deadlock.getD depth[i]!))
   let mut properties := []
   for (x, e) in md.properties do
-    -- A state outside the constraints TLC finds is no behavior's, but TLC checks []P on it.
-    let outsideViolates ← match ← invariantOf c e with
-      | some (p, ρ) => do pure (← least ρ p outside).isSome
+    -- A state outside the constraints TLC finds is no behavior's, but TLC checks []P on
+    -- it, and [][A]_v on the step to it.
+    let outsideViolates ← match ← boxOf c e with
+      | some (p, ρ, false) => do pure (← least ρ p (outside.map fun (_, t, d) => (t, d))).isSome
+      | some (a, ρ, true) => outside.anyM fun
+          | (some s, t, _) => do pure !(← holds c s (some t) ρ a)
+          | (none, _, _) => pure false
       | none => pure false
     let violated ← pure outsideViolates <||> satisfiable c g (md.fairness.foldl .and (← toLtl c [] false e))
     properties := properties ++ [(x, !violated)]
