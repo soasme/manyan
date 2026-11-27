@@ -467,10 +467,9 @@ expected output is Manyan's, and the oracle does not run it.
 Not supported, by decision, each for the reason given:
 
 - the proof language: TLC checks no proof, and neither does Manyan. It
-  parses and resolves proofs as SANY, but for a part of an `ASSUME ...
-  PROVE` (`Thm!lab`, `<1>1!2`), which it does not check in a proof and
-  refuses outside one, and an `INSTANCE` step, whose names it does not
-  bring.
+  parses and resolves proofs as SANY, but for an `INSTANCE` step, whose
+  names it does not bring, and a part of a step that is not an assertion
+  (`<1>1!1` of `<1>1. CASE e`), which it does not check.
 - a subexpression of a function definition, `f!(3)` of `f[a \in S] ==
   e`: SANY takes it of `[a \in S |-> e]`, Manyan refuses it.
 - `-terse`: TLC prints a value as it builds it, an operator's body

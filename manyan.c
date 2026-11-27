@@ -4044,7 +4044,12 @@ static Expr *parse_proof(int level) {
             if (step_numbered(s)) {   /* <1>2. is <1>2, of the expression it asserts, if one */
                 const char *n = S(s->id);
                 step->def = thm_name(intern_n(n, (int)strlen(n) - (n[strlen(n) - 1] == '.')), s);
-                if ((step->op == S_ASSERT || step->op == S_SUFFICES) && step->args[2]->kind != X_ASSUMEPROVE) step->def->body = step->args[2];
+                if (step->op == S_ASSERT) step->def->body = step->args[2];
+                if (step->op == S_SUFFICES) {   /* SUFFICES e: e its only part */
+                    Expr *w = step->def->body = mk_expr(X_STEP, s);
+                    w->op = S_SUFFICES;
+                    PUSH(w->args, w->n, step->args[2]);
+                }
             }
             PUSH(e->args, e->n, step);
             if (qed) break;
@@ -4181,7 +4186,7 @@ static Module *parse_module(Module *outer) {
             Expr *body = NULL, *assume = NULL;
             if (is_kw(peek(), "ASSUME")) assume = parse_assume_prove(next());
             else body = parse_expr();
-            if (d) d->body = body;
+            if (d) d->body = assume ? assume : body;
             Tok *p = peek();   /* then its proof, if any */
             if (!at_unit_start() && p->kind != T_STEP && !is_kw(p, "PROOF") && !is_kw(p, "BY") && !is_kw(p, "OBVIOUS") && !is_kw(p, "OMITTED"))
                 syntax_error("expected a proof or a definition");
@@ -5183,7 +5188,11 @@ static void check_temporal(Expr *e) {
 }
 
 static int in_proof_expr;   /* resolving a proof's: @ is the last step's right side there */
-static int in_def_body;       /* 1 inside a definition body where labels are permitted */
+static Expr *fact_now;      /* the fact of a proof being resolved: it may name ASSUME ... PROVE */
+
+/* Whether d names an ASSUME ... PROVE: a theorem's or a step's. */
+static int is_assume_prove(Def *d) { return (d->thm || d->kind == D_THM) && d->body && d->body->kind == X_ASSUMEPROVE; }
+static int in_def_body;       /* 1 inside a definition body where labels are permitted; 2 where a nested ASSUME ... PROVE's NEW forbids them */
 static Scope *label_bounds;   /* locally-bound identifiers required as label parameters */
 
 static Scope *push_label_bound(Scope *lb, int name, Def *d) {
@@ -5295,6 +5304,19 @@ static int lets_to(Expr *x, Expr *y, Expr **lets, int n) {
     return r;
 }
 
+/* Whether y in x is outside the scope of every NEW of an ASSUME ... PROVE
+   around it, or that NEW is in scope sc. */
+static int declared_in_scope(Expr *x, Expr *y, Scope *sc) {
+    Expr *lets[64];
+    for (int i = 0; x->kind == X_ASSUMEPROVE && i < x->n; i++) {
+        if (lets_to(x->args[i], y, lets, 0) >= 0) return declared_in_scope(x->args[i], y, sc);
+        if (x->args[i]->kind == X_NEW && scope_lookup(sc, x->args[i]->def->name) != x->args[i]->def) return 0;
+    }
+    for (int i = 0; x->kind != X_ASSUMEPROVE && i < x->n; i++)
+        if (lets_to(x->args[i], y, lets, 0) >= 0) return declared_in_scope(x->args[i], y, sc);
+    return 1;
+}
+
 /* Which of n operands selector sel picks, from 1; 0 for none. */
 static int operand(int sel, int n) {
     if (sel > 0) return sel <= n ? sel : 0;
@@ -5336,7 +5358,7 @@ static void take(Selection *sel, Expr *e, Def **defs, int n, Seg *seg) {
    an operator of every parameter met on the way: d's, the labels', and the
    identifiers !(c) or !@ bind. Its arguments, if given, are in *args;
    only an operator argument (op) may leave them out. */
-static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int op) {
+static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int op, Scope *sc) {
     if (d->kind == D_RECURSIVE) check_arity(e, d, e->segs[i].n, e->segs[i].args);   /* never defined, as SANY: one being defined */
     if (d->recursive == 2 || d->kind == D_RECURSIVE)
         semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
@@ -5350,8 +5372,11 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
     for (int k = i + 1; k < e->nseg; k++) {
         Seg *s = &e->segs[k];
         if (s->sel == 0 && names) {
+            Expr *in = cur;
             cur = find_label(cur, s->name, own);
             if (!cur) semantic_error(seg_at(e, s), "Cannot find label `%s'.", S(s->name));
+            if (!declared_in_scope(in, cur, sc))
+                semantic_error(seg_at(e, s), "Accessing subexpression labeled `%s' of ASSUME/PROVE clause within the scope of a declaration\n from outside that declaration's scope.", S(s->name));
             if (cur->label->n && !cur->label->defs) semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
             if ((s->n || !op) && s->n != cur->label->n)
                 semantic_error(seg_at(e, s), "Label `%s' used with wrong number of arguments.", S(s->name));
@@ -5370,7 +5395,15 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
         } else {
             int n = 0;
             if (cur->kind == X_NUM || cur->kind == X_STR) semantic_error(seg_at(e, s), "Selecting subexpression of expression that has none.");
-            if (cur->kind == X_LET) {
+            if (cur->kind == X_NEW) semantic_error(seg_at(e, s - 1), "Selected a subexpression of a NEW clause of an ASSUME.");   /* at what picked it */
+            if (cur->kind == X_STEP) {   /* SUFFICES e */
+                if (!(n = operand(s->sel, 1))) semantic_error(seg_at(e, s), "Accessing non-existent subexpression of a SUFFICES");
+                cur = cur->args[0];
+            } else if (cur->kind == X_ASSUMEPROVE) {
+                if ((n = operand(s->sel, cur->n)) && !declared_in_scope(cur, cur->args[n - 1], sc))
+                    semantic_error(seg_at(e, s), "Accessing ASSUME/PROVE clause within the scope of a declaration\n from outside that declaration's scope.");
+                if (n) cur = cur->args[n - 1];
+            } else if (cur->kind == X_LET) {
                 if (operand(s->sel, 1)) n = 1, cur = cur->args[0];
             } else if (cur->nb) {
                 if (s->sel == SEL_NULL || s->sel == SEL_AT) {
@@ -5413,6 +5446,8 @@ static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int 
             names = 0, own = 0;
         }
     }
+    if (cur->kind == X_NEW && e != fact_now) semantic_error(e, "Selected a NEW declaration as an expression or operator.");
+    if (cur->kind == X_ASSUMEPROVE && e != fact_now) semantic_error(e, "Selected ASSUME/PROVE instead of expression.");
     if (sel.missing && sel.nargs) semantic_error(e, "The operator %s requires %d arguments.", S(e->op), sel.np);
     /* The LET definitions around the subexpression are in scope in it. */
     Expr *lets[64];
@@ -5518,7 +5553,7 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
         } else if (i + 1 < e->nseg) {
             resolve_call_args(d, s, sc, e);
             for (int k = i + 1; k < e->nseg; k++) resolve_args(e->segs[k].args, e->segs[k].n, sc);
-            d = subexpression(e, d, i, &args, &nargs, want_arity > 0);
+            d = subexpression(e, d, i, &args, &nargs, want_arity > 0, sc);
             break;
         } else {
             int da = def_arity(d);
@@ -5550,7 +5585,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
         Def *d = scope_lookup(sc, e->segs[0].name);
         Sym *sym = d ? NULL : module_lookup(cur_module, e->segs[0].name);
         if (sym) d = sym->def;
-        if (d && (d->kind == D_THM || d->thm) && !d->body) { e->kind = X_BOOL; e->num = 1; return; }
+        if (d && d->kind == D_THM && !d->body) { e->kind = X_BOOL; e->num = 1; return; }
     }
     if (e->nseg > 1) { resolve_path(e, sc, want_arity); return; }
     Seg *s = &e->segs[0];
@@ -5559,6 +5594,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
     Def *d = scope_lookup(sc, s->name);
     if (d) {
         if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
+        if (is_assume_prove(d) && e != fact_now) semantic_error(e, "ASSUME/PROVE used where an expression is required.");
         int da = def_arity(d);
         if (want_arity > 0) {
             if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
@@ -5590,7 +5626,7 @@ static void resolve_name(Expr *e, Scope *sc, int want_arity) {
     }
     d = sym->def;
     if (d->kind == D_INST) semantic_error(e, "Operator name %s is incomplete.", S(d->name));
-    if (d->thm && !d->body) semantic_error(e, "ASSUME/PROVE used where an expression is required.");
+    if (is_assume_prove(d) && e != fact_now) semantic_error(e, "ASSUME/PROVE used where an expression is required.");
     int da = def_arity(d);
     if (want_arity > 0) {
         if (da != want_arity) semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, da);
@@ -5719,6 +5755,7 @@ static void resolve_expr(Expr *e, Scope *sc) {
         Label *l = e->label;
         Expr *at = label_span(e);
         if (!in_def_body) semantic_error(at, "Label not in definition or proof step.");
+        if (in_def_body == 2) semantic_error(at, "Label not allowed within scope of declaration in nested ASSUME/PROVE.");
         if (in_except_rhs) semantic_error(at, "Labels inside EXCEPT clauses are not yet implemented.");
         for (int i = 0; i < l->n; i++)
             for (int j = 0; j < i; j++)
@@ -5890,18 +5927,21 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
 
 /* An ASSUME ... PROVE: each item, then its PROVE, with the names NEW
    declares in scope after them, but not out of an ASSUME ... PROVE item. */
-static Scope *resolve_assume(Expr *e, Scope *sc) {
+static Scope *resolve_assume(Expr *e, Scope *sc, int nested) {
+    int saved_in_def = in_def_body;
     for (int i = 0; i < e->n - 1; i++) {
         Expr *x = e->args[i];
-        if (x->kind == X_ASSUMEPROVE) resolve_assume(x, sc);
+        if (x->kind == X_ASSUMEPROVE) resolve_assume(x, sc, 1);
         else if (x->kind != X_NEW) resolve_expr(x, sc);
         else {
             if (x->n) resolve_expr(x->args[0], sc);
             x->def->mod = cur_module;
             sc = bind(sc, x->def->name, x->def);
+            if (nested && in_def_body) in_def_body = 2;   /* no label after a nested one's NEW */
         }
     }
     resolve_expr(e->args[e->n - 1], sc);
+    in_def_body = saved_in_def;
     return sc;
 }
 
@@ -5966,14 +6006,12 @@ static Scope *resolve_proof(Expr *e, Scope *sc) {
     } else {
         for (int i = 2; i < e->n; i++) {
             Expr *x = e->args[i];
-            if (e->op <= S_HIDE && x->kind == X_NAME && x->nseg == 1 && !x->segs[0].n && !scope_lookup(sc, x->segs[0].name)) {
-                Sym *sym = module_lookup(cur_module, x->segs[0].name);
-                if (sym && sym->def->thm && !sym->def->body) continue;   /* a fact: the name of ASSUME ... PROVE */
-            }
+            fact_now = e->op <= S_HIDE ? x : NULL;
             if (x->kind == X_MODULE) resolve_module_name(x);
             else if (x->kind != X_ASSUMEPROVE) resolve_expr(x, sc);
-            else if (e->op == S_SUFFICES) after = resolve_assume(x, sc);
-            else in = resolve_assume(x, sc);
+            else if (e->op == S_SUFFICES) after = resolve_assume(x, sc, 0);
+            else in = resolve_assume(x, sc, 0);
+            fact_now = NULL;
         }
         for (int i = 2; e->op == S_HIDE && i < e->n; i++) {   /* once all are */
             Expr *x = e->args[i];
@@ -6258,7 +6296,7 @@ static void resolve_module(Module *m) {
             d->kind = D_OP;
             d->thm = 1;
             d->level = d->var_index = -1;
-            if (d->body) resolve_def(d, NULL);
+            if (d->body && d->body->kind != X_ASSUMEPROVE) resolve_def(d, NULL);   /* that one with its theorem */
             add_sym(m, d->name, d, NULL, 0, 0, d->where);
         } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
             Sym *own = own_sym(m, u->def->name);
@@ -6314,7 +6352,7 @@ static void resolve_module(Module *m) {
             if (u->assume || u->proof) {   /* the NEW names in scope after them, and in its proof */
                 int saved_in_def = in_def_body;
                 in_def_body = u->def != NULL;
-                Scope *sc = u->assume ? resolve_assume(u->assume, NULL) : NULL;
+                Scope *sc = u->assume ? resolve_assume(u->assume, NULL, 0) : NULL;
                 in_def_body = 1;   /* a proof step may have labels */
                 resolve_proof(u->proof, sc);
                 in_def_body = saved_in_def;
@@ -6355,7 +6393,7 @@ static void resolve_module(Module *m) {
             int l = expr_level(u->expr);
             if (l) semantic_error(u->where, "Level error: assumptions must be level 0 (Constant), \nbut this one has level %d.", l);
         } else if (u->kind == 6 && !u->def && u->expr) check_levels(u->expr, 3);
-        else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
+        else if (u->kind == 4 && u->def->body && u->def->body->kind != X_ASSUMEPROVE) check_levels(u->def->body, 3);
         else if (u->kind == 1 || (u->kind == 0 && u->def->kind != D_CONST && u->def->kind != D_VAR)) check_def_levels(u->def);
     }
     if (!m->outer) { print_warnings(m); lint_records(m); }
@@ -25232,6 +25270,7 @@ static void tc_walk(Module *m, TInst *frame, Module ***seen, int *nseen, Module 
             continue;
         }
         if (u->kind == 4 && u->def->body && u->def->kind != D_RECURSIVE) {   /* ASSUME Name == ...: Name, an operator */
+            if (u->def->body->kind == X_ASSUMEPROVE) continue;
             Sym *s = module_lookup(m, u->def->name);
             if (s && s->def != u->def) { TDecl d = {frame, s->def, NULL, NULL, 0}; PUSH(tc_decls, tc_ndecls, d); }
             continue;
@@ -27160,7 +27199,7 @@ static void reset_check(void) {
     Z(frames); Z(frozen); Z(capframes); Z(small_ints); Z(root); Z(P); Z(stack_limit); Z(breakpoint);
     Z(eof_tok); Z(unit_section); Z(binary_nesting); Z(cfg_depth); Z(fmt_comments); Z(nfmt_comments); Z(fmt_mode); Z(fmt_group); Z(symbolic_mode); Z(sym_cinit_name); Z(modules);
     Z(nmodules); Z(finished); Z(nfinished); Z(spec_dir); Z(root_text); Z(config_text); Z(cur_module);
-    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(in_proof_expr); Z(in_def_body); Z(label_bounds); Z(lint); Z(level_probe); Z(every_argument);
+    Z(warnings); Z(nwarnings); Z(open_defs); Z(nopen_defs); Z(in_except_rhs); Z(in_proof_expr); Z(fact_now); Z(in_def_body); Z(label_bounds); Z(lint); Z(level_probe); Z(every_argument);
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
     Z(shifted); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);

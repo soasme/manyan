@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 3, col 47 to line 3, col 58 of module assume_prove_nested_label
+Label not allowed within scope of declaration in nested ASSUME/PROVE.
