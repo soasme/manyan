@@ -3306,9 +3306,23 @@ static Expr *parse_primary(void) {
                 finish(e);
                 return e;
             }
+            /* As SANY, { a, b \in and { <<...>> \in begin a filter, of one
+               name or a tuple of names. */
+            int k = 0, names = 1, depth = 0;
+            if (is_op(peek(), "<<")) {
+                for (k = 1; peek_at(k)->kind != T_EOF && (depth || !is_op(peek_at(k), ">>")); k++) {
+                    depth += is_op(peek_at(k), "<<") - is_op(peek_at(k), ">>");
+                    if (!(k % 2 ? is_name(peek_at(k)) : is_op(peek_at(k), ","))) names = 0;
+                }
+                if (is_op(peek_at(k + 1), "\\in") && (!names || k % 2)) syntax_error("expected an identifier");
+            } else {
+                while (is_name(peek_at(k)) && is_op(peek_at(k + 1), ",")) k += 2;
+                if (k && is_name(peek_at(k)) && is_op(peek_at(k + 1), "\\in")) syntax_error("expected :");
+            }
             if (binder_ahead()) {
                 e = mk_expr(X_FILTER, t);
                 int start = P->pos;
+                Tok *open = peek();
                 Bound b = {.tuple = is_op(peek(), "<<"), .pos = peek()->pos};
                 if (b.tuple) next();
                 b.line = peek()->line;
@@ -3335,6 +3349,12 @@ static Expr *parse_primary(void) {
                         finish(e);
                         return e;
                     }
+                }
+                if (b.tuple) {   /* SANY's, of the tuple taken for a binder */
+                    Expr *at = mk_expr(X_NAME, open);
+                    Tok *close = &P->t[start + 2 * b.n];
+                    at->l2 = close->eline, at->c2 = close->ecol;
+                    semantic_error_later(at, "Unexpected token found.");
                 }
                 P->pos = start;
             }
