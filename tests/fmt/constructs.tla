@@ -25,7 +25,7 @@ LetOp ==
         /\ f' = [f EXCEPT
             ![1] = @ + 1,  \* increment first
             ![2] = 0       \* reset second
-        ]
+          ]
 
 QuantOp == \A a \in 1..5 : \E b \in {k \in 1..5 : k > a} : b = a + 1
 MapOp == {n * 2 : n \in 1..5}

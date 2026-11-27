@@ -2902,7 +2902,6 @@ static Expr **parse_args(int *count) {
     Expr **args = NULL;
     int n = 0;
     int saved = P->limit;
-    P->limit = 0;
     expect_op("(");
     for (;;) {
         Tok *t = peek();
@@ -3252,8 +3251,7 @@ static Expr *parse_primary(void) {
         if (is_op(t, "(")) {
             next();
             int saved = P->limit;
-            P->limit = 0;
-            e = parse_expr();
+                    e = parse_expr();
             P->limit = saved;
             expect_op(")");
             /* A parenthesized expression keeps its location; what encloses it spans the parentheses. */
@@ -3269,8 +3267,7 @@ static Expr *parse_primary(void) {
         if (is_op(t, "<<")) {
             next();
             int saved = P->limit;
-            P->limit = 0;
-            Expr **a = NULL;
+                    Expr **a = NULL;
             int n = 0;
             if (!is_op(peek(), ">>") && !is_op(peek(), ">>_"))
                 do PUSH(a, n, parse_expr()); while (is_op(peek(), ",") && next());
@@ -3295,8 +3292,7 @@ static Expr *parse_primary(void) {
         if (is_op(t, "{")) {
             next();
             int saved = P->limit;
-            P->limit = 0;
-            Expr **a = NULL;
+                    Expr **a = NULL;
             int n = 0;
             if (is_op(peek(), "}")) {
                 next();
@@ -3366,8 +3362,7 @@ static Expr *parse_primary(void) {
         if (is_op(t, "[")) {
             next();
             int saved = P->limit;
-            P->limit = 0;
-            /* As SANY, a record's first field may be a keyword too: [IF |-> 1]. */
+                    /* As SANY, a record's first field may be a keyword too: [IF |-> 1]. */
             if ((peek()->kind == T_IDENT && is_op(peek_at(1), ":")) || (is_field(peek()) && is_op(peek_at(1), "|->"))) {
                 int set = is_op(peek_at(1), ":");
                 e = mk_expr(set ? X_RCDSET : X_RECORD, t);
@@ -3500,8 +3495,7 @@ static Expr *parse_postfix(void) {
             Tok *start = t;
             next();
             int saved = P->limit;
-            P->limit = 0;
-            Expr *app = mk_expr(X_APPLY, start);
+                    Expr *app = mk_expr(X_APPLY, start);
             PUSH(app->args, app->n, e);
             do PUSH(app->args, app->n, parse_expr()); while (is_op(peek(), ",") && next());
             expect_op("]");
