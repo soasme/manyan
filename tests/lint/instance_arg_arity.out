@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 6, col 8 to line 6, col 13 of module instance_arg_arity
+Expected arity 1 but found operator of arity 2.

@@ -5554,6 +5554,8 @@ static void resolve_path(Expr *e, Scope *sc, int want_arity) {
             resolve_call_args(d, s, sc, e);
             for (int k = i + 1; k < e->nseg; k++) resolve_args(e->segs[k].args, e->segs[k].n, sc);
             d = subexpression(e, d, i, &args, &nargs, want_arity > 0, sc);
+            if (want_arity > 0 && def_arity(d) != want_arity)
+                semantic_error(e, "Expected arity %d but found operator of arity %d.", want_arity, def_arity(d));
             break;
         } else {
             int da = def_arity(d);
@@ -5660,8 +5662,72 @@ static const char *sany_name(int op) {
    without arguments, an operator symbol or a LAMBDA. As SANY, an argument
    otherwise is an error before its parts. */
 static int operator_shaped(Expr *a) {
-    return a->kind == X_LAMBDA || a->kind == X_OPREF || a->kind == X_BOOL ||
-           (a->kind == X_NAME && !a->segs[a->nseg - 1].n) || (a->kind == X_OP && !a->n && (a->op == intern("STRING") || a->op == intern("BOOLEAN")));
+    Seg *last = a->kind == X_NAME ? &a->segs[a->nseg - 1] : NULL;
+    return a->kind == X_LAMBDA || a->kind == X_OPREF || a->kind == X_BOOL || (last && (!last->n || last->sel == SEL_NULL)) ||
+           (a->kind == X_OP && !a->n && (a->op == intern("STRING") || a->op == intern("BOOLEAN")));
+}
+
+/* As SANY, no selector of a name where an operator is wanted has
+   arguments: they are the operator's. */
+static void selectors_bare(Expr *a) {
+    for (int i = 0; a->kind == X_NAME && a->nseg > 1 && i < a->nseg; i++)
+        if (a->segs[i].n)
+            semantic_error(seg_at(a, &a->segs[i]), "Selector `%s' should not have argument(s).",
+                           a->segs[i].sel == SEL_NULL ? "!(...)" : S(a->segs[i].name));
+}
+
+/* I!F where an operator of arity want is, with I's parameters not given:
+   as TLC, LAMBDA a, b : I(a)!F(b), of I's parameters and then F's. */
+static void instance_lambda(Expr *a, Scope *sc, int want) {
+    Module *m = cur_module;
+    Def *d = NULL;
+    int take[32] = {0}, n = 0;   /* the parameters each segment is given */
+    for (int i = 0; i < a->nseg && i < 32; i++) {
+        Seg *s = &a->segs[i];
+        Sym *sym = NULL;
+        if (i == 0 && !(d = scope_lookup(sc, s->name))) sym = module_lookup(m, s->name);
+        if (i > 0 && (sym = module_lookup(m, s->name)) && sym->local) sym = NULL;
+        if (sym) d = sym->def;
+        if (!d || s->sel) return;
+        if (i + 1 == a->nseg) break;
+        if (d->kind != D_INST) return;   /* a subexpression */
+        if (!s->n) n += take[i] = d->nparams;
+        m = d->target;
+        d = NULL;
+    }
+    if (!n || !d || a->nseg > 32) return;
+    n += take[a->nseg - 1] = def_arity(d);
+    if (n != want) semantic_error(a, "Expected arity %d but found operator of arity %d.", want, n);
+    Def *op = NEW(Def);
+    op->kind = D_OP;
+    op->name = intern("LAMBDA");
+    op->nparams = n;
+    op->params = NEWN(Def *, n);
+    op->level = op->var_index = -1;
+    Expr *body = op->body = NEW(Expr);
+    *body = *a;
+    body->segs = NEWN(Seg, a->nseg);
+    memcpy(body->segs, a->segs, sizeof(Seg) * (size_t)a->nseg);
+    for (int i = 0, k = 0; i < a->nseg; i++) {
+        Seg *s = &body->segs[i];
+        if (!take[i]) continue;
+        s->n = take[i];
+        s->args = NEWN(Expr *, take[i]);
+        for (int j = 0; j < take[i]; j++, k++) {
+            char name[16];
+            snprintf(name, sizeof name, "$%d", k + 1);   /* no name of the specification's */
+            Def *p = op->params[k] = NEW(Def);
+            p->kind = D_PARAM;
+            p->name = intern(name);
+            Expr *x = s->args[j] = NEW(Expr);
+            *x = *a;
+            x->nseg = 1;
+            x->segs = NEW(Seg);
+            x->segs[0] = (Seg){.name = p->name, .line = s->line, .col = s->col};
+        }
+    }
+    a->kind = X_LAMBDA;
+    a->def = op;
 }
 
 /* Argument idx of op, or of the module op_name instantiates, which takes
@@ -5673,6 +5739,8 @@ static void resolve_arg(Expr *a, Scope *sc, int want, int idx, const char *op_na
     if (!operator_shaped(a))
         semantic_error(a, "An expression appears as argument number %d (counting from 1) to operator '%s', in a position an operator is required.",
                        idx + 1, op_name);
+    selectors_bare(a);
+    if (a->kind == X_NAME && a->nseg > 1) instance_lambda(a, sc, want);
     if (a->kind == X_BOOL || a->kind == X_OP)   /* TRUE, STRING: SANY's built-in constants */
         semantic_error(a, "Expected arity %d but found operator of arity 0.", want);
     if (a->kind == X_LAMBDA) {
@@ -5752,32 +5820,35 @@ static void resolve_expr(Expr *e, Scope *sc) {
     Scope *saved_lb = label_bounds;
     int labeled = 0;
     if (e->label && !e->label->defs) {
-        Label *l = e->label;
         Expr *at = label_span(e);
         if (!in_def_body) semantic_error(at, "Label not in definition or proof step.");
         if (in_def_body == 2) semantic_error(at, "Label not allowed within scope of declaration in nested ASSUME/PROVE.");
         if (in_except_rhs) semantic_error(at, "Labels inside EXCEPT clauses are not yet implemented.");
-        for (int i = 0; i < l->n; i++)
-            for (int j = 0; j < i; j++)
-                if (l->names[i] == l->names[j]) semantic_error(at, "Repeated formal parameter %s \nin label `%s'.", S(l->names[i]), S(l->name));
-        l->defs = NEWN(Def *, l->n);
-        for (int i = 0; i < l->n; i++)
-            if (!(l->defs[i] = scope_lookup(sc, l->names[i])))
-                semantic_error(l->at[i], "Illegal parameter %s of label `%s'.", S(l->names[i]), S(l->name));
-        for (Scope *s = label_bounds; s; s = s->next) {
-            int found = 0;
-            for (int i = 0; i < l->n && !found; i++) found = l->names[i] == s->name;
-            if (!found) semantic_error(at, "Label %s must contain formal parameter `%s'.", S(l->name), S(s->name));
-        }
-        Buf extra = {0};   /* as SANY, all of them */
-        for (int i = 0; i < l->n; i++)
-            if (!scope_lookup(label_bounds, l->names[i])) buf_printf(&extra, " %s ", S(l->names[i]));
-        if (extra.s) semantic_error(at, "Label %s declares extra parameter(s) %s ", S(l->name), extra.s);
         label_bounds = NULL;
         labeled = 1;
     }
     resolve_expr_body(e, sc);
-    if (labeled) label_bounds = saved_lb;
+    if (!labeled) return;
+    label_bounds = saved_lb;
+    Label *l = e->label;   /* its parameters, as SANY, once its expression is resolved */
+    Expr *at = label_span(e);
+    for (int i = 0; i < l->n; i++)
+        for (int j = 0; j < i; j++)
+            if (l->names[i] == l->names[j]) semantic_error(at, "Repeated formal parameter %s \nin label `%s'.", S(l->names[i]), S(l->name));
+    Def **defs = NEWN(Def *, l->n);
+    for (int i = 0; i < l->n; i++)
+        if (!(defs[i] = scope_lookup(sc, l->names[i])))
+            semantic_error(l->at[i], "Illegal parameter %s of label `%s'.", S(l->names[i]), S(l->name));
+    for (Scope *s = label_bounds; s; s = s->next) {
+        int found = 0;
+        for (int i = 0; i < l->n && !found; i++) found = l->names[i] == s->name;
+        if (!found) semantic_error(at, "Label %s must contain formal parameter `%s'.", S(l->name), S(s->name));
+    }
+    Buf extra = {0};   /* as SANY, all of them */
+    for (int i = 0; i < l->n; i++)
+        if (!scope_lookup(label_bounds, l->names[i])) buf_printf(&extra, " %s ", S(l->names[i]));
+    if (extra.s) semantic_error(at, "Label %s declares extra parameter(s) %s ", S(l->name), extra.s);
+    l->defs = defs;
 }
 
 static void resolve_expr_body(Expr *e, Scope *sc) {
@@ -7730,8 +7801,8 @@ static Inst *instance_chain(Expr *e, Ctx c) {
         Def *id = e->defs[i];
         Env *env = NULL;
         Seg *s = &e->segs[i];
+        if (id->local == 2) { Env *b = env_find(c.env, id); if (b) env = b->ctx_env; }   /* a LET's: its scope, then its parameters */
         for (int k = 0; k < id->nparams && k < s->n; k++) env = mk_thunk(id->params[k], s->args[k], c, env);
-        if (id->local == 2) { Env *b = env_find(c.env, id); if (b) env = b->ctx_env; }
         Inst *in = NEW(Inst);
         in->def = id;
         in->env = env;

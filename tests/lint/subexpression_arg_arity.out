@@ -1,0 +1,3 @@
+SEMANTIC ERROR
+line 5, col 8 to line 5, col 12 of module subexpression_arg_arity
+Expected arity 2 but found operator of arity 1.
