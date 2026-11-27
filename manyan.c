@@ -2347,7 +2347,7 @@ struct Def {
     int local;
     Expr *local_at;       /* a LOCAL definition's LOCAL, where SANY's location of it begins */
     int thm;              /* D_OP: a theorem's or assumption's name */
-    int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
+    int recursive;        /* declared RECURSIVE: in scope before it; 2 until it is resolved */
     int self;             /* D_FCN whose body names it: TLC's RecursiveFcnSpec, always lazy (§6.6) */
     Module *target;       /* D_INST */
     int nsubst;
@@ -4515,8 +4515,9 @@ static Expr def_span(Def *d) {
 
 static void file_loc_text(Buf *b, Expr *e);
 static int def_arity(Def *d);
-/* A symbol's kind to SANY: a function is an operator, a theorem's name its own. */
-static int sany_kind(Def *d) { return d->thm ? D_THM : d->kind == D_FCN ? D_OP : d->kind; }
+/* A symbol's kind to SANY: a function or a RECURSIVE declaration is an
+   operator, a theorem's name its own. */
+static int sany_kind(Def *d) { return d->thm ? D_THM : d->kind == D_FCN || d->kind == D_RECURSIVE ? D_OP : d->kind; }
 
 /* d, at where, has the name of old, in its scope. As SANY: an operator's
    definition is an error, and so is a symbol of another kind or arity; a
@@ -4532,7 +4533,7 @@ static int defined_in(Module *m, Def *x) {
 }
 
 static void redefined(Def *old, Def *d, Expr *where) {
-    int defined = sany_kind(d) == D_OP, spanned = defined || d->thm;
+    int defined = sany_kind(d) == D_OP && d->kind != D_RECURSIVE, spanned = defined || d->thm;
     Expr here = spanned ? def_span(d) : *where, there = sany_kind(old) == D_OP || old->thm ? def_span(old) : *old->where;
     Buf h = {0}, t = {0};
     file_loc_text(&h, &here);
@@ -4678,7 +4679,7 @@ static int inherited_conflict(Module *m, Def *d, Def *instance) {
 static int is_core_op(int name);
 static int def_arity(Def *d) {
     if (d->kind == D_OP || d->kind == D_INST) return d->nparams;
-    if (d->kind == D_PARAM || d->kind == D_CONST) return d->arity;
+    if (d->kind == D_PARAM || d->kind == D_CONST || d->kind == D_RECURSIVE) return d->arity;
     return 0;
 }
 
@@ -4984,6 +4985,7 @@ static void take(Selection *sel, Expr *e, Def **defs, int n, Seg *seg) {
    identifiers !(c) or !@ bind. Its arguments, if given, are in *args;
    only an operator argument (op) may leave them out. */
 static Def *subexpression(Expr *e, Def *d, int i, Expr ***args, int *nargs, int op) {
+    if (d->recursive == 2) semantic_error(seg_at(e, &e->segs[i]), "Subexpression of  `%s' used inside the operator's definition.", S(d->name));
     if (d->kind != D_OP || d->local == 2 || !d->body)
         semantic_error(e, "Cannot take subexpression of `%s'.", S(d->name));
     Selection sel = {0};
@@ -5396,15 +5398,20 @@ static void resolve_expr_body(Expr *e, Scope *sc) {
             Def *d = e->defs[i];
             if (d->kind == D_RECURSIVE) {
                 for (int j = 0; j < i; j++)
-                    if (e->defs[j]->name == d->name)
+                    if (e->defs[j]->name == d->name) {
                         redefined(e->defs[j], d, d->where);
+                        if (e->defs[j]->kind == D_RECURSIVE)   /* as SANY, the definition is the first's */
+                            semantic_error(d->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(d->name));
+                        break;
+                    }
                 Def *found = NULL;
                 for (int k = i + 1; k < e->ndefs && !found; k++)
                     if (e->defs[k]->kind != D_RECURSIVE && e->defs[k]->name == d->name) found = e->defs[k];
                 if (!found) semantic_error(d->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(d->name));
+                Expr span = def_span(found);
                 if (def_arity(found) != d->arity)
-                    semantic_error(found->where, "Definition of %s has different arity than its RECURSIVE declaration.", S(d->name));
-                found->recursive = 1;
+                    semantic_error(&span, "Definition of %s has different arity than its RECURSIVE declaration.", S(d->name));
+                found->recursive = 2;
                 inner = bind(inner, found->name, found);
                 continue;
             }
@@ -5526,6 +5533,7 @@ static void resolve_def(Def *d, Scope *sc) {
     nopen_defs -= open;
     label_bounds = saved_lb;
     in_def_body = saved_in_def;
+    if (d->recursive) d->recursive = 1;
 }
 
 /* SANY's linter: a warning for a record field named as a definition or
@@ -5645,9 +5653,16 @@ static void resolve_module(Module *m) {
         if (u->kind == 0) {
             Def *d = u->def;
             if (d->kind == D_CONST || d->kind == D_VAR) {
-                if (pending_rec)
-                    semantic_error(d->where, "A %s declaration may not appear within a recursive definition section.",
-                                   d->kind == D_VAR ? "VARIABLE" : "CONSTANT");
+                if (pending_rec) {   /* located, as SANY, at the whole statement */
+                    int last = i;
+                    while (last + 1 < m->nunits && m->units[last + 1].group == u->group) last++;
+                    Expr at = *d->where;
+                    for (Tok *t = m->toks; t < m->toks + m->ntoks; t++) {
+                        if (t->pos == u->pos) at.l1 = t->line, at.c1 = t->col;
+                        if (t->end == m->units[last].end) at.l2 = t->eline, at.c2 = t->ecol;
+                    }
+                    semantic_error(&at, "A %sdeclaration may not appear within a recursive definition section.", d->kind == D_VAR ? "VARIABLE " : "");
+                }
                 d->mod = m;
                 check_outer(m, d);
                 add_sym(m, d->name, d, NULL, 0, 0, d->where);
@@ -5673,6 +5688,12 @@ static void resolve_module(Module *m) {
             add_sym(m, d->name, d, NULL, 0, 0, d->where);
         } else if (u->kind == 4 && u->def->kind == D_RECURSIVE) {
             Sym *own = own_sym(m, u->def->name);
+            if (own && own->def->recursive == 2) {   /* declared again: as SANY, the definition is the first's */
+                for (int k = 0; k < i; k++)
+                    if (m->units[k].kind == 4 && m->units[k].def->kind == D_RECURSIVE && m->units[k].def->name == u->def->name)
+                        redefined(m->units[k].def, u->def, u->def->where);
+                semantic_error(u->def->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(u->def->name));
+            }
             if (own) redefined(own->def, u->def, u->def->where);
             Def *found = NULL;
             for (int k = i + 1; k < m->nunits && !found; k++)
@@ -5680,9 +5701,10 @@ static void resolve_module(Module *m) {
                     (m->units[k].def->kind == D_OP || m->units[k].def->kind == D_FCN))
                     found = m->units[k].def;
             if (!found) semantic_error(u->def->where, "Symbol %s declared in RECURSIVE statement but not defined.", S(u->def->name));
+            Expr span = def_span(found);
             if (def_arity(found) != u->def->arity)
-                semantic_error(found->where, "Definition of %s has different arity than its RECURSIVE declaration.", S(u->def->name));
-            found->recursive = 1;
+                semantic_error(&span, "Definition of %s has different arity than its RECURSIVE declaration.", S(u->def->name));
+            found->recursive = 2;
             pending_rec++;
             add_sym(m, u->def->name, found, NULL, 0, found->local, found->where);
         } else if (u->kind == 1) {
@@ -6003,8 +6025,10 @@ static void check_def_levels(Def *d) {
     check_levels(d->body, 3);
     if (d->recursive && d->kind == D_OP && d->body)
         for (int i = 0; i < d->nparams; i++)
-            if (param_primed(d->body, d->params[i], 0))
-                semantic_error(d->where, "Argument %d of recursive operator %s is primed.", i + 1, S(d->name));
+            if (param_primed(d->body, d->params[i], 0)) {
+                Expr span = def_span(d);
+                semantic_error(&span, "Argument %d of recursive operator %s is primed", i + 1, S(d->name));
+            }
 }
 
 /* The level of an expression (0 constant, 1 state, 2 action, 3 temporal). */
