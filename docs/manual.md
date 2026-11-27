@@ -519,12 +519,6 @@ TLC prints it stuttering there, a behavior fairness may rule out.
 
 Known gaps, not decisions, each to be closed:
 
-- A temporal property's verdict is TLC's, but its counterexample may be
-  another one TLC could print. TLC builds its tableau of particles, linked
-  in the order of their index, and Manyan's tableau has other nodes, so
-  where there is a tableau the cycle found or the path to it may differ.
-  Of 900 random graphs of `tests/fuzz.py live`, each checked with the
-  same random `-fp`, all print what TLC prints.
 - `Print` and `PrintT` in a fairness condition or a temporal property
   print what Manyan evaluates, as its search needs each condition; TLC
   evaluates all of them on every state and step as it finds them, and
@@ -533,8 +527,7 @@ Known gaps, not decisions, each to be closed:
 - TLC's tableau checker generates a state's successors again where its
   product meets the state anew, and so prints again what the actions
   print. Manyan does so for the first temporal property with a tableau;
-  as its tableau has other nodes than TLC's (above), the number of times
-  may differ, and a second such property prints nothing again.
+  a second such property prints nothing again.
 - TLC evaluates the constant definitions of each instance at startup,
   `L!D` once for `L == INSTANCE M`, and keeps their values; Manyan
   evaluates them where they are used, so their `Print`s show then, and
@@ -542,9 +535,10 @@ Known gaps, not decisions, each to be closed:
 - With `-noGenerateSpecTE`, an error in one of Naturals' operators TLC
   computes in Java names its class `Integers`, as without; TLC names
   `Naturals` until it reports a first error, and reads Integers then.
-- Where TLC fails with a Java exception, hangs, or prints as a
-  simulation's counterexample a lasso that does not violate the property,
-  Manyan reports what the model does instead.
+- Where TLC fails with a Java exception or hangs, Manyan reports what
+  the model does instead. A simulation's counterexample is the lasso TLC's
+  search finds; TLC prints the behavior's first states instead, as many
+  as the lasso has, which may not violate the property.
 - Four of tlaplus/Examples print other output than TLC, for the reasons
   the [full benchmark](fullbench.md) gives.
 - `-symbolic` and `-typecheck`: what Apalache does that they do not is in
