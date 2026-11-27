@@ -1,0 +1,7 @@
+*** Warnings: 1
+
+line 4, col 1 to line 4, col 17 of module theorem_twice
+
+Multiple declarations or definitions for symbol T.
+This duplicates the one at line 3, col 1 to line 3, col 17 of module theorem_twice.
+OK

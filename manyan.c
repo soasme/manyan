@@ -2341,6 +2341,8 @@ struct Def {
     unsigned char memo;   /* 0 unknown, 1 its calls are memoized, 2 not */
     unsigned char unkept; /* calls in a row whose arguments were not of one value each */
     int local;
+    Expr *local_at;       /* a LOCAL definition's LOCAL, where SANY's location of it begins */
+    int thm;              /* D_OP: a theorem's or assumption's name */
     int recursive;        /* a LET definition declared RECURSIVE: in scope before it */
     int self;             /* D_FCN whose body names it: TLC's RecursiveFcnSpec, always lazy (§6.6) */
     Module *target;       /* D_INST */
@@ -2371,6 +2373,7 @@ typedef struct {
     int line, eline;      /* 1-based line span (for -fmt) */
     int kw;               /* statement keyword id (for -fmt) */
     int group;            /* declarations from one statement share a group > 0 (for -fmt) */
+    int proved;           /* a theorem with a proof, which -fmt prints as written */
 } Unit;
 
 struct Module {
@@ -3910,7 +3913,9 @@ static Module *parse_module(Module *outer) {
             }
             int after = P->pos;
             skip_proof();
-            unit_span(add_unit(m, 6, d, P->pos == after ? body : NULL, NULL, 0), first, prev_tok(), t->id, 0);
+            Unit *u = add_unit(m, 6, d, body, NULL, 0);
+            u->proved = P->pos != after;
+            unit_span(u, first, prev_tok(), t->id, 0);
             continue;
         }
         if (is_kw(t, "USE") || is_kw(t, "HIDE") || is_kw(t, "PROOF") || is_kw(t, "BY") || is_kw(t, "OBVIOUS") ||
@@ -3940,6 +3945,7 @@ static Module *parse_module(Module *outer) {
             continue;
         }
         Def *d = parse_definition(local);
+        if (local) d->local_at = mk_expr(X_NAME, first);
         if (local && !d->notes) d->notes = first->notes;
         unit_span(add_unit(m, 0, d, NULL, NULL, local), first, prev_tok(), 0, 0);
     }
@@ -4466,28 +4472,35 @@ static Sym *module_lookup(Module *m, int name);
 static Expr def_span(Def *d) {
     Expr e = *d->where;
     Expr *b = d->body;
+    if (d->local_at) e.l1 = d->local_at->l1, e.c1 = d->local_at->c1;
     if (b) { e.l2 = b->pl2 ? b->pl2 : b->l2; e.c2 = b->pl2 ? b->pc2 : b->c2; }
     return e;
 }
 
 static void file_loc_text(Buf *b, Expr *e);
 static int def_arity(Def *d);
+/* A symbol's kind to SANY: a function is an operator, a theorem's name its own. */
+static int sany_kind(Def *d) { return d->thm ? D_THM : d->kind == D_FCN ? D_OP : d->kind; }
+
 /* d, at where, has the name of old, in its scope. As SANY: an operator's
    definition is an error, and so is a symbol of another kind or arity; a
-   declaration or definition again as it was is a warning, old kept. */
+   symbol again as it was is a warning, old kept, but for a function, which
+   SANY rejects first. */
 static void redefined(Def *old, Def *d, Expr *where) {
-    int defined = d->kind == D_OP || d->kind == D_FCN;
-    Expr here = defined ? def_span(d) : *where, there = old->kind == D_OP || old->kind == D_FCN ? def_span(old) : *old->where;
+    int defined = sany_kind(d) == D_OP, spanned = defined || d->thm;
+    Expr here = spanned ? def_span(d) : *where, there = sany_kind(old) == D_OP || old->thm ? def_span(old) : *old->where;
     Buf h = {0}, t = {0};
     file_loc_text(&h, &here);
     file_loc_text(&t, &there);
-    if (old->kind == d->kind && def_arity(old) == def_arity(d) && (d->kind == D_CONST || d->kind == D_VAR || d->kind == D_OP)) {
+    int k = sany_kind(d);
+    if (k == sany_kind(old) && def_arity(old) == def_arity(d) && d->kind != D_FCN &&
+        (k == D_CONST || k == D_VAR || k == D_OP || k == D_THM)) {
         Module *file = file_module(cur_module);
         buf_printf(&file->warnings, "%s\n\nMultiple declarations or definitions for symbol %s.  \nThis duplicates the one at %s.\n\n\n",
                    h.s, S(d->name), t.s);
         file->nwarnings++;
     } else if (!defined) {
-        semantic_error(where, "Multiply-defined symbol '%s': this definition or declaration conflicts \nwith the one at %s.", S(d->name), t.s);
+        semantic_error(&here, "Multiply-defined symbol '%s': this definition or declaration conflicts \nwith the one at %s.", S(d->name), t.s);
     }
     if (defined)
         semantic_error(&here, d->kind == D_FCN ? "Function name `%s' already defined or declared." : "Operator %s already defined or declared.", S(d->name));
@@ -5535,6 +5548,7 @@ static void resolve_module(Module *m) {
             Def *d = NEW(Def);
             *d = *u->def;
             d->kind = D_OP;
+            d->thm = 1;
             d->level = d->var_index = -1;
             resolve_def(d, NULL);
             add_sym(m, d->name, d, NULL, 0, 0, d->where);
@@ -5566,9 +5580,10 @@ static void resolve_module(Module *m) {
                 if (s->npath) memcpy(path + 1, s->path, sizeof(Def *) * (size_t)s->npath);
                 add_sym(m, s->name, s->def, path, s->npath + 1, u->local, NULL);
             }
-        } else if (u->kind == 2) {
-            if (pending_rec) semantic_error(u->where, "An ASSUME may not appear within a recursive definition section.");
-            if (!u->def) {   /* a named one is resolved with its name */
+        } else if (u->kind == 2 || u->kind == 6) {
+            if (pending_rec && u->kind == 2) semantic_error(u->where, "An ASSUME may not appear within a recursive definition section.");
+            if (pending_rec) semantic_error(NULL, "A THEOREM may not appear within a recursive definition section.");
+            if (!u->def && u->expr) {   /* a named one is resolved with its name */
                 int saved_in_def = in_def_body;
                 Scope *saved_lb = label_bounds;
                 in_def_body = 0;
@@ -5586,8 +5601,6 @@ static void resolve_module(Module *m) {
                     semantic_error(NULL, "Multiply-defined module '%s': this definition or declaration conflicts with another one.", S(u->module->name));
             u->module->nouter_syms = m->nsyms;
             resolve_module(u->module);
-        } else if (u->kind == 6) {
-            if (pending_rec) semantic_error(NULL, "A THEOREM may not appear within a recursive definition section.");
         }
     }
     for (int i = 0; i < m->nunits; i++) {
@@ -5596,7 +5609,8 @@ static void resolve_module(Module *m) {
             check_levels(u->expr, 3);
             int l = expr_level(u->expr);
             if (l) semantic_error(u->where, "Level error: assumptions must be level 0 (Constant), \nbut this one has level %d.", l);
-        } else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
+        } else if (u->kind == 6 && !u->def && u->expr) check_levels(u->expr, 3);
+        else if (u->kind == 4 && u->def->body) check_levels(u->def->body, 3);
         else if (u->kind == 1 || (u->kind == 0 && u->def->kind != D_CONST && u->def->kind != D_VAR)) check_def_levels(u->def);
     }
     if (!m->outer) { print_warnings(m); lint_records(m); }
@@ -26213,7 +26227,7 @@ static void fmt_module(Fmt *f, Module *m) {
             fmt_trailing(f, u->eline);
             fmt_nl(f, 0);
             f->last_line = u->eline;
-        } else if (u->kind == 2 || (u->kind == 6 && u->expr)) {
+        } else if (u->kind == 2 || (u->kind == 6 && u->expr && !u->proved)) {
             fmt_puts(f, S(u->kw));
             if (u->def) { fmt_puts(f, " "); fmt_puts(f, S(u->def->name)); fmt_puts(f, " =="); }
             if (!is_bullet_list(u->expr) && !fmt_has_comment(f, u->pos, expr_end(u->expr)) &&
