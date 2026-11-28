@@ -490,6 +490,12 @@ Not supported, by decision, each for the reason given:
   does not have.
 - TLC's checkpoints, which are its JVM's (Manyan's `-recover` reads its
   own), and distributed checking.
+- the checks of temporal properties during the search on a state space
+  without end: TLC makes them at its progress reports, by the clock, the
+  first a few seconds in, and stops at a violation found there; Manyan
+  makes them once 2^16 states are found and each time they double. A
+  check that never ends otherwise, as one with `-continue` reporting a
+  violated invariant at each state, stops at another state than TLC's.
 - the configuration's `_PERIODIC` is evaluated, as TLC does, at a
   simulation's last progress report; TLC evaluates it at its report each
   minute too, which Manyan does not print. `_RL_REWARD` is read only by

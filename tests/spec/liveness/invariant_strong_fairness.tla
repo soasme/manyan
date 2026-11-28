@@ -4,7 +4,7 @@
 EXTENDS Naturals, Sequences
 VARIABLE x
 Init == x = <<>>
-A == x' = Append(x, 1)
+A == Len(x) < 8 /\ x' = Append(x, 1)
 B == Len(x) > 5 /\ x' = <<>>
 Spec == Init /\ [][A \/ B]_x /\ SF_x(B)
 Inv == Len(x) < 2
