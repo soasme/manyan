@@ -13389,14 +13389,15 @@ static void dump_node(int idx, Value **st, Value **prev) {
     if (states[idx].parent < 0) dump_rank(idx);
 }
 
-static int *dump_redo, dump_nredo;   /* the edges written expanding the state, (to, action) */
-static void dump_edge(int from, int to, int action) {
+static uint64_t *dump_redo;   /* the steps written expanding the state, (to's fingerprint, action) */
+static int dump_nredo;
+static void dump_edge(int from, uint64_t to, int action) {
     if (dump_text) return;
-    dump_redo = xrealloc(dump_redo, sizeof(int) * (size_t)(dump_nredo + 2));
-    dump_redo[dump_nredo++] = to, dump_redo[dump_nredo++] = action;
+    dump_redo = xrealloc(dump_redo, sizeof(uint64_t) * (size_t)(dump_nredo + 2));
+    dump_redo[dump_nredo++] = to, dump_redo[dump_nredo++] = (uint64_t)action;
     if (states[from].parent >= 0) dump_rank(from);
     fprintf(dump_file, "%lld -> %lld [label=\"%s\",color=\"black\",fontcolor=\"black\"];\n", (long long)state_fp(from),
-            (long long)state_fp(to), dump_actions ? S(actions[action].name) : "");
+            (long long)to, dump_actions ? S(actions[action].name) : "");
 }
 
 /* The file cut back to its first at bytes, as TLC had written it, ranked
@@ -13653,14 +13654,17 @@ static int next_emit(void) {
     uint64_t fp = fingerprint(st);
     fingerprinting = 0;
     int found = fp_find(fp);
-    if (found < 0 && npicked_explored && picked_seen(fp)) return action_violated(st);   /* seen, as PickSuccessor marked it */
+    if (found < 0 && npicked_explored && picked_seen(fp)) {   /* seen, as PickSuccessor marked it */
+        if (dump_file) dump_edge(expanding, fp, cur_action);
+        return action_violated(st);
+    }
     if (found >= 0 && ntemporal_props) add_edge(expanding, found, cur_action);
-    if (found >= 0 && dump_file) dump_edge(expanding, found, cur_action);
+    if (found >= 0 && dump_file) dump_edge(expanding, state_fp(found), cur_action);
     violation_fresh = found < 0;
     if (found < 0) {
         int depth = expanding_depth + 1;
         int idx = add_state(st, fp, expanding, cur_action, depth);
-        if (dump_file) dump_edge(expanding, idx, cur_action), dump_node(idx, st, cur_state);
+        if (dump_file) dump_edge(expanding, fp, cur_action), dump_node(idx, st, cur_state);
         if (depth > max_depth) max_depth = depth;
         int bad = check_list(invariants, ninvariants, st);
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
@@ -14933,7 +14937,7 @@ static int search(void) {
         }
         /* TLC expands the state that failed again to report where: its
            successors, seen now, it writes as edges once more */
-        for (int i = 0, n = dump_nredo; dump_file && i < n; i += 2) dump_edge(expanding, dump_redo[i], dump_redo[i + 1]);
+        for (int i = 0, n = dump_nredo; dump_file && i < n; i += 2) dump_edge(expanding, dump_redo[i], (int)dump_redo[i + 1]);
         if (over == 2) {   /* TLC prints its Java stack */
             print_exception("java.lang.StackOverflowError", "java.lang.StackOverflowError\n\n");
             print_counts(nstates - expanded - checking_invariant());
