@@ -9332,13 +9332,16 @@ NATIVE(n_cardinality) {
 }
 
 /* v, as TLC prints it: it enumerates an infinite S \cup T or S \ T
-   inside, which fails. */
-static Value *printable(Value *v) {
+   inside, which fails, and meets a variable a step left out (NULL),
+   which fails in Java as null says. */
+static Value *printable(Value *v, const char *null) {
+    if (!v) fail("%s", null);
     if (v->kind == V_LAZY && v->lazy >= L_UNION) enumerate(v);
-    if (v->kind == V_SET) for (int i = 0; i < v->n; i++) printable(v->u.set.elems[i]);
-    if (is_fcn(v)) for (int i = 0; i < v->n; i++) printable(v->u.fcn.vals[i]);
+    if (v->kind == V_SET) for (int i = 0; i < v->n; i++) printable(v->u.set.elems[i], null);
+    if (is_fcn(v)) for (int i = 0; i < v->n; i++) printable(v->u.fcn.vals[i], null);
     return v;
 }
+#define NORMALIZED "Cannot invoke \"tlc2.value.impl.Value.deepNormalize()\" because \"values[i]\" is null"
 
 static FILE *user_file;   /* where Print writes, -userFile; NULL for standard output */
 static int reprinting;    /* a constant computed again, which has printed */
@@ -9346,7 +9349,7 @@ static int expansion_printed;   /* since the state being expanded began */
 
 NATIVE(n_print) {
     UNUSED;
-    printable(a[0]), printable(a[1]);
+    printable(a[0], NORMALIZED), printable(a[1], NORMALIZED);
     if (in_worker) worker_cannot();   /* the search prints in order */
     effects++;
     FILE *out = user_file ? user_file : stdout;
@@ -9360,7 +9363,7 @@ NATIVE(n_printt) {
     if (in_worker) worker_cannot();
     effects++;
     FILE *out = user_file ? user_file : stdout;
-    if (!reprinting) fprintf(out, "%s\n", pretty(printable(a[0]))), expansion_printed = 1;
+    if (!reprinting) fprintf(out, "%s\n", pretty(printable(a[0], NORMALIZED))), expansion_printed = 1;
     fflush(out);
     return TRUEV;
 }
@@ -9999,7 +10002,7 @@ NATIVE(n_any) { UNUSED; return mk_lazy(L_ANY); }
 
 NATIVE(n_tostring) {
     UNUSED;
-    char *s = value_str(printable(a[0]));
+    char *s = value_str(printable(a[0], "Cannot invoke \"tlc2.value.impl.Value.toString(StringBuffer, int, boolean)\" because \"r.values[i]\" is null"));
     return mk_str(intern(s));
 }
 
@@ -12694,6 +12697,7 @@ static void live_init(Value **st);
 static void eval_init_lits(Value **st);
 static int live_init_failed;   /* an error in a property on an initial state: its exit status */
 static int check_initial(Value **st);
+static int sim_stopped;   /* TLC's simulator stopped by an exception, or a violation by an initial state */
 
 static int replay_emit(void) {
     if (!replay_found) {
@@ -13442,14 +13446,16 @@ static int check_initial(Value **st) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
         if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
         found_behavior(&st, (int[]){-1}, 1, 0, 0);
+        sim_stopped = simulating;   /* TLC's simulator stops */
         if (!keep_going || simulating) post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);   /* going on, TLC's CounterExample is empty */
-        if (!keep_going || simulating) return MANYAN_VIOLATION_SAFETY;   /* TLC's simulator stops */
+        if (!keep_going || simulating) return MANYAN_VIOLATION_SAFETY;
     }
     bad = check_list(implied_inits, nimplied_inits, st);
     if (bad >= 0) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name)), found_violated(implied_inits[bad].name);
         if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
         found_behavior(&st, (int[]){-1}, 1, 0, 0);
+        sim_stopped = simulating;
         post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         return MANYAN_VIOLATION_LIVENESS;
     }
@@ -13751,14 +13757,12 @@ static void found_behavior(Value ***st, const int *act, int n, int loop, int loo
     found->length = (size_t)n, found->loop = (size_t)loop;
 }
 
-/* Whether TLC's simulator keeps no behavior of n states, as it does of a
-   safety violation's it goes on from: its CounterExample is empty. An
-   exception stops it (sim_stopped). */
-static int sim_stopped;
-static int sim_drops(int n, int loop) { return simulating && keep_going && !sim_stopped && n > 1 && loop <= 0; }
+/* Whether TLC's simulator keeps no behavior, as it does of a safety
+   violation's it goes on from: its CounterExample is empty. */
+static int sim_drops(int loop) { return simulating && keep_going && !sim_stopped && loop <= 0; }
 
 static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased) {
-    aliased = alias_name && !sim_drops(n, loop) ? aliased : 0;
+    aliased = alias_name && !sim_drops(loop) ? aliased : 0;
     Value **rec = NEWN(Value *, n);
     for (int i = 0; i < n && aliased == 1; i++) rec[i] = post_state(st, n, i, 1);
     if (!nposts) return;
@@ -13788,7 +13792,7 @@ static Value *counter_example_record(Value *states, Value *steps) {
 }
 
 static Value *counter_example(void) {
-    if (!checking_posts || !post_trace.n || sim_drops(post_trace.n, post_trace.loop)) {
+    if (!checking_posts || !post_trace.n || sim_drops(post_trace.loop)) {
         if (!empty_counter_example) {
             Arena *saved = arena;
             arena = &perm_arena;
@@ -15658,8 +15662,8 @@ static int simulate(const ManyanOptions *o) {
                     print_unspecified(sim_checked);
                     sim_print(b);
                     /* TLC's postcondition writing the behavior for -dumpTrace, or else
-                       for its trace spec, fails on it; without one, a configured one
-                       fails in Java, unmodelled. */
+                       for its trace spec, fails on it; without either, the configured
+                       ones are checked on it. */
                     if (first_trace) {
                         sim_summary(seed, aril);
                         if (!strcmp(first_trace, "tla"))
@@ -15672,7 +15676,14 @@ static int simulate(const ManyanOptions *o) {
                                    "Cannot invoke \"Object.getClass()\" because \"<parameter1>\" is null\n");
                         return MANYAN_FAILURE_EVAL;
                     }
-                    if (!te_spec) return MANYAN_FAILURE_EVAL;
+                    if (!te_spec) {
+                        if (!nposts) return MANYAN_FAILURE_EVAL;
+                        sim_stopped = 1;
+                        post_behavior(b->a, b->act, b->n, 0, 0, 1);
+                        sim_summary(seed, aril);
+                        int post = check_posts(1);
+                        return post ? post : MANYAN_FAILURE_EVAL;
+                    }
                     printf("\nError: Evaluating postcondition _TLCTraceSilent at line 28, col 5 to line 28, col 21 of module _TLCTrace failed.\n"
                            "Attempted to apply the operator overridden by the Java method\n"
                            "public static final tlc2.value.IValue tlc2.module._TLCTrace.ioSerialize(tlc2.value.IValue,tlc2.value.impl.StringValue) throws java.io.IOException,\n"

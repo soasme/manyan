@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Successor state is not completely specified by the next-state action. The following variable is not defined: y.
+
+Error: The behavior up to this point is:
+State 1: <Init line 8, col 9 to line 8, col 22 of module unassigned_postcondition_continue>
+/\ x = 1
+/\ y = 1
+
+State 2: <Next line 9, col 9 to line 9, col 14 of module unassigned_postcondition_continue>
+/\ x = 2
+/\ y = null
+
+Error: Evaluating postcondition Post at line 10, col 9 to line 10, col 30 of module unassigned_postcondition_continue failed.
+Attempted to apply the operator overridden by the Java method
+public static tlc2.value.impl.Value tlc2.module.TLC.PrintT(tlc2.value.impl.Value),
+but it produced the following error:
+Cannot invoke "tlc2.value.impl.Value.deepNormalize()" because "values[i]" is null
+exit 75
