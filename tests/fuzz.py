@@ -494,13 +494,19 @@ def standard(rng, n, gen=Gen):
     return exprs
 
 
+def valued(engine, exprs):
+    """The expressions with the values the engine prints; a function TLC
+    cannot evaluate prints with its body's place, no value."""
+    return [(e, v) for e, v in zip(exprs, values(engine, exprs)) if v is not None and "<expression" not in v]
+
+
 def prove(engine, tlapm, runs, seed):
     rng = random.Random(seed)
     failed = proved = 0
     size = 25
     for b in range(0, runs, size):
         exprs = standard(rng, min(size, runs - b))
-        pairs = [(e, v) for e, v in zip(exprs, values(engine, exprs)) if v is not None]
+        pairs = valued(engine, exprs)
         left = unproved(tlapm, [f"({e}) = ({v})" for e, v in pairs])
         proved += len(pairs) - len(left)
         doubted = [pairs[i] for i in sorted(left)]
@@ -516,8 +522,7 @@ def prove(engine, tlapm, runs, seed):
 def ref(engine, reference, runs, seed):
     rng = random.Random(seed)
     exprs = standard(rng, runs)
-    # A function TLC cannot evaluate prints with its body's place: no value.
-    pairs = [(e, v) for e, v in zip(exprs, values(engine, exprs)) if v is not None and "<expression" not in v]
+    pairs = valued(engine, exprs)
     done = subprocess.run([reference], input="".join(f"{e}\t{v}\n" for e, v in pairs),
                           stdout=subprocess.PIPE, text=True, timeout=600, check=True)
     answers = done.stdout.splitlines()
