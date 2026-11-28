@@ -1082,6 +1082,8 @@ def sim(engine, tlc, runs, seed):
         num = 1 if re.search(r"Print|PickSuccessor|_POSSIBLE", path.read_text()) else rng.randint(1, 5)
         options = [rng.choice(["-simulate", "-generate"]), f"num={num}", "-depth", str(rng.randint(1, 30)),
                    "-seed", str(rng.randint(0, 999))] + ["-continue"] * (rng.random() < 0.3)
+        options += [o for o in ["-difftrace", "-nowarning"] if rng.random() < 0.3]
+        options += rng.choice([[], [], [], ["-dumpTrace", "json", "trace.json"], ["-dumpTrace", "tla", "trace.tla"]])
         ours = spec_runner.run(engine + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
         # A temporal property's counterexample differs where its lasso leaves the

@@ -13746,8 +13746,10 @@ static void found_behavior(Value ***st, const int *act, int n, int loop, int loo
 }
 
 /* Whether TLC's simulator keeps no behavior of n states, as it does of a
-   safety violation's it goes on from: its CounterExample is empty. */
-static int sim_drops(int n, int loop) { return simulating && keep_going && n > 1 && loop <= 0; }
+   safety violation's it goes on from: its CounterExample is empty. An
+   exception stops it (sim_stopped). */
+static int sim_stopped;
+static int sim_drops(int n, int loop) { return simulating && keep_going && !sim_stopped && n > 1 && loop <= 0; }
 
 static void post_behavior(Value ***st, const int *act, int n, int loop, int loop_act, int aliased) {
     aliased = alias_name && !sim_drops(n, loop) ? aliased : 0;
@@ -15451,6 +15453,17 @@ static void report_exception(int in_behavior) {
     print_error_text();
 }
 
+/* A behavior to the error that stops TLC's simulator, then its
+   postconditions, the behavior their CounterExample. */
+static void sim_print_stopped(States *b) {
+    sim_print(b);
+    if (!nposts) return;
+    printf("\n");
+    sim_stopped = 1;
+    post_behavior(b->a, b->act, b->n, 0, 0, 1);
+    check_posts(1);
+}
+
 /* A simulated behavior: its states and the actions into them. */
 static int *sim_order, *sim_acts, sim_n;
 
@@ -15561,7 +15574,7 @@ static int simulate(const ManyanOptions *o) {
         if (invariant || checking(action_props, naction_props)) {
             printf("Error: Evaluating %s %s failed.\n", invariant ? "invariant" : "action property", S(error_check->name));
             print_error_text();
-            sim_print(sim_behavior(trace, sim_checked, cur_action));
+            sim_print_stopped(sim_behavior(trace, sim_checked, cur_action));
             sim_summary(seed, aril);
             return invariant ? MANYAN_FAILURE_SAFETY_EVAL : MANYAN_VIOLATION_LIVENESS;
         }
@@ -15569,7 +15582,7 @@ static int simulate(const ManyanOptions *o) {
         int status = trace->n && error_module == 2 ? error_status : MANYAN_ERROR;
         if (trace->n && !sim_printing) {
             error_check = NULL;
-            sim_print(sim_behavior(trace, NULL, 0));
+            sim_print_stopped(sim_behavior(trace, NULL, 0));
         }
         return status;
     }
@@ -27843,7 +27856,7 @@ static void reset_check(void) {
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
     Z(shifted); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);
-    Z(keep_going); Z(parsed_error_at); Z(parsed_error); Z(te_spec); Z(json_traced); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
+    Z(keep_going); Z(parsed_error_at); Z(parsed_error); Z(te_spec); Z(sim_stopped); Z(json_traced); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
     Z(nwitnesses); Z(gen_values); Z(ngen_values); Z(gen_step); Z(apalache_name); Z(folds_name); Z(gen_name);
     Z(eval_tracking); Z(effects); Z(format_msg); Z(user_file); Z(reprinting); Z(expansion_printed);
     Z(starting); Z(registers); Z(nregisters); Z(checking_posts); Z(sim_traces); Z(props); Z(nprops);
