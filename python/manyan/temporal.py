@@ -1911,6 +1911,42 @@ def _fairness_subscript(vars_tuple: tuple[str, ...]) -> str:
     return vars_tuple[0] if len(vars_tuple) == 1 else "<<" + ", ".join(vars_tuple) + ">>"
 
 
+def _frame_unchanged(
+    act: _ActionDecl,
+    all_vars: list[str],
+    ast_sources: list[ast.AST],
+    extractor: _ModuleExtractor,
+    *,
+    implicit: bool,
+) -> list[str]:
+    all_set = set(all_vars)
+    unch: set[str] = set()
+    if act.modifies:
+        allowed = set(all_vars)
+        for mset in act.modifies:
+            allowed &= set(mset)
+        unch |= all_set - allowed
+    elif implicit and ast_sources:
+        unch |= all_set - _mentioned_next_vars(ast_sources, extractor, all_set)
+    for uset in act.unchanged:
+        unch |= set(uset) & all_set
+    return sorted(unch)
+
+
+def _quantify_params(
+    expr: str,
+    params: list[tuple[str, _TypeInfo]],
+    quantifier: str,
+    model: _ModelDecl,
+    spec: _SpecDecl,
+    action_name: str,
+) -> str:
+    for pn, pt in reversed(params):
+        dom = _resolve_param_domain(model, spec, action_name, pn, pt)
+        expr = f"({quantifier} {pn} \\in {dom} : {expr})"
+    return expr
+
+
 # ---------------------------------------------------------------------------
 # Spec & Refinement Compiler
 # ---------------------------------------------------------------------------
@@ -1976,25 +2012,14 @@ def _compile_refinement(
             parts.append(_compile_func_predicate(abs_act.func, extractor, abs_spec, p_types, needs_helpers, state_subst=abs_subst))
         if not parts:
             continue
-        if abs_act.modifies:
-            mod_set = set().union(*abs_act.modifies)
-            unch = [abs_subst[v] for v in abs_state_vars if v not in mod_set]
-        elif abs_act.unchanged:
-            unch_names = set().union(*abs_act.unchanged)
-            unch = [abs_subst[v] for v in abs_state_vars if v in unch_names]
-        else:
-            ast_sources: list[ast.AST] = list(abs_act.action_preds)
-            if abs_act.func is not None and abs_act.has_body:
-                ast_sources.append(abs_act.func)
-            mentioned = _mentioned_next_vars(ast_sources, extractor, set(abs_state_vars))
-            unch = [abs_subst[v] for v in abs_state_vars if v not in mentioned]
+        ast_sources: list[ast.AST] = list(abs_act.action_preds)
+        if abs_act.func is not None and abs_act.has_body:
+            ast_sources.append(abs_act.func)
+        unch = [abs_subst[v] for v in _frame_unchanged(abs_act, abs_state_vars, ast_sources, extractor, implicit=True)]
         if unch:
             parts.append(f"UNCHANGED <<{', '.join(unch)}>>")
         act_expr = "(" + " /\\ ".join(f"({p})" for p in parts) + ")"
-        for pn, pt in reversed(abs_act.params):
-            dom = _resolve_param_domain(model, spec, abs_act.name, pn, pt)
-            act_expr = f"(\\E {pn} \\in {dom} : {act_expr})"
-        abs_step_disjuncts.append(act_expr)
+        abs_step_disjuncts.append(_quantify_params(act_expr, abs_act.params, "\\E", model, spec, abs_act.name))
     if abs_step_disjuncts and abs_state_ops:
         abs_vars_name = f"_Ref_{ref.name}_vars"
         body_defs.append(f"{abs_vars_name} == <<" + ", ".join(abs_state_ops) + ">>")
@@ -2034,7 +2059,6 @@ def _compile_spec_model(
     mod_name = _sanitize_ident(f"{spec.name}_{model.name}" if model.name != spec.name else spec.name)
     needs_helpers: set[str] = {"Integers"}
     all_vars = list(spec.states.keys()) + list(spec.ghosts.keys())
-    all_vars_set = set(all_vars)
     var_types: dict[str, _TypeInfo] = {
         d.name: d.type_info for d in (*spec.constants.values(), *spec.states.values(), *spec.ghosts.values())
     }
@@ -2190,25 +2214,14 @@ def _compile_spec_model(
                     if w_expr:
                         ob_parts.append(w_expr)
             # Frame conformance
-            frame_unchanged: set[str] = set()
-            if act.modifies:
-                allowed = set(all_vars)
-                for mset in act.modifies:
-                    allowed &= set(mset)
-                frame_unchanged |= all_vars_set - allowed
-            for uset in act.unchanged:
-                frame_unchanged |= set(uset) & all_vars_set
-            for fv in sorted(frame_unchanged):
+            for fv in _frame_unchanged(act, all_vars, [], extractor, implicit=False):
                 if impl_next[fv] != fv:
                     ob_parts.append(f"({impl_next[fv]} = {fv})")
 
             if ob_parts:
                 guard_str = " /\\ ".join(guards) if guards else "TRUE"
                 ob_expr = f"({guard_str} => (" + " /\\ ".join(ob_parts) + "))"
-                for pn, pt in reversed(act.params):
-                    dom = _resolve_param_domain(model, spec, act.name, pn, pt)
-                    ob_expr = f"(\\A {pn} \\in {dom} : {ob_expr})"
-                conformance_checks.append((f"_Conform_{act.name}", ob_expr))
+                conformance_checks.append((f"_Conform_{act.name}", _quantify_params(ob_expr, act.params, "\\A", model, spec, act.name)))
         else:
             ast_sources: list[ast.AST] = []
             if act.action_preds:
@@ -2219,18 +2232,7 @@ def _compile_spec_model(
                 trans_parts.append(_compile_func_predicate(act.func, extractor, spec, p_types, needs_helpers))
                 ast_sources.append(act.func)
 
-            unchanged_vars: set[str] = set()
-            if act.modifies:
-                allowed = set(all_vars)
-                for mset in act.modifies:
-                    allowed &= set(mset)
-                unchanged_vars |= all_vars_set - allowed
-            elif ast_sources:
-                # Implicit framing for unmentioned state/ghost variables
-                unchanged_vars |= all_vars_set - _mentioned_next_vars(ast_sources, extractor, all_vars_set)
-            for uset in act.unchanged:
-                unchanged_vars |= set(uset) & all_vars_set
-            for uv in sorted(unchanged_vars):
+            for uv in _frame_unchanged(act, all_vars, ast_sources, extractor, implicit=True):
                 trans_parts.append(f"(UNCHANGED {uv})")
 
             # Preserves obligations on declarative actions (emitted after _vars)
@@ -2240,20 +2242,14 @@ def _compile_spec_model(
                 pname = f"_Preserves_{act.name}_{idx}"
                 act_ref = f"{act.name}(" + ", ".join(p for p, _ in act.params) + ")" if act.params else act.name
                 prop_body = f"({act_ref} => ({pre_p} => {post_p}))"
-                for pn, pt in reversed(act.params):
-                    dom = _resolve_param_domain(model, spec, act.name, pn, pt)
-                    prop_body = f"(\\A {pn} \\in {dom} : {prop_body})"
-                preserves_props.append((pname, prop_body))
+                preserves_props.append((pname, _quantify_params(prop_body, act.params, "\\A", model, spec, act.name)))
                 has_fairness_or_liveness = True
 
         act_body = " /\\ ".join(trans_parts) if trans_parts else "TRUE"
         if act.params:
             pargs = ", ".join(p for p, _ in act.params)
             body_defs.append(f"{act.name}({pargs}) == {act_body}")
-            quant = f"{act.name}({pargs})"
-            for pn, pt in reversed(act.params):
-                dom = _resolve_param_domain(model, spec, act.name, pn, pt)
-                quant = f"(\\E {pn} \\in {dom} : {quant})"
+            quant = _quantify_params(f"{act.name}({pargs})", act.params, "\\E", model, spec, act.name)
             next_disjuncts.append(quant)
             fair_target = quant
         else:
