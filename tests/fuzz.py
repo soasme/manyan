@@ -1081,7 +1081,7 @@ def sim(engine, tlc, runs, seed):
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
         # A temporal property's counterexample differs where its lasso leaves the
         # behavior: TLC prints the behavior's first states instead (docs/manual.md).
-        if ours != back_into(theirs):
+        if differs(ours, theirs):
             failed += 1
             print(f"DIFF {path.relative_to(ROOT)} {' '.join(options)}\n--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} simulations printed what TLC prints")
@@ -1098,7 +1098,7 @@ def check(engine, tlc, runs, seed):
         workers = rng.choice([[], ["-workers", "4"]])
         ours = spec_runner.run(engine + workers + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
-        if ours != back_into(theirs):
+        if differs(ours, theirs):
             failed += 1
             print(f"DIFF {path.relative_to(ROOT)} {' '.join(workers + options)}\n--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} checks printed what TLC prints")
@@ -1183,6 +1183,14 @@ def live_model(rng):
     return model, extra_files
 
 
+def differs(ours, theirs):
+    """Whether the engine printed other than TLC: two runs both killed past
+    their limits, of memory, time or output, print nothing to compare."""
+    if ours.endswith("exit killed\n") and theirs.endswith("exit killed\n"):
+        return False
+    return ours != back_into(theirs)
+
+
 def back_into(tlc):
     """TLC's output with a lasso's cycle back into its first state, which
     TLC prints as that state again, then stuttering numbered before it, as
@@ -1211,7 +1219,7 @@ def live(engine, tlc, runs, seed):
                     (fdir / fname).write_text(ftext)
             ours = spec_runner.run(engine + fp, path, MEMORY)
             theirs = spec_runner.run(spec_runner.oracle_command(tlc) + fp, path, MEMORY)
-        if ours != back_into(theirs):
+        if differs(ours, theirs):
             failed += 1
             print(f"DIFF {' '.join(fp)}\n{model}--- engine\n{ours}--- TLC\n{theirs}")
     print(f"{runs - failed}/{runs} liveness checks printed what TLC prints")
