@@ -1,0 +1,24 @@
+Finished computing initial states: 1 distinct state generated.
+Error: The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+3 states generated, 2 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 2.
+exit 255
+--- states.dot
+strict digraph DiskGraph {
+node [shape=box,style=rounded]
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";
+s0 [label="x = 0",style = filled]
+s0 -> s0 [label="",color="black",fontcolor="black"];
+s0 -> s1 [label="",color="black",fontcolor="black"];
+s1 [label="x = 1",tooltip="x = 1"];
+s0 -> s0 [label="",color="black",fontcolor="black"];
+s0 -> s1 [label="",color="black",fontcolor="black"];
+{rank = same; s0;}
+}
+}

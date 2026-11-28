@@ -12919,6 +12919,13 @@ static void print_trace_state(Value **st, Value **next, int level) {
     xfree(b.s);
 }
 
+/* With -difftrace, a state after prev as what changed. */
+static void fprint_diff(FILE *f, Value **prev, Value **st) {
+    for (int i = 0; i < nvars; i++)
+        if (!unchanged(prev[i], st[i]))
+            fprintf(f, "%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+}
+
 static Buf numbered_text;   /* TLC makes the state's text before it prints its number; an error may end it */
 static void print_numbered(int number, int action, Value **st, Value **prev, Value **next) {
     numbered_text.n = 0;
@@ -12930,11 +12937,7 @@ static void print_numbered(int number, int action, Value **st, Value **prev, Val
     action_label(action);
     printf("\n");
     if (shown && print_shown(st)) return;   /* no blank line after a view, as TLC prints it */
-    if (diff) {
-        for (int i = 0; i < nvars; i++)
-            if (!unchanged(prev[i], st[i]))
-                printf("%s%s = %s\n", nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
-    }
+    if (diff) fprint_diff(stdout, prev, st);
     printf("%s\n", numbered_text.s ? numbered_text.s : "");
 }
 
@@ -13324,14 +13327,14 @@ static void dump_write(Value **st) {
     if (fprint_shown(dump_file, st)) fputc('\n', dump_file);
 }
 
-/* A state as a dot label: TLC's toString of it, or with all its variables,
-   trimmed, its lines and quotes escaped. */
-static char *dot_label(Value **st, int shown) {
+/* A state as a dot label: TLC's toString of it, or what changed after
+   prev, trimmed, its lines and quotes escaped. */
+static char *dot_label(Value **st, Value **prev) {
     char *text = NULL;
     size_t len = 0;
     FILE *f = open_memstream(&text, &len);
-    if (shown) fprint_shown(f, st);
-    else fprint_state(f, st);
+    if (prev) fprint_diff(f, prev, st);
+    else fprint_shown(f, st);
     fclose(f);
     while (len && text[len - 1] == '\n') text[--len] = 0;
     Buf b = {0};
@@ -13351,11 +13354,12 @@ static void dump_rank(int idx) {
     dump_ranked[dump_nranked++] = idx;
 }
 
-static void dump_node(int idx, Value **st) {
+/* A state new after prev, or initial (prev NULL). */
+static void dump_node(int idx, Value **st, Value **prev) {
     if (dump_text) { dump_write(st); return; }
     /* TLC labels a state with its toString, under -difftrace a successor
-       with all its variables, and gives that the toString as tooltip */
-    char *shown = dot_label(st, 1), *label = diff_trace && states[idx].parent >= 0 ? dot_label(st, 0) : shown;
+       with what changed, and gives that the toString as tooltip */
+    char *shown = dot_label(st, NULL), *label = diff_trace && prev ? dot_label(st, prev) : shown;
     if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), shown);
     else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)state_fp(idx), label, shown);
     if (label != shown) xfree(label);
@@ -13363,8 +13367,11 @@ static void dump_node(int idx, Value **st) {
     if (states[idx].parent < 0) dump_rank(idx);
 }
 
+static int *dump_redo, dump_nredo;   /* the edges written expanding the state, (to, action) */
 static void dump_edge(int from, int to, int action) {
     if (dump_text) return;
+    dump_redo = xrealloc(dump_redo, sizeof(int) * (size_t)(dump_nredo + 2));
+    dump_redo[dump_nredo++] = to, dump_redo[dump_nredo++] = action;
     if (states[from].parent >= 0) dump_rank(from);
     fprintf(dump_file, "%lld -> %lld [label=\"%s\",color=\"black\",fontcolor=\"black\"];\n", (long long)state_fp(from),
             (long long)state_fp(to), dump_actions ? S(actions[action].name) : "");
@@ -13382,6 +13389,9 @@ static void dump_close(void) {
     xfree(dump_ranked);
     dump_ranked = NULL;
     dump_nranked = 0;
+    xfree(dump_redo);
+    dump_redo = NULL;
+    dump_nredo = 0;
 }
 
 /* An initial state checked as TLC checks it: the invariants, then the
@@ -13435,7 +13445,7 @@ static int init_emit(void) {
     error_state = NULL;
     if (fp_find(fp) >= 0) return 0;
     int idx = add_state(st, fp, -1, -1, 1);
-    if (dump_file) dump_node(idx, st);
+    if (dump_file) dump_node(idx, st, NULL);
     Region *r = region_open();   /* what checking the state made: one of many */
     if (ntemporal_props) live_init(st);
     violation = check_initial(st);
@@ -13613,7 +13623,7 @@ static int next_emit(void) {
     if (found < 0) {
         int depth = expanding_depth + 1;
         int idx = add_state(st, fp, expanding, cur_action, depth);
-        if (dump_file) dump_edge(expanding, idx, cur_action), dump_node(idx, st);
+        if (dump_file) dump_edge(expanding, idx, cur_action), dump_node(idx, st, cur_state);
         if (depth > max_depth) max_depth = depth;
         int bad = check_list(invariants, ninvariants, st);
         if (ntemporal_props) add_edge(expanding, idx, cur_action);
@@ -13831,7 +13841,8 @@ static int live_cut = -1;   /* the state TLC stopped expanding at in its tempora
 static void print_counts_after(int s);
 static void live_follow(int idx);
 static unsigned char *printed;   /* each expanded state whose actions printed */
-static long *dumped_after;       /* -dump: the file's length once each state was expanded */
+static long *dumped_after, *dumped_from;   /* -dump: the file's length once each state was expanded, and as it began */
+static long dump_from;
 static int *ranked_after;
 static void note_expanded(int idx) {
     if (!ntemporal_props) return;
@@ -13842,13 +13853,14 @@ static void note_expanded(int idx) {
         memset(printed + ngen_after, 0, (size_t)(n - ngen_after));
         if (dump_file) {
             dumped_after = xrealloc(dumped_after, sizeof(long) * (size_t)n);
+            dumped_from = xrealloc(dumped_from, sizeof(long) * (size_t)n);
             ranked_after = xrealloc(ranked_after, sizeof(int) * (size_t)n);
         }
         ngen_after = n;
     }
     gen_after[idx] = generated;
     printed[idx] = (unsigned char)expansion_printed;
-    if (dump_file) dumped_after[idx] = ftell(dump_file), ranked_after[idx] = dump_nranked;
+    if (dump_file) dumped_after[idx] = ftell(dump_file), dumped_from[idx] = dump_from, ranked_after[idx] = dump_nranked;
     if (!simulating) live_follow(idx);
     expansion_printed = 0;
 }
@@ -13925,6 +13937,8 @@ static int expand_state(int idx) {
     cur_state = expanding_state = decode_state(idx);
     draw_restart(cur_state);
     succ_count = 0;
+    dump_nredo = 0;
+    if (dump_file) dump_from = ftell(dump_file);
     for (int a = 0; a < nactions; a++) {
         cur_action = a;
         memset(succ, 0, sizeof(Value *) * (size_t)nvars);
@@ -14796,6 +14810,7 @@ static int recover(void) {
         printed = xrealloc(printed, (size_t)ngen_after);
         if (dump_file) {   /* what was written before the checkpoint is not known */
             dumped_after = xrealloc(dumped_after, sizeof(long) * (size_t)ngen_after);
+            dumped_from = xrealloc(dumped_from, sizeof(long) * (size_t)ngen_after);
             ranked_after = xrealloc(ranked_after, sizeof(int) * (size_t)ngen_after);
             memset(dumped_after, 0xff, sizeof(long) * (size_t)ngen_after);
         }
@@ -14851,6 +14866,9 @@ static int search(void) {
             print_counts(nstates);
             return MANYAN_FAILURE_EVAL;   /* TLC: a failed Assert too */
         }
+        /* TLC expands the state that failed again to report where: its
+           successors, seen now, it writes as edges once more */
+        for (int i = 0, n = dump_nredo; dump_file && i < n; i += 2) dump_edge(expanding, dump_redo[i], dump_redo[i + 1]);
         if (over == 2) {   /* TLC prints its Java stack */
             print_exception("java.lang.StackOverflowError", "java.lang.StackOverflowError\n\n");
             print_counts(nstates - expanded - checking_invariant());
@@ -18912,6 +18930,16 @@ static int live_report(int fp) {
     if (!fp) printf("\n");
     live_print(fp);
     print_counts_after(live_at);
+    if (dump_file && !dump_text && dumped_after[live_at] >= 0) {   /* TLC expands it again to report where: its steps, once more */
+        long n = dumped_after[live_at] - dumped_from[live_at];
+        char *text = xmalloc((size_t)n + 1);
+        fseek(dump_file, dumped_from[live_at], SEEK_SET);
+        text[fread(text, 1, (size_t)n, dump_file)] = 0;
+        fseek(dump_file, 0, SEEK_END);
+        for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n"))
+            if (strstr(line, " -> ")) fprintf(dump_file, "%s\n", line);
+        xfree(text);
+    }
     return MANYAN_ERROR;
 }
 
@@ -27794,7 +27822,7 @@ static void reset_check(void) {
     Z(shown_record); Z(shown_state); Z(numbered_text); Z(trace_path); Z(ntrace_path); Z(trace_failure);
     Z(trace_failure_java); Z(posts); Z(nposts); Z(possibles); Z(npossibles); Z(possible_counts);
     Z(expanding_depth); Z(expanding_state); Z(succ); Z(succ_count); Z(violation); Z(error_check);
-    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions); Z(dump_text); Z(dump_written); Z(dump_unclosed); Z(dumped_after); Z(ranked_after);
+    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions); Z(dump_text); Z(dump_written); Z(dump_nredo); Z(dump_unclosed); Z(dumped_after); Z(dumped_from); Z(dump_from); Z(ranked_after);
     Z(dump_ranked); Z(dump_nranked); Z(picked_explored); Z(violation_fresh); Z(fingerprinting); Z(started);
     Z(empty_counter_example); Z(gen_after); Z(ngen_after); Z(printed); Z(follow); Z(seen_after);
     Z(nseen_after); Z(control); Z(batches); Z(claims); Z(results); Z(to_worker); Z(from_worker);
@@ -28059,7 +28087,7 @@ static int check_model(const ManyanOptions *o) {
     split_next();
     handler = NULL;
     if (o->dump && !o->simulate) {
-        if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "manyan: cannot write %s\n", o->dump); return MANYAN_ERROR; }
+        if (!(dump_file = fopen(o->dump, "w+"))) { fprintf(stderr, "manyan: cannot write %s\n", o->dump); return MANYAN_ERROR; }
         dump_actions = o->dump_actions;
         dump_text = o->dump_text;
         if (!dump_text) fputs(DUMP_HEAD, dump_file);

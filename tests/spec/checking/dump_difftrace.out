@@ -1,0 +1,20 @@
+Finished computing initial states: 1 distinct state generated.
+Model checking completed. No error has been found.
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 0
+--- states.dot
+strict digraph DiskGraph {
+node [shape=box,style=rounded]
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";
+s0 [label="/\\ x = 0\n/\\ y = 0",style = filled]
+s0 -> s1 [label="",color="black",fontcolor="black"];
+s1 [label="/\\ x = 1",tooltip="/\\ x = 1\n/\\ y = 0"];
+s1 -> s2 [label="",color="black",fontcolor="black"];
+s2 [label="/\\ x = 2",tooltip="/\\ x = 2\n/\\ y = 0"];
+{rank = same; s0;}
+{rank = same; s1;}
+}
+}

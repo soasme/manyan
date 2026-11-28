@@ -49,7 +49,7 @@ for it; [std.md](std.md) lists them.
 | `-deadlock` | do not report deadlock, as TLC's `-deadlock` |
 | `-workers N` | expand states with N processes; `auto` uses one per core |
 | `-dump dot FILE` | write the state graph to `FILE.dot` (FILE if it ends in `.dot`) in Graphviz dot format, as TLC does, with one worker; `-dump dot,actionlabels FILE` labels each step with its action |
-| `-dump FILE` | write each state found to `FILE.dump` (FILE if it ends in `.dump`), `State N:` and the state as a trace prints it, numbered in the order written, as TLC does, with one worker: the initial states once all are checked, and with temporal properties each state again after its successors |
+| `-dump FILE` | write each state found to `FILE.dump` (FILE if it ends in `.dump`), `State N:` and the state as a trace prints it, numbered in the order written, as TLC does, with one worker; with temporal properties each state again after its successors |
 | `-simulate [num=N]` | check N random behaviors (no limit by default) instead of every state |
 | `-generate` | simulate, building each successor by random choices instead of all of an action's successors, as TLC's `-generate`; takes `-simulate`'s `num=` and `file=` |
 | `-simulate file=FILE` | also write each behavior that ends without an error to `FILE_0_N`, a module defining its states `STATE_1`, `STATE_2`, ..., each after a comment naming its action, as TLC does |
@@ -558,9 +558,7 @@ Known gaps, not decisions, each to be closed:
   as the lasso has, which may not violate the property.
 - With temporal properties, `-dump dot FILE` writes the state graph as
   TLC does; TLC also writes `FILE_liveness.dot`, its graph of states and
-  tableau nodes named by its fingerprints, which Manyan does not. Where
-  TLC fails in its temporal checks with an exception, it writes the
-  step that failed into `FILE.dot` again.
+  tableau nodes named by its fingerprints, which Manyan does not.
 - With some `-fp` seeds, TLC closes a liveness counterexample whose cycle
   ends where it starts, in its state but not its tableau node, by
   printing that state again and `State N: Stuttering` with the cycle's
