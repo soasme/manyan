@@ -1212,6 +1212,8 @@ int manyan_std_init(void) {
         {"IOUtils", "IOEnvExec", 2, io_env_exec, OVERRIDE("IOUtils", "ioEnvExec(" J_V "," J_V ") throws java.io.IOException,java.lang.InterruptedException")},
         {"IOUtils", "Serialize", MANYAN_LAZY, serialize,
          "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
+        {"_TLAPlusCounterExample", "Serialize", MANYAN_LAZY, serialize,   /* -dumpTrace tla's, IOUtils' */
+         "public static synchronized " J_V " tlc2.overrides.IOUtils.textSerialize(" J_EVAL ")"},
         {"SequencesExt", "SetToSeq", 1, set_to_seq, OVERRIDE("SequencesExt", "SetToSeq(" J_V ")")},
         {"SequencesExt", "FoldSeq", 3, fold_function, OVERRIDE("SequencesExt", "foldSeq(" J_OP "," J_V "," J_V ")")},
         {"SequencesExt", "SelectInSeq", 2, select_in_seq, OVERRIDE("SequencesExt", "selectInSeq(" J_V "," J_OP ")")},

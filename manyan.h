@@ -42,6 +42,7 @@ typedef struct {
     int check_deadlock;  /* 0 turns deadlock checking off, as -deadlock does */
     const char *dump;    /* write the state graph in dot format to this file, or NULL */
     int dump_actions;    /* label the dump's steps with their actions (-dump dot,actionlabels) */
+    int dump_text;       /* write the dump's states as a trace prints them instead, as -dump FILE */
     int nowarning;       /* TLC's warnings off, as -nowarning */
     int difftrace;       /* print only what each step of a trace changes, as -difftrace */
     int view;            /* a trace shows each state as the VIEW's value, as -view */
@@ -71,6 +72,7 @@ typedef struct {
     const char *const *invariants;      /* expressions checked as invariants after the configuration's, NULL-terminated (-inv) */
     const char *const *postconditions;  /* "Module!Operator" each, checked after the configuration's postconditions, NULL-terminated (-postCondition) */
     const char *dump_trace;  /* write a counterexample to this file in TLC's JSON, or NULL (-dumpTrace json) */
+    const char *const *dump_traces;  /* after dump_trace, FORMAT and FILE in turn, NULL-terminated: write a counterexample to each FILE, as -dumpTrace FORMAT FILE in order; FORMAT json or tla, each once */
     int no_te_spec;      /* TLC sets up no trace exploration spec, which shows in the order of CounterExample's fields (-noGenerateSpecTE) */
     ManyanResult *result;  /* filled in with what the check found, or NULL */
 } ManyanOptions;

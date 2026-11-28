@@ -49,6 +49,7 @@ for it; [std.md](std.md) lists them.
 | `-deadlock` | do not report deadlock, as TLC's `-deadlock` |
 | `-workers N` | expand states with N processes; `auto` uses one per core |
 | `-dump dot FILE` | write the state graph to `FILE.dot` (FILE if it ends in `.dot`) in Graphviz dot format, as TLC does, with one worker; `-dump dot,actionlabels FILE` labels each step with its action |
+| `-dump FILE` | write each state found to `FILE.dump` (FILE if it ends in `.dump`), `State N:` and the state as a trace prints it, numbered in the order found, as TLC does, with one worker |
 | `-simulate [num=N]` | check N random behaviors (no limit by default) instead of every state |
 | `-generate` | simulate, building each successor by random choices instead of all of an action's successors, as TLC's `-generate`; takes `-simulate`'s `num=` and `file=` |
 | `-simulate file=FILE` | also write each behavior that ends without an error to `FILE_0_N`, a module defining its states `STATE_1`, `STATE_2`, ..., each after a comment naming its action, as TLC does |
@@ -74,6 +75,7 @@ for it; [std.md](std.md) lists them.
 | `-invlevel N` | report the first behavior of N states, as TLC's: the invariant `TLCGet("level") < N` |
 | `-postCondition M!Op` | also check `Op` of module `M` once the search is done, after the configuration's `POSTCONDITION`s; as TLC, the spec extends `M` |
 | `-dumpTrace json FILE` | write the counterexample to FILE in TLC's JSON: its states, the actions between them and the variables, as `CounterExample` of TLCExt gives them |
+| `-dumpTrace tla FILE` | write the counterexample to FILE as a module named after it, defining `CounterExample` as TLCExt gives it, as TLC does; each format may be given once, and they are written in the order given. TLC needs CommunityModules for it; Manyan does not |
 | `-result FILE` | Manyan's own: write what the check found to FILE in JSON, however the run ends; the output is TLC's still (see [Library](#library)) |
 | `-noGenerateSpecTE` | as TLC's: TLC then sets up no trace spec, which shows in the order of `CounterExample`'s fields |
 | `-fp N` | take TLC's fingerprints with its Nth polynomial, 0 to 130 (0 without it, where TLC picks one at random): they order a state's successors in a temporal property's check, and so its counterexample, seed the draws of `RandomElement` and the Randomization module when model checking, and are `TLCFP`'s values |
@@ -479,8 +481,9 @@ Not supported, by decision, each for the reason given:
   Toolbox's message codes, made for the Toolbox's views.
 - `-generateSpecTE`, and the `_TTrace` module TLC writes at an error,
   which reads the trace from a `.bin` in Java's serialization; so too
-  `-dumpTrace tlc` and `-loadTrace`. `-dumpTrace`'s other formats are
-  written by CommunityModules' operators that Manyan does not have.
+  `-dumpTrace tlc` and `-loadTrace`. `-dumpTrace`'s formats other than
+  json and tla are written by CommunityModules' operators that Manyan
+  does not have.
 - checkpoints (`-checkpoint`, `-recover`) and distributed checking: TLC's
   files are its JVM's; models Manyan checks seldom run for the hours that
   call for them.

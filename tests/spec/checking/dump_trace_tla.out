@@ -1,0 +1,27 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = "a"
+
+State 2: <Next line 8, col 9 to line 8, col 37 of module dump_trace_tla>
+/\ x = 1
+/\ y = "a"
+
+State 3: <Next line 8, col 9 to line 8, col 37 of module dump_trace_tla>
+/\ x = 2
+/\ y = "a"
+
+"CounterExample written: trace.tla"
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
+--- trace.tla
+---- MODULE trace ----
+LOCAL INSTANCE TLC
+
+CounterExample == 
+	[action |-> {<<<<1, [x |-> 0, y |-> "a"]>>, [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 8, endColumn |-> 37, module |-> "dump_trace_tla"]], <<2, [x |-> 1, y |-> "a"]>>>>, <<<<2, [x |-> 1, y |-> "a"]>>, [name |-> "Next", location |-> [beginLine |-> 8, beginColumn |-> 9, endLine |-> 8, endColumn |-> 37, module |-> "dump_trace_tla"]], <<3, [x |-> 2, y |-> "a"]>>>>}, state |-> {<<1, [x |-> 0, y |-> "a"]>>, <<2, [x |-> 1, y |-> "a"]>>, <<3, [x |-> 2, y |-> "a"]>>}]
+
+====

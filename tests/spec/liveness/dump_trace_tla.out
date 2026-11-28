@@ -1,0 +1,21 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Temporal property Live was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: Stuttering
+"CounterExample written: trace.tla"
+4 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 13
+--- trace.tla
+---- MODULE trace ----
+LOCAL INSTANCE TLC
+
+CounterExample == 
+	[action |-> {<<<<1, [x |-> 0]>>, [name |-> "UnnamedAction", location |-> [beginLine |-> 0, beginColumn |-> 0, endLine |-> 0, endColumn |-> 0, module |-> "--TLA+ BUILTINS--"]], <<1, [x |-> 0]>>>>}, state |-> {<<1, [x |-> 0]>>}]
+
+====

@@ -1,0 +1,27 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 7, col 9 to line 7, col 18 of module dump_trace_formats>
+x = 1
+
+State 3: <Next line 7, col 9 to line 7, col 18 of module dump_trace_formats>
+x = 2
+
+"CounterExample written: trace.tla"
+"CounterExample written: trace.json"
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12
+--- trace.tla
+---- MODULE trace ----
+LOCAL INSTANCE TLC
+
+CounterExample == 
+	[action |-> {<<<<1, [x |-> 0]>>, [name |-> "Next", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 18, module |-> "dump_trace_formats"]], <<2, [x |-> 1]>>>>, <<<<2, [x |-> 1]>>, [name |-> "Next", location |-> [beginLine |-> 7, beginColumn |-> 9, endLine |-> 7, endColumn |-> 18, module |-> "dump_trace_formats"]], <<3, [x |-> 2]>>>>}, state |-> {<<1, [x |-> 0]>>, <<2, [x |-> 1]>>, <<3, [x |-> 2]>>}]
+
+====
+--- trace.json
+{"counterexample":{"action":[[[1,{"x":0}],{"name":"Next","location":{"beginLine":7,"beginColumn":9,"endLine":7,"endColumn":18,"module":"dump_trace_formats"}},[2,{"x":1}]],[[2,{"x":1}],{"name":"Next","location":{"beginLine":7,"beginColumn":9,"endLine":7,"endColumn":18,"module":"dump_trace_formats"}},[3,{"x":2}]]],"state":[[1,{"x":0}],[2,{"x":1}],[3,{"x":2}]]},"vars":["x"]}

@@ -1,0 +1,30 @@
+Finished computing initial states: 2 distinct states generated.
+Model checking completed. No error has been found.
+12 states generated, 6 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 0
+--- states.dump
+State 1:
+/\ x = 0
+/\ y = "a"
+
+State 2:
+/\ x = 2
+/\ y = "a"
+
+State 3:
+/\ x = 1
+/\ y = "a"
+
+State 4:
+/\ x = 3
+/\ y = "a"
+
+State 5:
+/\ x = 5
+/\ y = "a"
+
+State 6:
+/\ x = 4
+/\ y = "a"
+

@@ -14,9 +14,9 @@ oracle does not run a test with an option in ORACLE_SKIPS, nor one with a
 line `\\* semantics: WHY`: there TLC's verdict is wrong, and NAME.out is
 Manyan's (docs/manual.md says where).
 A state graph it dumps (`-dump dot FILE`) follows its output, its states
-numbered in order of appearance, as fingerprints differ; then the
-behaviors it writes (`-simulate file=FILE`) and the counterexample
-(`-dumpTrace json FILE`). The time naming an `-inv` expression is N.
+numbered in order of appearance, as fingerprints differ; then the states
+it dumps (`-dump FILE`), the behaviors it writes (`-simulate file=FILE`)
+and the counterexample (`-dumpTrace json|tla FILE`). The time naming an `-inv` expression is N.
 
 With --oracle, the oracle (a command running TLC) must produce NAME.out
 too, which validates the test; --bless writes NAME.out from the oracle.
@@ -227,7 +227,8 @@ def normalize(output, directory):
 
 def dumped(directory, options):
     """The files a run wrote in directory: dot files, each state's fingerprint
-    replaced by its number, behaviors, user output and the counterexample."""
+    replaced by its number, dumped states, behaviors, user output and the
+    counterexample."""
     text = ""
     for dot in sorted(directory.glob("*.dot")):
         ids = {}
@@ -236,7 +237,7 @@ def dumped(directory, options):
         for line in dot.read_text().splitlines():
             pattern = r"([ ;]|^)(-?\d+)(?=;)" if line.startswith("{rank") else r"(^|-> )(-?\d+)(?= )"
             text += re.sub(pattern, number, line) + "\n"
-    for written in sorted(directory.glob("*_0_*")) + sorted(directory.glob("*.txt")):   # -simulate file=, -userFile
+    for written in sorted(directory.glob("*.dump")) + sorted(directory.glob("*_0_*")) + sorted(directory.glob("*.txt")):   # -dump, -simulate file=, -userFile
         text += f"--- {written.name}\n" + written.read_text()
     for i, option in enumerate(options[:-2]):
         if option == "-dumpTrace" and (directory / options[i + 2]).exists():

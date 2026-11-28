@@ -4595,6 +4595,41 @@ static const struct { const char *name, *text; } standard_modules[] = {
      "        /\\ PrintT(\"CounterExample written: \" \\o _JsonTraceFile)\n"
      "\n"
      "====\n"},
+    {"_TLAPlusCounterExample",   /* TLC's -dumpTrace tla, its Serialize native and its file's module name here, not of CommunityModules */
+     "----------------------- MODULE _TLAPlusCounterExample ------------------------\n"
+     "LOCAL INSTANCE TLC\n"
+     "LOCAL INSTANCE TLCExt\n"
+     "LOCAL INSTANCE Sequences\n"
+     "LOCAL INSTANCE Naturals\n"
+     "\n"
+     "CONSTANT _TLAPlusCounterExampleFile\n"
+     "\n"
+     "LOCAL Serialize(val, absoluteFilename, options) == TRUE\n"
+     "\n"
+     "LOCAL _TLAPlusCounterExampleModule ==\n"
+     "\tLET f == _TLAPlusCounterExampleFile\n"
+     "\t    at == {i \\in 1..Len(f) - 3 : SubSeq(f, i, i + 3) = \".tla\"}\n"
+     "\t    i == CHOOSE i \\in at : \\A j \\in at : i <= j\n"
+     "\t    ModuleName == IF at = {} THEN f ELSE SubSeq(f, 1, i - 1) \\o SubSeq(f, i + 4, Len(f)) IN\n"
+     "\t\"---- MODULE \" \\o ModuleName \\o \" ----\\n\" \\o\n"
+     "    \"LOCAL INSTANCE TLC\\n\\n\" \\o\n"
+     "    \"CounterExample == \\n\\t\" \\o\n"
+     "    ToString(CounterExample) \\o \n"
+     "    \"\\n\\n====\"\n"
+     "\n"
+     "_TLAPlusCounterExample ==\n"
+     "    IF CounterExample.state = {} \\/ (\"console\" \\in DOMAIN CounterExample /\\ CounterExample[\"console\"] = FALSE) THEN TRUE ELSE\n"
+     "        /\\ Serialize(_TLAPlusCounterExampleModule,\n"
+     "    \t\t\t_TLAPlusCounterExampleFile,\n"
+     "    \t\t\t[\n"
+     "    \t\t\t\tformat |-> \"TXT\",\n"
+     "    \t\t\t\tcharset |-> \"UTF-8\",\n"
+     "    \t\t\t\topenOptions |-> <<\"WRITE\", \"CREATE\", \"TRUNCATE_EXISTING\">>\n"
+     "    \t\t\t]\n"
+     "           ).exitValue = 0\n"
+     "        /\\ PrintT(\"CounterExample written: \" \\o _TLAPlusCounterExampleFile)\n"
+     "\n"
+     "====\n"},
     {"Toolbox",
      "---- MODULE Toolbox ----\n"
      "\n\n\nLOCAL INSTANCE Naturals\n"
@@ -13136,7 +13171,7 @@ static void add_edge(int from, int to, int action) {
    it is found, an initial one filled, and each step as it is taken; then
    by depth the initial states and those a step was taken from. */
 static FILE *dump_file;
-static int dump_actions;
+static int dump_actions, dump_text;   /* dump_text: -dump FILE, each state as a trace prints it */
 static int *dump_ranked, dump_nranked;
 
 static void dump_rank(int idx) {
@@ -13146,6 +13181,12 @@ static void dump_rank(int idx) {
 }
 
 static void dump_node(int idx, Value **st) {
+    if (dump_text) {
+        fprintf(dump_file, "State %d:\n", idx + 1);
+        fprint_state(dump_file, st);
+        fputc('\n', dump_file);
+        return;
+    }
     Buf b = {0};
     for (int i = 0; i < nvars; i++) {
         if (i) buf_puts(&b, "\\n");
@@ -13164,6 +13205,7 @@ static void dump_node(int idx, Value **st) {
 }
 
 static void dump_edge(int from, int to, int action) {
+    if (dump_text) return;
     if (states[from].parent >= 0) dump_rank(from);
     fprintf(dump_file, "%lld -> %lld [label=\"%s\",color=\"black\",fontcolor=\"black\"];\n", (long long)state_fp(from),
             (long long)state_fp(to), dump_actions ? S(actions[action].name) : "");
@@ -13175,7 +13217,7 @@ static void dump_close(void) {
         if (!i || state_depth(s) != state_depth(dump_ranked[i - 1])) fprintf(dump_file, "%s{rank = same; ", i ? "}\n" : "");
         fprintf(dump_file, "%lld;", (long long)state_fp(s));
     }
-    fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
+    if (!dump_text) fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
     fclose(dump_file);
     dump_file = NULL;
     xfree(dump_ranked);
@@ -27389,7 +27431,7 @@ static void reset_check(void) {
     Z(shown_record); Z(shown_state); Z(numbered_text); Z(trace_path); Z(ntrace_path); Z(trace_failure);
     Z(trace_failure_java); Z(posts); Z(nposts); Z(possibles); Z(npossibles); Z(possible_counts);
     Z(expanding_depth); Z(expanding_state); Z(succ); Z(succ_count); Z(violation); Z(error_check);
-    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions);
+    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions); Z(dump_text);
     Z(dump_ranked); Z(dump_nranked); Z(picked_explored); Z(violation_fresh); Z(fingerprinting); Z(started);
     Z(empty_counter_example); Z(gen_after); Z(ngen_after); Z(printed); Z(follow); Z(seen_after);
     Z(nseen_after); Z(control); Z(batches); Z(claims); Z(results); Z(to_worker); Z(from_worker);
@@ -27453,6 +27495,9 @@ static void reset_check(void) {
     sym_max_error = 1;
     ty_int = (Type){.kind = TY_INT}, ty_bool = (Type){.kind = TY_BOOL}, ty_str = (Type){.kind = TY_STR}, ty_real = (Type){.kind = TY_REAL};
 }
+
+/* The module of TLC's that writes -dumpTrace FORMAT: _JsonTrace, _TLAPlusCounterExample. */
+static const char *trace_module(const char *format) { return strcmp(format, "json") ? "_TLAPlusCounterExample" : "_JsonTrace"; }
 
 static int check_model(const ManyanOptions *o) {
     static const char *none[] = {NULL};
@@ -27532,7 +27577,20 @@ static int check_model(const ManyanOptions *o) {
     modules = xrealloc(modules, sizeof(Module *) * (size_t)(nmodules + 1));
     modules[nmodules++] = root;
     /* TLC extends the root with the module of each -postCondition, and -dumpTrace json's */
-    int extra = (o->dump_trace != NULL);
+    /* each -dumpTrace's format and file, json's of dump_trace first */
+    const char *traces[8];
+    int ntraces = 0;
+    if (o->dump_trace) traces[ntraces++] = "json", traces[ntraces++] = o->dump_trace;
+    for (const char *const *p = o->dump_traces; p && p[0] && p[1] && ntraces < 8; p += 2) {
+        int again = 0;
+        for (int k = 0; k < ntraces; k += 2) again |= !strcmp(traces[k], p[0]);
+        if (again || (strcmp(p[0], "json") && strcmp(p[0], "tla"))) {
+            fprintf(stderr, "manyan: -dumpTrace writes json or tla, each once, not %s\n", p[0]);
+            return MANYAN_ERROR;
+        }
+        traces[ntraces++] = p[0], traces[ntraces++] = p[1];
+    }
+    int extra = ntraces / 2;
     for (const char *const *p = o->postconditions; p && *p; p++) extra++;
     int *extends = NEWN(int, root->nextends + extra + 1);
     if (root->nextends) memcpy(extends, root->extends, sizeof(int) * (size_t)root->nextends);
@@ -27545,10 +27603,8 @@ static int check_model(const ManyanOptions *o) {
         }
         root->extends[root->nextends++] = intern_n(*p, (int)(bang - *p));
     }
-    if (o->dump_trace) {
-        intern("action");   /* before _JsonTrace's "state", as TLC */
-        root->extends[root->nextends++] = intern("_JsonTrace");
-    }
+    if (ntraces) intern("action");   /* before CounterExample's "state", as TLC */
+    for (int k = 0; k < ntraces; k += 2) root->extends[root->nextends++] = intern(trace_module(traces[k]));
     load_references(root);
     finish_module(root);
     resolve_module(root);
@@ -27578,9 +27634,12 @@ static int check_model(const ManyanOptions *o) {
     for (int i = 0; i < ninvs; i++) cfg_add("INVARIANT", invs[i], 0, NULL, 0, 0, NULL);
     for (const char *const *p = o->postconditions; p && *p; p++)
         cfg_add("POSTCONDITION", intern(strchr(*p, '!') + 1), 0, NULL, 0, intern_n(*p, (int)(strchr(*p, '!') - *p)), NULL);
-    if (o->dump_trace) {
-        cfg_add("CONSTANT", intern("_JsonTraceFile"), '=', mk_str(intern(o->dump_trace)), 0, 0, NULL);
-        cfg_add("POSTCONDITION", intern("_JsonTrace"), 0, NULL, 0, intern("_JsonTrace"), NULL);
+    for (int k = 0; k < ntraces; k += 2) {   /* as TLC, a postcondition of its module, the file its constant */
+        const char *m = trace_module(traces[k]);
+        char file[64];
+        snprintf(file, sizeof file, "%sFile", m);
+        cfg_add("CONSTANT", intern(file), '=', mk_str(intern(traces[k + 1])), 0, 0, NULL);
+        cfg_add("POSTCONDITION", intern(m), 0, NULL, 0, intern(m), NULL);
     }
     setup_model();
 
@@ -27636,8 +27695,9 @@ static int check_model(const ManyanOptions *o) {
     handler = NULL;
     if (o->dump && !o->simulate) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "manyan: cannot write %s\n", o->dump); return MANYAN_ERROR; }
-        fputs("strict digraph DiskGraph {\nnode [shape=box,style=rounded]\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
         dump_actions = o->dump_actions;
+        dump_text = o->dump_text;
+        if (!dump_text) fputs("strict digraph DiskGraph {\nnode [shape=box,style=rounded]\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
     }
     /* A simulation is TLC's with one worker; -continue reports in the search's order.
        A 32-bit build has one worker, which prints what any number print. */
@@ -27755,7 +27815,9 @@ int main(int argc, char **argv) {
     const char **properties = xcalloc((size_t)argc, sizeof(char *));
     const char **invariants = xcalloc((size_t)argc, sizeof(char *));
     const char **postconditions = xcalloc((size_t)argc, sizeof(char *));
-    int nproperties = 0, ninvariants = 0, npostconditions = 0;
+    const char **dump_traces = xcalloc((size_t)argc, sizeof(char *));
+    int nproperties = 0, ninvariants = 0, npostconditions = 0, ndump_traces = 0;
+    o.dump_traces = dump_traces;
     o.properties = properties;
     o.invariants = invariants;
     o.postconditions = postconditions;
@@ -27789,17 +27851,16 @@ int main(int argc, char **argv) {
             i++;
             o.workers = strcmp(argv[i], "auto") == 0 ? (int)sysconf(_SC_NPROCESSORS_ONLN) : atoi(argv[i]);
         }
-        else if (strcmp(argv[i], "-dump") == 0 && i + 2 < argc) {
-            /* -dump dot[,actionlabels,...] FILE writes FILE.dot, as TLC. */
-            const char *format = argv[++i], *file = argv[++i];
-            if (strncmp(format, "dot", 3) != 0 || (format[3] && format[3] != ',')) {
-                fprintf(stderr, "manyan: -dump writes only dot: -dump dot FILE\n");
-                return MANYAN_ERROR;
-            }
-            o.dump_actions = strstr(format, "actionlabels") != NULL;
-            size_t n = strlen(file);
-            char *path = xmalloc(n + 5);
-            sprintf(path, "%s%s", file, n >= 4 && strcmp(file + n - 4, ".dot") == 0 ? "" : ".dot");
+        else if (strcmp(argv[i], "-dump") == 0 && i + 1 < argc) {
+            /* As TLC: -dump dot[,actionlabels,...] FILE writes FILE.dot, -dump FILE the states to FILE.dump. */
+            const char *format = argv[++i];
+            int dot = !strncmp(format, "dot", 3) && (!format[3] || format[3] == ',') && i + 1 < argc;
+            const char *file = dot ? argv[++i] : format, *ext = dot ? ".dot" : ".dump";
+            o.dump_actions = dot && strstr(format, "actionlabels") != NULL;
+            o.dump_text = !dot;
+            size_t n = strlen(file), k = strlen(ext);
+            char *path = xmalloc(n + k + 1);
+            sprintf(path, "%s%s", file, n >= k && strcmp(file + n - k, ext) == 0 ? "" : ext);
             o.dump = path;
         } else if (strcmp(argv[i], "-version") == 0) { printf("manyan version %s\n", MANYAN_VERSION); return 0; }
         else if (strcmp(argv[i], "-nowarning") == 0) o.nowarning = 1;
@@ -27832,8 +27893,8 @@ int main(int argc, char **argv) {
             postconditions[npostconditions++] = pc;
         }
         else if (strcmp(argv[i], "-dumpTrace") == 0 && i + 2 < argc) {
-            if (strcmp(argv[++i], "json")) { fprintf(stderr, "manyan: -dumpTrace writes only json: -dumpTrace json FILE\n"); return MANYAN_ERROR; }
-            o.dump_trace = argv[++i];
+            dump_traces[ndump_traces++] = argv[++i];
+            dump_traces[ndump_traces++] = argv[++i];
         }
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-help") == 0) { printf("%s", usage); return 0; }
         else if (strcmp(argv[i], "-fp") == 0 && i + 1 < argc) {
