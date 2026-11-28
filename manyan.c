@@ -13447,7 +13447,7 @@ static int check_initial(Value **st) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name)), found_violated(implied_inits[bad].name);
         if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
         found_behavior(&st, (int[]){-1}, 1, 0, 0);
-        if (!keep_going || simulating) post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
+        post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         return MANYAN_VIOLATION_LIVENESS;
     }
     return 0;

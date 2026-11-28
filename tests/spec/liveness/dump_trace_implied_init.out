@@ -1,0 +1,13 @@
+Error: Property line 9, col 35 to line 9, col 39 of module dump_trace_implied_init is violated by the initial state:
+x = 0
+
+"CounterExample written: trace.tla"
+exit 13
+--- trace.tla
+---- MODULE trace ----
+LOCAL INSTANCE TLC
+
+CounterExample == 
+	[action |-> {}, state |-> {<<1, [x |-> 0]>>}]
+
+====
