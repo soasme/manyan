@@ -55,7 +55,7 @@ class TestExamples(unittest.TestCase):
         mod = _load_example("bounded_queue")
         hints = get_type_hints(mod.BoundedQueue, include_extras=True)
         self.assertIsInstance(get_args(hints["bounded"])[1], Invariant)
-        self.assertIsInstance(get_args(hints["eventually_drained"])[1], Property)
+        self.assertIsInstance(get_args(hints["eventually_makes_space"])[1], Property)
 
         rb = mod.RingBuffer(capacity=3)
         rb.push("a")

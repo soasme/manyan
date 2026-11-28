@@ -5,17 +5,24 @@ the library beside this file, through manyan.h."""
 import ctypes
 import json
 import os
+import shutil
 import subprocess
 import sys
 import sysconfig
 import tempfile
 import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, List, Optional, Union
+
+from .temporal import CompiledModel, TemporalCompileError, compile_file, compile_source
 
 
 def find_manyan_bin():
     """The path of the manyan executable this package installed."""
+    env = os.environ.get("MANYAN")
+    if env and os.path.isfile(env):
+        return env
     name = "manyan.exe" if sys.platform == "win32" else "manyan"
     schemes = [sysconfig.get_default_scheme()] if hasattr(sysconfig, "get_default_scheme") else []
     schemes.append(os.name + "_user")
@@ -23,6 +30,9 @@ def find_manyan_bin():
         path = os.path.join(sysconfig.get_path("scripts", scheme), name)
         if os.path.isfile(path):
             return path
+    found = shutil.which(name)
+    if found:
+        return found
     raise FileNotFoundError(name)
 
 
@@ -95,6 +105,9 @@ def run(args, cwd=None, stdin=None):
 
 def find_manyan_lib():
     """The path of the library this package installed: manyan.c built to link."""
+    env = os.environ.get("MANYAN_LIB")
+    if env and os.path.isfile(env):
+        return env
     name = {"darwin": "libmanyan.dylib", "win32": "manyan.dll"}.get(sys.platform, "libmanyan.so")
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
     if os.path.isfile(path):
@@ -114,7 +127,7 @@ _Strings = ctypes.POINTER(ctypes.c_char_p)
 
 class _Options(ctypes.Structure):   # manyan.h's ManyanOptions, in its order
     _fields_ = [("spec", ctypes.c_char_p), ("config", ctypes.c_char_p), ("check_deadlock", ctypes.c_int),
-                ("dump", ctypes.c_char_p), ("dump_actions", ctypes.c_int), ("nowarning", ctypes.c_int),
+                ("dump", ctypes.c_char_p), ("dump_actions", ctypes.c_int), ("dump_text", ctypes.c_int), ("nowarning", ctypes.c_int),
                 ("difftrace", ctypes.c_int), ("view", ctypes.c_int), ("keep_going", ctypes.c_int),
                 ("stack", ctypes.c_int), ("user_file", ctypes.c_char_p), ("workers", ctypes.c_int),
                 ("simulate", ctypes.c_int), ("generate", ctypes.c_int), ("traces", ctypes.c_long),
@@ -123,7 +136,7 @@ class _Options(ctypes.Structure):   # manyan.h's ManyanOptions, in its order
                 ("properties", _Strings), ("symbolic", ctypes.c_int), ("length", ctypes.c_long), ("length_given", ctypes.c_int),
                 ("cinit", ctypes.c_char_p), ("max_error", ctypes.c_long), ("run_dir", ctypes.c_char_p),
                 ("typecheck", ctypes.c_int), ("lint", ctypes.c_int), ("fmt", ctypes.c_int), ("invariants", _Strings), ("postconditions", _Strings),
-                ("dump_trace", ctypes.c_char_p), ("no_te_spec", ctypes.c_int), ("result", ctypes.POINTER(_Result))]
+                ("dump_trace", ctypes.c_char_p), ("dump_traces", _Strings), ("no_te_spec", ctypes.c_int), ("result", ctypes.POINTER(_Result))]
 
 
 _lib = None
@@ -216,10 +229,111 @@ def check(spec, **options):
             out.seek(0)
             output = out.read().decode(errors="replace")
         violated = []
-        while r.violated[len(violated)]:
-            violated.append(r.violated[len(violated)].decode())
+        if r.violated:
+            while r.violated[len(violated)]:
+                violated.append(r.violated[len(violated)].decode())
         count = [None if c < 0 else c for c in (r.generated, r.distinct, r.left, r.depth)]
         result = Result([_value(lib, r.states[i]) for i in range(r.length)],
                         [_value(lib, r.actions[i]) for i in range(r.length + (r.loop > 0))],
                         r.loop, violated, *count)
     return Run(status, output, result)
+
+
+@dataclass
+class TemporalRun:
+    """Result of compiling and checking one Temporal model or function contract."""
+
+    compiled: CompiledModel
+    run: Run
+
+    @property
+    def ok(self) -> bool:
+        return self.run.status == 0
+
+    @property
+    def name(self) -> str:
+        return self.compiled.name
+
+
+def _resolve_temporal_sources(target: Union[str, os.PathLike]) -> List[Path]:
+    p = Path(target)
+    if p.is_file():
+        return [p]
+    if p.is_dir():
+        return sorted(f for f in p.rglob("*.py") if not f.name.startswith("__"))
+    raise FileNotFoundError(str(target))
+
+
+def emit_temporal(
+    target: Union[str, os.PathLike],
+    *,
+    spec: Optional[str] = None,
+    model: Optional[str] = None,
+    mode: str = "all",
+) -> List[CompiledModel]:
+    """Compile Temporal declarations in a Python file, directory, or source string to TLA+."""
+    if isinstance(target, str) and "\n" in target and not os.path.exists(target):
+        return compile_source(target, spec=spec, model=model, mode=mode)
+    compiled: List[CompiledModel] = []
+    for path in _resolve_temporal_sources(target):
+        compiled.extend(compile_file(path, spec=spec, model=model, mode=mode))
+    return compiled
+
+
+def check_temporal(
+    target: Union[str, os.PathLike],
+    *,
+    spec: Optional[str] = None,
+    model: Optional[str] = None,
+    mode: str = "all",
+    workers: int = 1,
+    check_deadlock: Optional[bool] = None,
+    symbolic: bool = False,
+    length: Optional[int] = None,
+) -> List[TemporalRun]:
+    """Compile and model-check Temporal declarations in Python source with Manyan."""
+    compiled = emit_temporal(target, spec=spec, model=model, mode=mode)
+    results: List[TemporalRun] = []
+    for cm in compiled:
+        with tempfile.TemporaryDirectory() as d:
+            tla_path = Path(d) / f"{cm.module_name}.tla"
+            cfg_path = Path(d) / f"{cm.module_name}.cfg"
+            tla_path.write_text(cm.tla, encoding="utf-8")
+            cfg_path.write_text(cm.cfg, encoding="utf-8")
+
+            args: List[str] = []
+            if workers and workers > 1:
+                args.extend(["-workers", str(workers)])
+            if check_deadlock is False:
+                args.append("-deadlock")
+            if symbolic:
+                args.append("-symbolic")
+                if length is not None:
+                    args.extend(["-length", str(length)])
+            args.append(cm.module_name)
+
+            try:
+                find_manyan_lib()
+            except FileNotFoundError:
+                run_res = run(args, cwd=d)
+            else:
+                opts: dict = {}
+                if workers and workers > 1:
+                    opts["workers"] = workers
+                if check_deadlock is not None:
+                    opts["check_deadlock"] = int(check_deadlock)
+                elif "CHECK_DEADLOCK FALSE" in cm.cfg:
+                    opts["check_deadlock"] = 0
+                if symbolic:
+                    opts["symbolic"] = 1
+                    if length is not None:
+                        opts["length"] = length
+                here = os.getcwd()
+                os.chdir(d)
+                try:
+                    run_res = check(cm.module_name, **opts)
+                finally:
+                    os.chdir(here)
+
+            results.append(TemporalRun(compiled=cm, run=run_res))
+    return results

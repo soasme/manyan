@@ -40,9 +40,9 @@ class BoundedQueue(Protocol[T]):
     positive_capacity: Annotated[bool, Assume(lambda s: s.capacity > 0)]
     init: Annotated[bool, Init(lambda s: s.items == ())]
     bounded: Annotated[bool, Invariant(lambda s: 0 <= len(s.items) <= s.capacity)]
-    eventually_drained: Annotated[
+    eventually_makes_space: Annotated[
         bool,
-        Property(lambda s: leads_to(len(s.items) > 0, len(s.items) == 0)),
+        Property(lambda s: leads_to(len(s.items) == s.capacity, len(s.items) < s.capacity)),
     ]
 
     def push(self, item: T) -> Annotated[

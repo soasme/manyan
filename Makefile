@@ -127,9 +127,11 @@ lib: $(LIB)
 $(LIB): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) -shared -fPIC -DMANYAN_NO_MAIN $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 
-# The Python package's run(), on this executable, and its check(), on this library.
+# The Python package's run(), on this executable, its check(), on this library,
+# and its Temporal Python-source checker.
 test-python: manyan $(LIB)
 	MANYAN_LIB=$(abspath $(LIB)) python3 python/test_manyan.py
+	MANYAN=$(abspath manyan) MANYAN_LIB=$(abspath $(LIB)) python3 python/test_temporal.py
 
 # The oracle must agree with every expected output, which validates the tests.
 test-spec-oracle: manyan $(TLA_JAR) $(COMMUNITY)
