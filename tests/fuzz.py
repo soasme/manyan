@@ -1079,6 +1079,8 @@ def sim(engine, tlc, runs, seed):
                    "-seed", str(rng.randint(0, 999))] + ["-continue"] * (rng.random() < 0.3)
         ours = spec_runner.run(engine + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
+        # A temporal property's counterexample differs where its lasso leaves the
+        # behavior: TLC prints the behavior's first states instead (docs/manual.md).
         if ours != back_into(theirs):
             failed += 1
             print(f"DIFF {path.relative_to(ROOT)} {' '.join(options)}\n--- engine\n{ours}--- TLC\n{theirs}")
