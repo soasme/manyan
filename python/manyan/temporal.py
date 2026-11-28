@@ -816,13 +816,16 @@ class _ModuleExtractor:
                 else:
                     items = kw.value.elts if isinstance(kw.value, (ast.Tuple, ast.List)) else []
                     names = [
-                        e.attr if isinstance(e, ast.Attribute) else (e.id if isinstance(e, ast.Name) else "")
+                        e.value if (isinstance(e, ast.Constant) and isinstance(e.value, str))
+                        else (e.attr if isinstance(e, ast.Attribute) else (e.id if isinstance(e, ast.Name) else ""))
                         for e in items
                     ]
                     setattr(model, f"{kw.arg}_override", [n for n in names if n])
             elif kw.arg == "init":
                 if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                     model.init_override = None
+                elif isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                    model.init_override = kw.value.value
                 elif isinstance(kw.value, ast.Attribute):
                     model.init_override = kw.value.attr
                 elif isinstance(kw.value, ast.Name):

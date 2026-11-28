@@ -55,6 +55,8 @@ without importing or executing user modules:
 ```sh
 python -m manyan check path/to/spec.py
 python -m manyan check --spec-only path/to/spec.py
+python -m manyan check --workers 4 path/to/spec.py
+python -m manyan check --symbolic --length 10 path/to/spec.py
 python -m manyan emit path/to/spec.py
 python -m manyan path/to/spec.py
 ```

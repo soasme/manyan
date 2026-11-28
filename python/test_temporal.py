@@ -541,6 +541,29 @@ m = Model(Bad)
             manyan.emit_temporal(bad)
         self.assertIn("line 9:", str(ctx.exception))
 
+    def test_model_string_overrides_for_init_actions_and_invariants(self) -> None:
+        src = """from typing import Annotated
+from temporal import Action, Init, Invariant, Model, State, prime
+
+class Counter:
+    x: State[int]
+    init_zero: Annotated[bool, Init(lambda s: s.x == 0)]
+    init_five: Annotated[bool, Init(lambda s: s.x == 5)]
+    non_neg: Annotated[bool, Invariant(lambda s: s.x >= 0)]
+    under_three: Annotated[bool, Invariant(lambda s: s.x < 3)]
+    inc: Annotated[bool, Action(lambda s: s.x < 2 and prime(s.x) == s.x + 1)]
+    reset: Annotated[bool, Action(lambda s: prime(s.x) == 0)]
+
+ok_model = Model(Counter, init="init_zero", actions=("inc", "reset"), invariants=("non_neg", "under_three"))
+fail_model = Model(Counter, init="init_five", actions=("reset",), invariants=("under_three",))
+"""
+        runs = manyan.check_temporal(src)
+        self.assertEqual([r.name for r in runs], ["ok_model", "fail_model"])
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+        self.assertEqual(runs[1].run.status, 12)
+        assert runs[1].run.result is not None
+        self.assertEqual(runs[1].run.result.violated, ["under_three"])
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:

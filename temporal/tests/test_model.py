@@ -139,6 +139,16 @@ class TestModel(unittest.TestCase):
         m_mod = Model(this_module, constants={"N": 2})
         self.assertIs(m_mod.spec, this_module)
 
+        def f(x: int) -> int:
+            return x
+
+        m_fn = Model(f, domains={"x": Domain.range(0, 2)})
+        self.assertIs(m_fn.spec, f)
+
+        m_named = Model(DummySpec, init="init", actions=("step",), invariants=("ok",), properties=())
+        self.assertEqual(m_named.invariants, ("ok",))
+        self.assertEqual(m_named.properties, ())
+
     def test_passivity(self) -> None:
         def boom(*args: object) -> bool:
             raise AssertionError("Model must never execute predicates")

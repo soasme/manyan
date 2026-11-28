@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Callable
 
 from temporal import (
     always,
@@ -22,7 +23,7 @@ from temporal import (
 
 class TestDeclarativePrimitives(unittest.TestCase):
     def test_all_primitives_are_passive_stubs(self) -> None:
-        calls = [
+        calls: list[tuple[str, Callable[[], object]]] = [
             ("implies", lambda: implies(True, False)),
             ("iff", lambda: iff(True, True)),
             ("choose", lambda: choose([1, 2], lambda x: x > 0)),

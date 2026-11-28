@@ -360,13 +360,13 @@ Refinement is declared in either of two ways:
 
 | `Model` field | TLA⁺ `.cfg` directive | Meaning |
 | --- | --- | --- |
-| `spec` | Target module | Specification class, protocol, generic alias, or module |
+| `spec` | Target module | Specification class, protocol, generic alias, `Annotated` alias, module, or function |
 | `constants` | `CONSTANT c = val` | Concrete values or `Symmetry` sets for `Constant` declarations |
 | `domains` | Finite domain bindings | Finite sets (`Domain`, `Symmetry`, `range`, etc.) for `TypeVar`s, types, or parameter names (e.g. `"deposit.amount"`) |
-| `init` | `INIT` | Optional override of initial predicate |
-| `actions` | `NEXT` | Optional subset/override of actions (`None` = all; `()` = none) |
-| `invariants` | `INVARIANT` | Optional subset/override of invariants (`None` = all; `()` = none) |
-| `properties` | `PROPERTY` | Optional subset/override of temporal properties (`None` = all; `()` = none) |
+| `init` | `INIT` | Optional override of initial predicate (name or callable) |
+| `actions` | `NEXT` | Optional subset/override of actions (names or callables; `None` = all; `()` = none) |
+| `invariants` | `INVARIANT` | Optional subset/override of invariants (names or callables; `None` = all; `()` = none) |
+| `properties` | `PROPERTY` | Optional subset/override of temporal properties (names or callables; `None` = all; `()` = none) |
 | `state_constraint` | `CONSTRAINT` | State-space bounding predicate (bounds exploration; not an invariant) |
 | `action_constraint` | `ACTION_CONSTRAINT` | Transition bounding predicate |
 | `symmetry` | `SYMMETRY` | Explicit symmetry sets (`Permutations(S)`); `Symmetry` values in `constants`/`domains` also declare symmetries |

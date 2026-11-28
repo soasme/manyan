@@ -19,7 +19,6 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from types import ModuleType
 from typing import Annotated, Any, Generic, Optional, TypeVar, Union
 
 __version__ = "0.1.0"
@@ -351,15 +350,19 @@ def _empty_dict() -> dict[Any, Any]:
 
 @dataclass(frozen=True)
 class Model:
-    """Declarative model configuration (Python equivalent of a TLA+ ``.cfg``)."""
+    """Declarative model configuration (Python equivalent of a TLA+ ``.cfg``).
 
-    spec: Union[type[Any], ModuleType]
+    ``spec`` may be a specification class, ``Protocol``, generic alias,
+    external ``Annotated[...]`` alias, module, or standalone function.
+    """
+
+    spec: Any
     constants: Mapping[str, Any] = field(default_factory=_empty_dict)
     domains: Mapping[Any, Iterable[Any]] = field(default_factory=_empty_dict)
-    init: Optional[Callable[..., Any]] = None
-    actions: Optional[Sequence[Callable[..., Any]]] = None
-    invariants: Optional[Sequence[Callable[..., Any]]] = None
-    properties: Optional[Sequence[Callable[..., Any]]] = None
+    init: Optional[Union[str, Callable[..., Any]]] = None
+    actions: Optional[Sequence[Union[str, Callable[..., Any]]]] = None
+    invariants: Optional[Sequence[Union[str, Callable[..., Any]]]] = None
+    properties: Optional[Sequence[Union[str, Callable[..., Any]]]] = None
     state_constraint: Optional[Callable[..., bool]] = None
     action_constraint: Optional[Callable[..., bool]] = None
     symmetry: Sequence[Symmetry[Any]] = ()
