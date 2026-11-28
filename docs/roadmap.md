@@ -20,6 +20,17 @@ from TLC.
   left, each for the reason it gives; one is reopened when a
   specification needs it. Its known gaps are to be closed. The order of `Print` output in a simulation
   that stops early is TLC's threads' timing.
+- Open, found by the fuzzers and not yet closed:
+  - With `-dumpTrace`, a spec's own `POSTCONDITION` that prints
+    `CounterExample` shows TLC's record `state` first, as TLC builds it,
+    where Manyan prints it sorted, `action` first (the manual's
+    limitation). Closing it means keeping a record in the order it was
+    built until a field of it is read, as TLC normalizes then. It is
+    most of what `fuzz-check` and `fuzz-sim` still report.
+  - Where an error stops a simulation, the number of states generated
+    can differ from TLC's (1 for 2; 10 for 5 with `num=4`). The runners
+    ignore the line, so no test catches it.
+  - `fuzz-check` draws neither `-metadir` nor `-gzip`.
 - Follow new TLC releases. For each one, re-pin
   the oracle and re-bless the tests that changed.
 - Give TLC's counterexample to a temporal property. Of 1500 random graphs
@@ -48,8 +59,29 @@ from TLC.
 - Most specs are small or medium and get checked again after every edit.
   They should finish in milliseconds, fast enough to check on save, in a
   pre-commit hook or in CI.
-- Large models should fit in less memory per state. A state set kept on disk
-  would allow state spaces larger than RAM.
+- Large models should fit in less memory per state, and state spaces
+  larger than RAM should check at disk speed. `-metadir` (after 0.18.0)
+  maps the store of states and their records from files. In a Linux
+  container without swap, PaxosCommit (1.32M states, 149 MB in memory)
+  is killed under 100 MB without it; with it, it checks under 100 MB in
+  55 s, as fast as without a cap, under 50 MB in 506 s, and under 30 MB
+  it thrashes until killed after 46 minutes. What stays in memory, and
+  what makes it thrash:
+  - The fingerprint set holds each state's index, not its fingerprint:
+    each lookup reads the state's record, at random in its file.
+    TLC's `DiskFPSet` keeps the fingerprints, a bounded table in memory
+    and a sorted file it searches with about one read per lookup.
+  - Every state found is kept, encoded, for traces and liveness. TLC
+    keeps only the states still to expand (`DiskStateQueue`), and for a
+    trace a file of each state's fingerprint and predecessor
+    (`TLCTrace`), from which it computes the states again.
+  - A state's steps for liveness (`state_edges`) are in memory. TLC's
+    `DiskGraph` keeps them in files, with an in-memory table from
+    fingerprint to file offset.
+  - Up to 2^29 states: the fingerprint set's slots are 30 bits.
+  TLC's design is the one to follow: the same files, each a bounded
+  buffer in memory. The first step is the fingerprint set; then the
+  steps for liveness.
 - Checking should scale with cores, liveness checking included.
 - Before any speedup is kept, `docs/benchmark.md` must show it and show no
   regression elsewhere.
