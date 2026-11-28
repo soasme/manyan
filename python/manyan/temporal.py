@@ -883,7 +883,8 @@ class _ExprCompiler:
         self.needs_helpers = needs_helpers if needs_helpers is not None else set()
 
     def _reserved_names(self) -> set[str]:
-        reserved = set(self.var_types.keys())
+        reserved = set(self.var_types.keys()) | set(self.param_map.keys())
+        reserved |= {v for v in self.param_map.values() if v.isidentifier()}
         for m in self.extractor.models:
             _collect_model_values(m.constants, reserved)
             _collect_model_values(m.domains, reserved)
@@ -1020,6 +1021,15 @@ class _ExprCompiler:
                 return self.param_map[node.id]
             if self.spec and (node.id in self.spec.states or node.id in self.spec.ghosts or node.id in self.spec.constants):
                 return self._state_ref(node.id, use_prime)
+            if node.id in self.extractor.env:
+                val = self.extractor.env[node.id]
+                mvs: set[str] = set()
+                _collect_model_values(val, mvs)
+                for mv in mvs:
+                    self.needs_helpers.add(f"_MV:{mv}")
+                if isinstance(val, _DomainVal):
+                    return _format_domain_tla(val)
+                return _format_cfg_value(val)
             return node.id
 
         if isinstance(node, ast.Attribute):
@@ -1323,7 +1333,19 @@ class _ExprCompiler:
                     return f"(({a})..(({b}) - 1))"
             if fname == "tuple" and len(node.args) == 1 and isinstance(node.args[0], ast.GeneratorExp):
                 return self._compile_tuple_gen(node.args[0], use_prime)
+            if tname == "ModelValue" and len(node.args) == 1:
+                mv_name = str(self.extractor._eval_const(node.args[0]))
+                self.needs_helpers.add(f"_MV:{mv_name}")
+                return mv_name
+            if fname in self.extractor.model_value_sorts and len(node.args) == 1:
+                mv_name = str(self.extractor._eval_const(node.args[0]))
+                self.needs_helpers.add(f"_MV:{mv_name}")
+                return mv_name
             if self.spec and fname in self.spec.pure_ops:
+                args = ", ".join(self.compile(a, primed=use_prime) for a in node.args)
+                return f"{fname}({args})" if args else fname
+            if fname in self.extractor.functions:
+                self.needs_helpers.add(f"_FN:{fname}")
                 args = ", ".join(self.compile(a, primed=use_prime) for a in node.args)
                 return f"{fname}({args})" if args else fname
 
@@ -1769,7 +1791,7 @@ def _compile_pure_function(
             elif isinstance(s, ast.While):
                 loop_vars = sorted(cur_env.keys())
                 all_args = params + [v for v in loop_vars if v not in params]
-                loop_name = f"_loop_{op_name}"
+                loop_name = f"_loop_{op_name}_{len(extra_defs)}"
                 init_vals = [cur_env.get(v, f"{param_prefix}{v}") for v in all_args]
                 loop_env = {v: f"_l_{v}" for v in all_args}
                 loop_formals = [loop_env[v] for v in all_args]
@@ -1795,8 +1817,17 @@ def _compile_pure_function(
                                 needs_helpers.add("NONE")
                                 return "NONE"
                             return lc().compile(bs.value)
-                        if isinstance(bs, ast.Assign) and len(bs.targets) == 1 and isinstance(bs.targets[0], ast.Name):
-                            le[bs.targets[0].id] = lc().compile(bs.value)
+                        if isinstance(bs, ast.Assign) and len(bs.targets) == 1:
+                            btgt = bs.targets[0]
+                            if isinstance(btgt, ast.Name):
+                                le[btgt.id] = lc().compile(bs.value)
+                            elif isinstance(btgt, ast.Tuple) and isinstance(bs.value, ast.Tuple):
+                                bvals = [lc().compile(v) for v in bs.value.elts]
+                                for t_elt, val in zip(btgt.elts, bvals):
+                                    if isinstance(t_elt, ast.Name):
+                                        le[t_elt.id] = val
+                            else:
+                                raise _err(f"Unsupported assignment in while loop of {fn.name}", bs, extractor.source_path)
                         elif isinstance(bs, ast.AnnAssign) and isinstance(bs.target, ast.Name) and bs.value is not None:
                             le[bs.target.id] = lc().compile(bs.value)
                         elif isinstance(bs, ast.AugAssign) and isinstance(bs.target, ast.Name):
@@ -2189,6 +2220,29 @@ def _compile_refinement(
     return added_temporal
 
 
+def _emit_helper_functions(
+    extractor: _ModuleExtractor,
+    needs_helpers: set[str],
+    *,
+    exclude: Optional[set[str]] = None,
+) -> list[str]:
+    emitted: set[str] = set(exclude or ())
+    defs: list[str] = []
+    while True:
+        pending = sorted(h[4:] for h in needs_helpers if h.startswith("_FN:") and h[4:] not in emitted)
+        if not pending:
+            return defs
+        for hname in pending:
+            emitted.add(hname)
+            hdecl = extractor.functions[hname]
+            h_extra, h_body = _compile_pure_function(
+                hdecl.func, extractor, dict(hdecl.params), needs_helpers, hname, param_prefix="_p_"
+            )
+            defs.extend(h_extra)
+            h_pargs = ", ".join(f"_p_{p}" for p, _ in hdecl.params)
+            defs.append(f"{hname}({h_pargs}) == {h_body}" if h_pargs else f"{hname} == {h_body}")
+
+
 def _compile_spec_model(
     extractor: _ModuleExtractor,
     spec: _SpecDecl,
@@ -2493,9 +2547,14 @@ def _compile_spec_model(
     if has_fairness_or_liveness:
         body_defs.append("Spec == " + " /\\ ".join(["Init", "[][Next]__vars", *fairness_parts]))
 
+    helper_fn_defs = _emit_helper_functions(extractor, needs_helpers)
+
     extends = [m for m in ("Integers", "Sequences", "FiniteSets", "TLC") if m in needs_helpers]
     if "NONE" in needs_helpers:
         model_values.add("NONE")
+    for h in needs_helpers:
+        if h.startswith("_MV:"):
+            model_values.add(h[4:])
     for mv in sorted(model_values):
         if mv not in const_names:
             const_names.append(mv)
@@ -2514,6 +2573,7 @@ def _compile_spec_model(
     if "_Sum" in needs_helpers:
         lines.append("RECURSIVE _Sum(_)")
         lines.append("_Sum(s) == IF Len(s) = 0 THEN 0 ELSE Head(s) + _Sum(Tail(s))")
+    lines.extend(helper_fn_defs)
     lines.append("")
     lines.extend(body_defs)
     lines.append("====")
@@ -2610,6 +2670,7 @@ def _compile_standalone_function_model(
         if st is not None:
             snowcat_types[pn] = st
 
+    helper_fn_defs = _emit_helper_functions(extractor, needs_helpers, exclude={fn.name})
     extends = [m for m in ("Integers", "Sequences", "FiniteSets") if m in needs_helpers]
     lines = [f"---- MODULE {mod_name} ----", "EXTENDS " + ", ".join(extends)]
     if "NONE" in needs_helpers:
@@ -2618,6 +2679,7 @@ def _compile_standalone_function_model(
     if fn.params:
         state_vars = [p for p, _ in fn.params]
         lines.extend(_format_decl_block("VARIABLES", state_vars, snowcat_types))
+        lines.extend(helper_fn_defs)
         lines.extend(extra_defs)
         lines.append(f"{fn.name}({formal_pargs}) == {body_expr}")
         arg_call = f"{fn.name}(" + ", ".join(state_vars) + ")"
@@ -2707,6 +2769,8 @@ def compile_source(
             if fn_name in modeled_functions:
                 continue
             if spec is not None and fn_name != spec:
+                continue
+            if spec is None and not fn.ensures and not fn.return_type.wheres:
                 continue
             compiled.append(_compile_standalone_function_model(extractor, fn, source_path=source_path))
 

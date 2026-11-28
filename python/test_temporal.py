@@ -845,6 +845,69 @@ m = Model(Collections, domains={"item": Domain.values(1, 2)}, check_deadlock=Fal
         self.assertEqual(len(runs), 1)
         self.assertTrue(runs[0].ok, runs[0].run.output)
 
+    def test_module_constants_inline_model_values_pure_helpers_while_tuple_and_nondet_conformance(self) -> None:
+        src = """from typing import Annotated
+from temporal import Action, Ensures, Init, Invariant, Model, ModelValue, Pure, Requires, State, prime
+
+LIMIT = 4
+
+class Node(ModelValue):
+    pass
+
+PRIMARY = Node("n1")
+
+def is_even(x: int) -> Pure[bool]:
+    return x % 2 == 0
+
+class Switch:
+    leader: State[Node]
+    val: State[int]
+
+    init: Annotated[bool, Init(lambda s: s.leader == PRIMARY and s.val == 0)]
+    ok: Annotated[
+        bool,
+        Invariant(lambda s: s.leader in {Node("n1"), Node("n2")} and 0 <= s.val <= LIMIT and is_even(s.val)),
+    ]
+
+    def reset(self) -> Annotated[
+        None,
+        Action(lambda s: prime(s.val) in {0, 2} and prime(s.leader) == Node("n1")),
+    ]:
+        self.val = 0
+        self.leader = PRIMARY
+
+    def step(self) -> Annotated[
+        None,
+        Requires(lambda s: s.val < LIMIT),
+        Action(lambda s: prime(s.val) == s.val + 2),
+    ]:
+        self.val += 2
+
+def fib(n: int) -> Annotated[
+    Pure[int],
+    Requires(lambda n: 0 <= n <= 5),
+    Ensures(lambda n, result: result >= 0 and (n < 2 or result >= 1)),
+]:
+    a, b = 0, 1
+    i = 0
+    while i < n:
+        a, b = b, a + b
+        i += 1
+    return a
+
+m = Model(Switch)
+"""
+        # Default conformance mode: Switch.reset picks deterministic 0 (satisfies {0, 2}), plus fib passes!
+        runs = manyan.check_temporal(src)
+        self.assertEqual([r.name for r in runs], ["m", "fib"])
+        for tr in runs:
+            self.assertTrue(tr.ok, f"{tr.name}: {tr.run.output}")
+        # Spec-only mode explores both 0 and 2 from nondeterministic reset (3 distinct states: 0, 2, 4).
+        spec_runs = manyan.check_temporal(src, model="m", mode="spec-only")
+        self.assertTrue(spec_runs[0].ok, spec_runs[0].run.output)
+        assert spec_runs[0].run.result is not None
+        self.assertEqual(spec_runs[0].run.result.distinct, 3)
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:
