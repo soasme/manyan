@@ -1190,8 +1190,13 @@ def live_model(rng):
 
 def differs(ours, theirs):
     """Whether the engine printed other than TLC: two runs both killed past
-    their limits, of memory, time or output, print nothing to compare."""
+    their limits, of memory, time or output, print nothing to compare, nor
+    does TLC's NullPointerException where the engine reports what the model
+    does instead (docs/manual.md)."""
     if ours.endswith("exit killed\n") and theirs.endswith("exit killed\n"):
+        return False
+    npe = "The exception was a java.lang.NullPointerException"
+    if npe in theirs and npe not in ours:
         return False
     return ours != back_into(theirs)
 
