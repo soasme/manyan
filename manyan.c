@@ -27277,6 +27277,11 @@ static void fmt_expr_body(Fmt *f, Expr *e, int indent, int flat, int open_ok) {
         return;
     case X_OP: {
         if (e->n == 0) { fmt_puts(f, S(e->op)); return; }
+        if (e->named && (e->n == 2 ? !fmt_op_info(e->op, INFIX) : e->n > 2 || !expr_op_info(e))) {
+            fmt_puts(f, S(e->op));   /* +(a, b, c), =>(a): as written, an error SANY's semantics reports */
+            fmt_arg_list(f, e->args, e->n, indent, flat);
+            return;
+        }
         if (is_junction_op(e)) {
             if (e->bullet && e->n == 1) {
                 fmt_puts(f, S(e->op));
