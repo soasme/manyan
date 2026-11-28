@@ -1724,6 +1724,8 @@ def _compile_pure_function(
     var_types: dict[str, _TypeInfo],
     needs_helpers: set[str],
     op_name: str,
+    *,
+    param_prefix: str = "",
 ) -> tuple[list[str], str]:
     params = [a.arg for a in fn.args.args]
     extra_defs: list[str] = []
@@ -1753,6 +1755,12 @@ def _compile_pure_function(
                             cur_env[t_elt.id] = val
                 else:
                     raise _err(f"Unsupported assignment in pure function {fn.name}", s, extractor.source_path)
+            elif isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name) and s.value is not None:
+                cur_env[s.target.id] = comp().compile(s.value)
+            elif isinstance(s, ast.AugAssign) and isinstance(s.target, ast.Name):
+                cur_env[s.target.id] = comp().compile(
+                    ast.BinOp(left=ast.Name(id=s.target.id, ctx=ast.Load()), op=s.op, right=s.value)
+                )
             elif isinstance(s, ast.If):
                 cond = comp().compile(s.test)
                 then_expr = compile_block(s.body, cur_env)
@@ -1762,8 +1770,9 @@ def _compile_pure_function(
                 loop_vars = sorted(cur_env.keys())
                 all_args = params + [v for v in loop_vars if v not in params]
                 loop_name = f"_loop_{op_name}"
-                init_vals = [cur_env.get(v, v) for v in all_args]
-                loop_env = {v: v for v in all_args}
+                init_vals = [cur_env.get(v, f"{param_prefix}{v}") for v in all_args]
+                loop_env = {v: f"_l_{v}" for v in all_args}
+                loop_formals = [loop_env[v] for v in all_args]
                 loop_cond = _ExprCompiler(
                     extractor, None, var_types, param_map=loop_env, needs_helpers=needs_helpers
                 ).compile(s.test)
@@ -1788,6 +1797,8 @@ def _compile_pure_function(
                             return lc().compile(bs.value)
                         if isinstance(bs, ast.Assign) and len(bs.targets) == 1 and isinstance(bs.targets[0], ast.Name):
                             le[bs.targets[0].id] = lc().compile(bs.value)
+                        elif isinstance(bs, ast.AnnAssign) and isinstance(bs.target, ast.Name) and bs.value is not None:
+                            le[bs.target.id] = lc().compile(bs.value)
                         elif isinstance(bs, ast.AugAssign) and isinstance(bs.target, ast.Name):
                             le[bs.target.id] = lc().compile(
                                 ast.BinOp(left=ast.Name(id=bs.target.id, ctx=ast.Load()), op=bs.op, right=bs.value)
@@ -1804,7 +1815,7 @@ def _compile_pure_function(
                 step_expr = compile_loop_body(s.body, loop_env)
                 extra_defs.append(f"RECURSIVE {loop_name}({', '.join('_' for _ in all_args)})")
                 extra_defs.append(
-                    f"{loop_name}({', '.join(all_args)}) ==\n"
+                    f"{loop_name}({', '.join(loop_formals)}) ==\n"
                     f"  IF {loop_cond} THEN {step_expr}\n"
                     f"  ELSE {after_expr}"
                 )
@@ -1814,7 +1825,7 @@ def _compile_pure_function(
         needs_helpers.add("NONE")
         return "NONE"
 
-    body_expr = compile_block(fn.body, {p: p for p in params})
+    body_expr = compile_block(fn.body, {p: f"{param_prefix}{p}" for p in params})
     return extra_defs, body_expr
 
 
@@ -2549,10 +2560,12 @@ def _compile_standalone_function_model(
     mod_name = _sanitize_ident(f"Fn_{label}")
     needs_helpers: set[str] = {"Integers"}
     var_types = dict(fn.params)
-    extra_defs, body_expr = _compile_pure_function(fn.func, extractor, var_types, needs_helpers, fn.name)
+    extra_defs, body_expr = _compile_pure_function(
+        fn.func, extractor, var_types, needs_helpers, fn.name, param_prefix="_p_"
+    )
 
-    pargs = ", ".join(p for p, _ in fn.params)
-    call_expr = f"{fn.name}({pargs})" if pargs else fn.name
+    formal_pargs = ", ".join(f"_p_{p}" for p, _ in fn.params)
+    call_expr = f"{fn.name}({formal_pargs})" if formal_pargs else fn.name
 
     def param_domain(pn: str, pt: _TypeInfo) -> str:
         if model is not None:
@@ -2568,7 +2581,7 @@ def _compile_standalone_function_model(
             return "{<<>>, <<1>>, <<1, 3>>, <<1, 3, 5>>, <<2, 2, 4>>}"
         return "{0, 1, 2}"
 
-    arg_map = {p: f"_arg_{p}" for p, _ in fn.params}
+    arg_map = {p: p for p, _ in fn.params}
     pre_parts: list[str] = []
     for pn, pt in fn.params:
         for w in pt.wheres:
@@ -2591,24 +2604,30 @@ def _compile_standalone_function_model(
     pre_str = " /\\ ".join(pre_parts) if pre_parts else "TRUE"
     post_str = " /\\ ".join(post_parts) if post_parts else "TRUE"
 
+    snowcat_types: dict[str, str] = {}
+    for pn, pt in fn.params:
+        st = _snowcat_type(pt)
+        if st is not None:
+            snowcat_types[pn] = st
+
     extends = [m for m in ("Integers", "Sequences", "FiniteSets") if m in needs_helpers]
     lines = [f"---- MODULE {mod_name} ----", "EXTENDS " + ", ".join(extends)]
     if "NONE" in needs_helpers:
         lines.append("CONSTANTS NONE")
 
     if fn.params:
-        state_vars = [arg_map[p] for p, _ in fn.params]
-        lines.append("VARIABLES " + ", ".join(state_vars))
+        state_vars = [p for p, _ in fn.params]
+        lines.extend(_format_decl_block("VARIABLES", state_vars, snowcat_types))
         lines.extend(extra_defs)
-        lines.append(f"{fn.name}({pargs}) == {body_expr}")
+        lines.append(f"{fn.name}({formal_pargs}) == {body_expr}")
         arg_call = f"{fn.name}(" + ", ".join(state_vars) + ")"
-        dom_parts = [f"({arg_map[pn]} \\in {param_domain(pn, pt)})" for pn, pt in fn.params] + pre_parts
+        dom_parts = [f"({pn} \\in {param_domain(pn, pt)})" for pn, pt in fn.params] + pre_parts
         lines.append("Init == " + " /\\ ".join(dom_parts))
         unchanged_str = state_vars[0] if len(state_vars) == 1 else "<<" + ", ".join(state_vars) + ">>"
         lines.append(f"Next == UNCHANGED {unchanged_str}")
         lines.append(f"Contract_{fn.name} == (LET result == {arg_call} IN {post_str})")
     else:
-        lines.append("VARIABLES _done")
+        lines.extend(_format_decl_block("VARIABLES", ["_done"], {"_done": "Bool"}))
         lines.extend(extra_defs)
         lines.append(f"{fn.name} == {body_expr}")
         lines.append("Init == _done = TRUE")

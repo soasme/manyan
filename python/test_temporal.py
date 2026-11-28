@@ -214,6 +214,39 @@ def clamp(value: int, low: int, high: int) -> Annotated[
         self.assertEqual(runs[0].run.status, 12)
         assert runs[0].run.result is not None
         self.assertIn("Contract_clamp", runs[0].run.result.violated)
+        # Counterexample reports exact Python parameter names (not _arg_*).
+        self.assertIn("value", runs[0].run.result.states[0])
+        self.assertIn("low", runs[0].run.result.states[0])
+        self.assertIn("high", runs[0].run.result.states[0])
+
+    def test_catches_binary_search_off_by_one_and_weak_vs_strong_fairness_in_mutex(self) -> None:
+        contracts = (EXAMPLES / "contracts.py").read_text(encoding="utf-8")
+        buggy_bs = contracts.replace(
+            "while lo <= hi:\n        mid = (lo + hi) // 2\n        if xs[mid] == target:",
+            "while lo < hi:\n        mid = (lo + hi) // 2\n        if xs[mid] == target:",
+        )
+        r_bs = manyan.check_temporal(buggy_bs, spec="binary_search")[0]
+        self.assertEqual(r_bs.run.status, 12)
+        assert r_bs.run.result is not None
+        self.assertEqual(r_bs.run.result.violated, ["Contract_binary_search"])
+        self.assertEqual(r_bs.run.result.states[0], {"xs": (1,), "target": 1})
+
+        # Downgrading Mutex strong_fairness -> weak_fairness produces a real starvation lasso.
+        mutex = (EXAMPLES / "mutex.py").read_text(encoding="utf-8")
+        weak_mutex = mutex.replace("strong_fairness(s.acquire(p))", "weak_fairness(s.acquire(p))")
+        r_mux = manyan.check_temporal(weak_mutex)[0]
+        self.assertEqual(r_mux.run.status, 13, r_mux.run.output)
+        assert r_mux.run.result is not None
+        self.assertIn("starvation_free", r_mux.run.result.violated)
+        self.assertGreater(r_mux.run.result.loop, 0)
+
+        # Removing fairness from TwoPhaseCommit fails decision_propagates.
+        tpc = (EXAMPLES / "two_phase_commit.py").read_text(encoding="utf-8")
+        tpc_no_fair = tpc[:tpc.index("    fair: Annotated[")] + tpc[tpc.index("    decision_propagates:"):]
+        r_tpc = manyan.check_temporal(tpc_no_fair)[0]
+        self.assertEqual(r_tpc.run.status, 13, r_tpc.run.output)
+        assert r_tpc.run.result is not None
+        self.assertIn("decision_propagates", r_tpc.run.result.violated)
 
     def test_external_annotated_spec_alias(self) -> None:
         src = """from typing import Annotated
