@@ -22,6 +22,15 @@ class TemporalCompileError(ValueError):
     """Raised when a Temporal declaration cannot be translated to TLA+."""
 
 
+def _err(msg: str, node: Optional[ast.AST] = None, source: Optional[str] = None) -> TemporalCompileError:
+    lineno = getattr(node, "lineno", None)
+    if source and lineno is not None:
+        return TemporalCompileError(f"{source}:{lineno}: {msg}")
+    if lineno is not None:
+        return TemporalCompileError(f"line {lineno}: {msg}")
+    return TemporalCompileError(msg)
+
+
 # ---------------------------------------------------------------------------
 # Internal IR
 # ---------------------------------------------------------------------------
@@ -286,6 +295,7 @@ class _ModuleExtractor:
         self.env: dict[str, Any] = {}
         self.specs: dict[str, _SpecDecl] = {}
         self.models: list[_ModelDecl] = []
+        self.models_by_name: dict[str, _ModelDecl] = {}
         self.functions: dict[str, _PureDecl] = {}
 
     def _temporal_name(self, node: ast.expr) -> Optional[str]:
@@ -404,7 +414,7 @@ class _ModuleExtractor:
                 return self.env[node.id]
             if node.id in self.specs or node.id in self.model_value_sorts or node.id in self.typevars or node.id in ("int", "bool", "str"):
                 return node.id
-            raise TemporalCompileError(f"Unknown constant reference: {node.id!r}")
+            raise _err(f"Unknown constant reference: {node.id!r}", node, self.source_path)
         if isinstance(node, ast.Call):
             tname = self._temporal_name(node.func)
             if tname == "ModelValue" and len(node.args) == 1:
@@ -425,7 +435,7 @@ class _ModuleExtractor:
                     return _DomainVal("values", items=tuple(self._eval_const(a) for a in node.args))
                 if node.func.attr == "boolean":
                     return _DomainVal("boolean")
-        raise TemporalCompileError(f"Unsupported constant expression: {ast.dump(node)}")
+        raise _err(f"Unsupported constant expression: {ast.dump(node)}", node, self.source_path)
 
     def extract(self) -> None:
         for stmt in self.tree.body:
@@ -468,7 +478,19 @@ class _ModuleExtractor:
                 self.typevars.add(name)
                 return
             if self._temporal_name(value.func) == "Model":
-                self.models.append(self._extract_model(name, value))
+                m = self._extract_model(name, value)
+                self.models.append(m)
+                self.models_by_name[name] = m
+                return
+            if (
+                _dotted_name(value.func) in ("replace", "dataclasses.replace")
+                and len(value.args) == 1
+                and isinstance(value.args[0], ast.Name)
+                and value.args[0].id in self.models_by_name
+            ):
+                m = self._clone_model(name, self.models_by_name[value.args[0].id], value.keywords)
+                self.models.append(m)
+                self.models_by_name[name] = m
                 return
         if self._is_annotated(value):
             base, meta = self._annotated_parts(value)
@@ -727,7 +749,7 @@ class _ModuleExtractor:
 
     def _extract_model(self, name: str, call: ast.Call) -> _ModelDecl:
         if not call.args:
-            raise TemporalCompileError(f"Model {name!r} requires a specification argument")
+            raise _err(f"Model {name!r} requires a specification argument", call, self.source_path)
         spec_arg = call.args[0]
         if isinstance(spec_arg, ast.Subscript) and isinstance(spec_arg.value, ast.Name):
             spec_name = spec_arg.value.id
@@ -736,15 +758,41 @@ class _ModuleExtractor:
         elif isinstance(spec_arg, ast.Subscript) and _dotted_name(spec_arg.value) == "sys.modules":
             spec_name = self.module_spec_name
         else:
-            raise TemporalCompileError(f"Unsupported Model spec target in {name!r}")
+            raise _err(f"Unsupported Model spec target in {name!r}", spec_arg, self.source_path)
 
         model = _ModelDecl(name=name, spec_name=spec_name)
-        for kw in call.keywords:
+        self._apply_model_kwargs(model, call.keywords)
+        return model
+
+    def _clone_model(self, name: str, base: _ModelDecl, keywords: list[ast.keyword]) -> _ModelDecl:
+        cloned = _ModelDecl(
+            name=name,
+            spec_name=base.spec_name,
+            constants=dict(base.constants),
+            domains=dict(base.domains),
+            init_override=base.init_override,
+            actions_override=list(base.actions_override) if base.actions_override is not None else None,
+            invariants_override=list(base.invariants_override) if base.invariants_override is not None else None,
+            properties_override=list(base.properties_override) if base.properties_override is not None else None,
+            state_constraint=base.state_constraint,
+            action_constraint=base.action_constraint,
+            symmetry=list(base.symmetry),
+            view=base.view,
+            alias=base.alias,
+            postcondition=base.postcondition,
+            check_deadlock=base.check_deadlock,
+        )
+        self._apply_model_kwargs(cloned, keywords)
+        return cloned
+
+    def _apply_model_kwargs(self, model: _ModelDecl, keywords: list[ast.keyword]) -> None:
+        for kw in keywords:
             if kw.arg == "constants":
                 val = self._eval_const(kw.value)
                 if isinstance(val, dict):
-                    model.constants.update(val)
+                    model.constants = dict(val)
             elif kw.arg == "domains" and isinstance(kw.value, ast.Dict):
+                new_domains: dict[str, Any] = {}
                 for k_node, v_node in zip(kw.value.keys, kw.value.values):
                     if k_node is None:
                         continue
@@ -754,28 +802,31 @@ class _ModuleExtractor:
                         k = k_node.id
                     else:
                         k = str(self._eval_const(k_node))
-                    model.domains[k] = self._eval_const(v_node)
+                    new_domains[k] = self._eval_const(v_node)
+                model.domains = new_domains
             elif kw.arg == "check_deadlock":
                 model.check_deadlock = bool(self._eval_const(kw.value))
             elif kw.arg in ("state_constraint", "action_constraint", "view", "alias", "postcondition"):
-                setattr(model, kw.arg, kw.value)
+                setattr(model, kw.arg, None if (isinstance(kw.value, ast.Constant) and kw.value.value is None) else kw.value)
             elif kw.arg == "symmetry":
-                for item in self._eval_const(kw.value):
-                    if isinstance(item, _SymmetryVal):
-                        model.symmetry.append(item)
+                model.symmetry = [item for item in self._eval_const(kw.value) if isinstance(item, _SymmetryVal)]
             elif kw.arg in ("actions", "invariants", "properties"):
-                items = kw.value.elts if isinstance(kw.value, (ast.Tuple, ast.List)) else []
-                names = [
-                    e.attr if isinstance(e, ast.Attribute) else (e.id if isinstance(e, ast.Name) else "")
-                    for e in items
-                ]
-                setattr(model, f"{kw.arg}_override", [n for n in names if n])
+                if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                    setattr(model, f"{kw.arg}_override", None)
+                else:
+                    items = kw.value.elts if isinstance(kw.value, (ast.Tuple, ast.List)) else []
+                    names = [
+                        e.attr if isinstance(e, ast.Attribute) else (e.id if isinstance(e, ast.Name) else "")
+                        for e in items
+                    ]
+                    setattr(model, f"{kw.arg}_override", [n for n in names if n])
             elif kw.arg == "init":
-                if isinstance(kw.value, ast.Attribute):
+                if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                    model.init_override = None
+                elif isinstance(kw.value, ast.Attribute):
                     model.init_override = kw.value.attr
                 elif isinstance(kw.value, ast.Name):
                     model.init_override = kw.value.id
-        return model
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +844,7 @@ class _ExprCompiler:
         post_by_default: bool = False,
         param_map: Optional[dict[str, str]] = None,
         state_subst: Optional[dict[str, str]] = None,
+        next_subst: Optional[dict[str, str]] = None,
         action_prefix: str = "",
         needs_helpers: Optional[set[str]] = None,
     ) -> None:
@@ -803,6 +855,7 @@ class _ExprCompiler:
         self.post_by_default = post_by_default
         self.param_map = dict(param_map or {})
         self.state_subst = dict(state_subst or {})
+        self.next_subst = dict(next_subst or {})
         self.action_prefix = action_prefix
         self.needs_helpers = needs_helpers if needs_helpers is not None else set()
 
@@ -822,6 +875,7 @@ class _ExprCompiler:
             post_by_default=use_prime,
             param_map={**self.param_map, **extra_params},
             state_subst=self.state_subst,
+            next_subst=self.next_subst,
             action_prefix=self.action_prefix,
             needs_helpers=self.needs_helpers,
         )
@@ -864,11 +918,30 @@ class _ExprCompiler:
         return "any"
 
     def _state_ref(self, attr: str, primed: bool) -> str:
+        if primed and self.next_subst:
+            if attr in self.next_subst:
+                return f"({self.next_subst[attr]})"
+            if self.spec and attr in self.spec.pure_ops and self.spec.pure_ops[attr].is_property:
+                pdecl = self.spec.pure_ops[attr]
+                return _compile_func_predicate(
+                    pdecl.func, self.extractor, self.spec, self.var_types, self.needs_helpers, state_subst=self.next_subst
+                )
+            return attr
         if attr in self.state_subst:
             expr = self.state_subst[attr]
             if self.spec and attr in self.spec.constants:
                 return expr
             return f"{expr}'" if (primed and expr.isidentifier()) else (f"({expr})'" if primed else expr)
+        if (
+            self.state_subst
+            and self.spec
+            and attr in self.spec.pure_ops
+            and self.spec.pure_ops[attr].is_property
+        ):
+            pdecl = self.spec.pure_ops[attr]
+            return _compile_func_predicate(
+                pdecl.func, self.extractor, self.spec, self.var_types, self.needs_helpers, state_subst=self.state_subst
+            )
         if self.spec and attr in self.spec.constants:
             return attr
         return f"{attr}'" if primed else attr
@@ -888,7 +961,7 @@ class _ExprCompiler:
                 return str(node.value)
             if isinstance(node.value, str):
                 return _tla_string(node.value)
-            raise TemporalCompileError(f"Unsupported literal: {node.value!r}")
+            raise _err(f"Unsupported literal: {node.value!r}", node, self.extractor.source_path)
 
         if isinstance(node, ast.Name):
             if node.id in self.param_map:
@@ -909,7 +982,7 @@ class _ExprCompiler:
                 return f"(-({self.compile(node.operand, primed=use_prime)}))"
             if isinstance(node.op, ast.UAdd):
                 return self.compile(node.operand, primed=use_prime)
-            raise TemporalCompileError(f"Unsupported unary op: {type(node.op).__name__}")
+            raise _err(f"Unsupported unary op: {type(node.op).__name__}", node, self.extractor.source_path)
 
         if isinstance(node, ast.BoolOp):
             sep = " /\\ " if isinstance(node.op, ast.And) else " \\/ "
@@ -946,7 +1019,7 @@ class _ExprCompiler:
                 dom = self.compile(gen.iter, primed=use_prime)
                 val = self._sub(use_prime=use_prime, extra_params={orig: safe}).compile(node.value, primed=use_prime)
                 return f"[{safe} \\in {dom} |-> {val}]"
-            raise TemporalCompileError("Unsupported dict comprehension")
+            raise _err("Unsupported dict comprehension", node, self.extractor.source_path)
 
         if isinstance(node, ast.SetComp):
             if len(node.generators) == 1 and isinstance(node.generators[0].target, ast.Name):
@@ -961,7 +1034,7 @@ class _ExprCompiler:
                     return "{" + f"{safe} \\in {dom} : {cond}" + "}"
                 if not gen.ifs:
                     return "{" + f"{sub.compile(node.elt, primed=use_prime)} : {safe} \\in {dom}" + "}"
-            raise TemporalCompileError("Unsupported set comprehension")
+            raise _err("Unsupported set comprehension", node, self.extractor.source_path)
 
         if isinstance(node, ast.Subscript):
             return self._compile_subscript(node, use_prime)
@@ -969,7 +1042,7 @@ class _ExprCompiler:
         if isinstance(node, ast.Call):
             return self._compile_call(node, use_prime)
 
-        raise TemporalCompileError(f"Unsupported Python expression in specification: {ast.dump(node)}")
+        raise _err(f"Unsupported Python expression in specification: {ast.dump(node)}", node, self.extractor.source_path)
 
     def _compile_binop(self, node: ast.BinOp, use_prime: bool) -> str:
         lk, rk = self._infer_kind(node.left), self._infer_kind(node.right)
@@ -996,7 +1069,7 @@ class _ExprCompiler:
             return f"({left} \\cup {right})"
         if isinstance(node.op, ast.BitAnd):
             return f"({left} \\cap {right})"
-        raise TemporalCompileError(f"Unsupported binary op: {type(node.op).__name__}")
+        raise _err(f"Unsupported binary op: {type(node.op).__name__}", node, self.extractor.source_path)
 
     def _compile_compare(self, node: ast.Compare, use_prime: bool) -> str:
         parts: list[str] = []
@@ -1023,16 +1096,20 @@ class _ExprCompiler:
                 if rk == "seq":
                     self.needs_helpers.add("Sequences")
                     parts.append(f"(\\E _idx \\in 1..Len({r_str}) : {r_str}[_idx] = {l_str})")
+                elif rk == "map":
+                    parts.append(f"({l_str} \\in DOMAIN {r_str})")
                 else:
                     parts.append(f"({l_str} \\in {r_str})")
             elif isinstance(cmp_op, ast.NotIn):
                 if rk == "seq":
                     self.needs_helpers.add("Sequences")
                     parts.append(f"(~(\\E _idx \\in 1..Len({r_str}) : {r_str}[_idx] = {l_str}))")
+                elif rk == "map":
+                    parts.append(f"({l_str} \\notin DOMAIN {r_str})")
                 else:
                     parts.append(f"({l_str} \\notin {r_str})")
             else:
-                raise TemporalCompileError(f"Unsupported comparison: {type(cmp_op).__name__}")
+                raise _err(f"Unsupported comparison: {type(cmp_op).__name__}", node, self.extractor.source_path)
             cur = nxt
         return parts[0] if len(parts) == 1 else "(" + " /\\ ".join(parts) + ")"
 
@@ -1042,7 +1119,7 @@ class _ExprCompiler:
             updates = []
             for k, v in zip(node.keys[1:], node.values[1:]):
                 if k is None:
-                    raise TemporalCompileError("Multiple dict unpackings are not supported")
+                    raise _err("Multiple dict unpackings are not supported", node, self.extractor.source_path)
                 updates.append(f"![{self.compile(k, primed=use_prime)}] = {self.compile(v, primed=use_prime)}")
             return f"[{base} EXCEPT " + ", ".join(updates) + "]"
         if not node.keys:
@@ -1053,7 +1130,7 @@ class _ExprCompiler:
                 assert isinstance(k, ast.Constant) and isinstance(k.value, str)
                 pairs.append(f"{k.value} |-> {self.compile(v, primed=use_prime)}")
             return "[" + ", ".join(pairs) + "]"
-        raise TemporalCompileError("Unsupported non-string dict literal")
+        raise _err("Unsupported non-string dict literal", node, self.extractor.source_path)
 
     def _compile_subscript(self, node: ast.Subscript, use_prime: bool) -> str:
         obj_kind = self._infer_kind(node.value)
@@ -1129,7 +1206,7 @@ class _ExprCompiler:
                 safe = f"_q_{orig}" if orig in self._reserved_names() else orig
                 body = self._sub(use_prime=use_prime, extra_params={orig: safe}).compile(pred.body, primed=use_prime)
                 return f"(CHOOSE {safe} \\in {dom} : {body})"
-            raise TemporalCompileError("choose() predicate must be a 1-arg lambda")
+            raise _err("choose() predicate must be a 1-arg lambda", node, self.extractor.source_path)
 
         if isinstance(node.func, ast.Name):
             fname = node.func.id
@@ -1141,21 +1218,25 @@ class _ExprCompiler:
                 if k == "set":
                     self.needs_helpers.add("FiniteSets")
                     return f"Cardinality({arg})"
+                if k == "map":
+                    self.needs_helpers.add("FiniteSets")
+                    return f"Cardinality(DOMAIN {arg})"
                 self.needs_helpers.add("Sequences")
                 return f"Len({arg})"
             if fname == "sum" and len(node.args) == 1:
                 self.needs_helpers.update({"Sequences", "_Sum"})
                 return f"_Sum({self.compile(node.args[0], primed=use_prime)})"
-            if fname == "min" and len(node.args) == 2:
-                a, b = self.compile(node.args[0], primed=use_prime), self.compile(node.args[1], primed=use_prime)
-                return f"(IF {a} < {b} THEN {a} ELSE {b})"
-            if fname == "max" and len(node.args) == 2:
-                a, b = self.compile(node.args[0], primed=use_prime), self.compile(node.args[1], primed=use_prime)
-                return f"(IF {a} > {b} THEN {a} ELSE {b})"
+            if fname in ("min", "max") and len(node.args) >= 2:
+                op = "<" if fname == "min" else ">"
+                acc = self.compile(node.args[0], primed=use_prime)
+                for extra in node.args[1:]:
+                    b = self.compile(extra, primed=use_prime)
+                    acc = f"(IF {acc} {op} {b} THEN {acc} ELSE {b})"
+                return acc
             if fname == "abs" and len(node.args) == 1:
                 a = self.compile(node.args[0], primed=use_prime)
                 return f"(IF {a} < 0 THEN -({a}) ELSE {a})"
-            if fname == "frozenset":
+            if fname in ("frozenset", "set"):
                 return "{}" if not node.args else self.compile(node.args[0], primed=use_prime)
             if fname == "range":
                 if len(node.args) == 1:
@@ -1169,11 +1250,26 @@ class _ExprCompiler:
                 args = ", ".join(self.compile(a, primed=use_prime) for a in node.args)
                 return f"{fname}({args})" if args else fname
 
-        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == self.receiver:
-            args = ", ".join(self.compile(a, primed=use_prime) for a in node.args)
-            return f"{node.func.attr}({args})" if args else node.func.attr
+        if isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == self.receiver:
+                args = ", ".join(self.compile(a, primed=use_prime) for a in node.args)
+                return f"{node.func.attr}({args})" if args else node.func.attr
+            if node.func.attr == "keys" and not node.args:
+                return f"(DOMAIN {self.compile(node.func.value, primed=use_prime)})"
+            if node.func.attr == "values" and not node.args:
+                obj = self.compile(node.func.value, primed=use_prime)
+                return "{" + f"{obj}[_vk] : _vk \\in DOMAIN {obj}" + "}"
+            if node.func.attr == "get" and len(node.args) in (1, 2):
+                obj = self.compile(node.func.value, primed=use_prime)
+                key = self.compile(node.args[0], primed=use_prime)
+                if len(node.args) == 2:
+                    default = self.compile(node.args[1], primed=use_prime)
+                else:
+                    self.needs_helpers.add("NONE")
+                    default = "NONE"
+                return f"(IF {key} \\in DOMAIN {obj} THEN {obj}[{key}] ELSE {default})"
 
-        raise TemporalCompileError(f"Unsupported call in specification: {ast.dump(node)}")
+        raise _err(f"Unsupported call in specification: {ast.dump(node)}", node, self.extractor.source_path)
 
     def _compile_action_ref(self, node: ast.expr) -> str:
         if isinstance(node, ast.Call):
@@ -1200,7 +1296,7 @@ class _ExprCompiler:
         bound_specs: list[tuple[str, str, list[ast.expr]]] = []
         for comp in gen.generators:
             if not isinstance(comp.target, ast.Name):
-                raise TemporalCompileError("Only simple variable targets are supported in quantifiers")
+                raise _err("Only simple variable targets are supported in quantifiers", gen, self.extractor.source_path)
             orig = comp.target.id
             safe = f"_q_{orig}" if orig in reserved else orig
             renames[orig] = safe
@@ -1229,7 +1325,7 @@ class _ExprCompiler:
                 n_expr = self.compile(comp.iter.args[0], primed=use_prime)
                 sub = self._sub(use_prime=use_prime, extra_params={comp.target.id: "(_i - 1)"})
                 return f"[_i \\in 1..({n_expr}) |-> {sub.compile(gen.elt, primed=use_prime)}]"
-        raise TemporalCompileError("Unsupported tuple generator expression")
+        raise _err("Unsupported tuple generator expression", gen, self.extractor.source_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1248,6 +1344,7 @@ def _compile_imperative_body(
     state_exprs: dict[str, str] = {v: v for v in (*spec.states, *spec.ghosts)}
     locals_env: dict[str, str] = {}
     local_list_copies: dict[str, str] = {}
+    local_dict_copies: dict[str, str] = {}
     ret_expr: Optional[str] = None
 
     def mk_compiler() -> _ExprCompiler:
@@ -1263,9 +1360,63 @@ def _compile_imperative_body(
             return tgt.id
         return None
 
-    def run_stmts(stmts: list[ast.stmt]) -> None:
+    def assign_one(tgt: ast.expr, rhs_expr: str, raw_rhs: Optional[ast.expr], stmt_node: ast.AST) -> None:
+        sname = state_target_name(tgt)
+        if sname is not None:
+            if (
+                raw_rhs is not None
+                and isinstance(raw_rhs, ast.Call)
+                and isinstance(raw_rhs.func, ast.Name)
+                and raw_rhs.func.id in ("tuple", "dict")
+                and len(raw_rhs.args) == 1
+                and isinstance(raw_rhs.args[0], ast.Name)
+            ):
+                src_name = raw_rhs.args[0].id
+                if raw_rhs.func.id == "tuple" and src_name in local_list_copies:
+                    state_exprs[sname] = local_list_copies[src_name]
+                    return
+                if raw_rhs.func.id == "dict" and src_name in local_dict_copies:
+                    state_exprs[sname] = local_dict_copies[src_name]
+                    return
+            state_exprs[sname] = rhs_expr
+            return
+        if isinstance(tgt, ast.Name):
+            if (
+                raw_rhs is not None
+                and isinstance(raw_rhs, ast.Call)
+                and isinstance(raw_rhs.func, ast.Name)
+                and len(raw_rhs.args) == 1
+            ):
+                if raw_rhs.func.id == "list":
+                    copied = mk_compiler().compile(raw_rhs.args[0])
+                    local_list_copies[tgt.id] = copied
+                    locals_env[tgt.id] = copied
+                    return
+                if raw_rhs.func.id == "dict":
+                    copied = mk_compiler().compile(raw_rhs.args[0])
+                    local_dict_copies[tgt.id] = copied
+                    locals_env[tgt.id] = copied
+                    return
+            locals_env[tgt.id] = rhs_expr
+            return
+        if isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name):
+            if tgt.value.id in local_list_copies:
+                idx = mk_compiler().compile(tgt.slice)
+                updated = f"[{local_list_copies[tgt.value.id]} EXCEPT ![({idx}) + 1] = {rhs_expr}]"
+                local_list_copies[tgt.value.id] = updated
+                locals_env[tgt.value.id] = updated
+                return
+            if tgt.value.id in local_dict_copies:
+                key = mk_compiler().compile(tgt.slice)
+                updated = f"[{local_dict_copies[tgt.value.id]} EXCEPT ![{key}] = {rhs_expr}]"
+                local_dict_copies[tgt.value.id] = updated
+                locals_env[tgt.value.id] = updated
+                return
+        raise _err(f"Unsupported assignment in {fn.name}: {ast.dump(stmt_node)}", stmt_node, extractor.source_path)
+
+    def run_stmts(stmts: list[ast.stmt]) -> bool:
         nonlocal ret_expr
-        for s in stmts:
+        for idx, s in enumerate(stmts):
             if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant) and isinstance(s.value.value, str):
                 continue
             if isinstance(s, (ast.Pass, ast.Assert, ast.Global)):
@@ -1273,36 +1424,34 @@ def _compile_imperative_body(
             if isinstance(s, ast.Return):
                 if s.value is not None:
                     ret_expr = mk_compiler().compile(s.value)
-                return
+                return True
             if isinstance(s, ast.Assign) and len(s.targets) == 1:
                 tgt = s.targets[0]
-                sname = state_target_name(tgt)
-                if sname is not None:
+                if isinstance(tgt, ast.Tuple) and isinstance(s.value, ast.Tuple) and len(tgt.elts) == len(s.value.elts):
+                    vals = [mk_compiler().compile(v) for v in s.value.elts]
+                    for t_elt, val, raw_v in zip(tgt.elts, vals, s.value.elts):
+                        assign_one(t_elt, val, raw_v, s)
+                else:
+                    # Defer compilation inside assign_one for list()/dict()/tuple() copy constructors
+                    defer = False
                     if (
                         isinstance(s.value, ast.Call)
                         and isinstance(s.value.func, ast.Name)
-                        and s.value.func.id == "tuple"
                         and len(s.value.args) == 1
-                        and isinstance(s.value.args[0], ast.Name)
-                        and s.value.args[0].id in local_list_copies
                     ):
-                        state_exprs[sname] = local_list_copies[s.value.args[0].id]
-                    else:
-                        state_exprs[sname] = mk_compiler().compile(s.value)
-                elif isinstance(tgt, ast.Name):
-                    if isinstance(s.value, ast.Call) and isinstance(s.value.func, ast.Name) and s.value.func.id == "list" and len(s.value.args) == 1:
-                        local_list_copies[tgt.id] = mk_compiler().compile(s.value.args[0])
-                        locals_env[tgt.id] = local_list_copies[tgt.id]
-                    else:
-                        locals_env[tgt.id] = mk_compiler().compile(s.value)
-                elif isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name) and tgt.value.id in local_list_copies:
-                    idx = mk_compiler().compile(tgt.slice)
-                    val = mk_compiler().compile(s.value)
-                    updated = f"[{local_list_copies[tgt.value.id]} EXCEPT ![({idx}) + 1] = {val}]"
-                    local_list_copies[tgt.value.id] = updated
-                    locals_env[tgt.value.id] = updated
-                else:
-                    raise TemporalCompileError(f"Unsupported assignment in {fn.name}: {ast.dump(s)}")
+                        cfn = s.value.func.id
+                        arg0 = s.value.args[0]
+                        if (isinstance(tgt, ast.Name) and cfn in ("list", "dict")) or (
+                            state_target_name(tgt) is not None
+                            and cfn in ("tuple", "dict")
+                            and isinstance(arg0, ast.Name)
+                            and (arg0.id in local_list_copies or arg0.id in local_dict_copies)
+                        ):
+                            defer = True
+                    rhs_str = "" if defer else mk_compiler().compile(s.value)
+                    assign_one(tgt, rhs_str, s.value, s)
+            elif isinstance(s, ast.AnnAssign) and s.value is not None:
+                assign_one(s.target, mk_compiler().compile(s.value), s.value, s)
             elif isinstance(s, ast.AugAssign):
                 sname = state_target_name(s.target)
                 if sname is not None:
@@ -1312,30 +1461,55 @@ def _compile_imperative_body(
                         else ast.Name(id=sname, ctx=ast.Load())
                     )
                     state_exprs[sname] = mk_compiler().compile(ast.BinOp(left=cur_node, op=s.op, right=s.value))
+                elif isinstance(s.target, ast.Name) and s.target.id in locals_env:
+                    locals_env[s.target.id] = mk_compiler().compile(
+                        ast.BinOp(left=ast.Name(id=s.target.id, ctx=ast.Load()), op=s.op, right=s.value)
+                    )
                 else:
-                    raise TemporalCompileError(f"Unsupported augmented assignment in {fn.name}")
+                    raise _err(f"Unsupported augmented assignment in {fn.name}", s, extractor.source_path)
             elif isinstance(s, ast.If):
                 cond = mk_compiler().compile(s.test)
-                saved = (dict(state_exprs), dict(locals_env), dict(local_list_copies), ret_expr)
-                run_stmts(s.body)
+                rest = stmts[idx + 1:]
+                saved = (
+                    dict(state_exprs),
+                    dict(locals_env),
+                    dict(local_list_copies),
+                    dict(local_dict_copies),
+                    ret_expr,
+                )
+                then_returned = run_stmts(s.body)
+                if not then_returned and rest:
+                    then_returned = run_stmts(rest)
                 then_state, then_ret = dict(state_exprs), ret_expr
+
                 state_exprs.clear()
                 state_exprs.update(saved[0])
                 locals_env.clear()
                 locals_env.update(saved[1])
                 local_list_copies.clear()
                 local_list_copies.update(saved[2])
-                ret_expr = saved[3]
-                if s.orelse:
-                    run_stmts(s.orelse)
+                local_dict_copies.clear()
+                local_dict_copies.update(saved[3])
+                ret_expr = saved[4]
+
+                else_returned = run_stmts(s.orelse) if s.orelse else False
+                if not else_returned and rest:
+                    else_returned = run_stmts(rest)
                 else_state, else_ret = dict(state_exprs), ret_expr
+
                 for k in list(state_exprs):
                     if then_state[k] != else_state[k]:
                         state_exprs[k] = f"(IF {cond} THEN {then_state[k]} ELSE {else_state[k]})"
                 if then_ret != else_ret and then_ret is not None and else_ret is not None:
                     ret_expr = f"(IF {cond} THEN {then_ret} ELSE {else_ret})"
+                elif then_ret is not None and else_ret is None:
+                    ret_expr = then_ret
+                elif else_ret is not None and then_ret is None:
+                    ret_expr = else_ret
+                return then_returned and else_returned
             else:
-                raise TemporalCompileError(f"Unsupported statement in {fn.name}: {type(s).__name__}")
+                raise _err(f"Unsupported statement in {fn.name}: {type(s).__name__}", s, extractor.source_path)
+        return False
 
     run_stmts(fn.body)
     return state_exprs, ret_expr
@@ -1375,7 +1549,7 @@ def _compile_pure_function(
                         if isinstance(t_elt, ast.Name):
                             cur_env[t_elt.id] = val
                 else:
-                    raise TemporalCompileError(f"Unsupported assignment in pure function {fn.name}")
+                    raise _err(f"Unsupported assignment in pure function {fn.name}", s, extractor.source_path)
             elif isinstance(s, ast.If):
                 cond = comp().compile(s.test)
                 then_expr = compile_block(s.body, cur_env)
@@ -1421,7 +1595,7 @@ def _compile_pure_function(
                             e_br = compile_loop_body(bs.orelse if bs.orelse else body_stmts[bi + 1:], le)
                             return f"(IF {c} THEN {t_br} ELSE {e_br})"
                         else:
-                            raise TemporalCompileError(f"Unsupported statement in while loop of {fn.name}")
+                            raise _err(f"Unsupported statement in while loop of {fn.name}", bs, extractor.source_path)
                     return f"{_loop_name}({', '.join(le[v] for v in _all_args)})"
 
                 step_expr = compile_loop_body(s.body, loop_env)
@@ -1433,7 +1607,7 @@ def _compile_pure_function(
                 )
                 return f"{loop_name}({', '.join(init_vals)})"
             else:
-                raise TemporalCompileError(f"Unsupported statement in pure function {fn.name}: {type(s).__name__}")
+                raise _err(f"Unsupported statement in pure function {fn.name}: {type(s).__name__}", s, extractor.source_path)
         needs_helpers.add("NONE")
         return "NONE"
 
@@ -1444,6 +1618,40 @@ def _compile_pure_function(
 # ---------------------------------------------------------------------------
 # TLA+ & CFG Code Generation Helpers
 # ---------------------------------------------------------------------------
+
+
+def _snowcat_type(t: _TypeInfo) -> Optional[str]:
+    if t.nullable and t.kind in ("int", "bool"):
+        return None
+    if t.kind == "int":
+        return "Int"
+    if t.kind == "bool":
+        return "Bool"
+    if t.kind in ("str", "model"):
+        return "Str"
+    if t.kind == "seq" and t.elem is not None:
+        inner = _snowcat_type(t.elem)
+        return f"Seq({inner})" if inner else None
+    if t.kind == "set" and t.elem is not None:
+        inner = _snowcat_type(t.elem)
+        return f"Set({inner})" if inner else None
+    if t.kind == "map" and t.key is not None and t.val is not None:
+        k, v = _snowcat_type(t.key), _snowcat_type(t.val)
+        return f"({k} -> {v})" if (k and v) else None
+    return None
+
+
+def _format_decl_block(keyword: str, names: list[str], types: dict[str, str]) -> list[str]:
+    if not names:
+        return []
+    if all(n in types for n in names):
+        out = [keyword]
+        for idx, n in enumerate(names):
+            sep = "," if idx + 1 < len(names) else ""
+            out.append(f"  \\* @type: {types[n]};")
+            out.append(f"  {n}{sep}")
+        return out
+    return [f"{keyword} " + ", ".join(names)]
 
 
 def _format_cfg_value(val: Any) -> str:
@@ -1503,16 +1711,17 @@ def _compile_lambda(
     post_by_default: bool = False,
     param_map: Optional[dict[str, str]] = None,
     state_subst: Optional[dict[str, str]] = None,
+    next_subst: Optional[dict[str, str]] = None,
     action_prefix: str = "",
 ) -> str:
     if isinstance(pred, ast.Lambda):
         receiver = pred.args.args[0].arg if (not spec.is_module and pred.args.args) else None
         return _ExprCompiler(
             extractor, spec, var_types, receiver=receiver, post_by_default=post_by_default,
-            param_map=param_map, state_subst=state_subst, action_prefix=action_prefix,
-            needs_helpers=needs_helpers,
+            param_map=param_map, state_subst=state_subst, next_subst=next_subst,
+            action_prefix=action_prefix, needs_helpers=needs_helpers,
         ).compile(pred.body)
-    raise TemporalCompileError(f"Expected lambda predicate, got {type(pred).__name__}")
+    raise _err(f"Expected lambda predicate, got {type(pred).__name__}", pred, extractor.source_path)
 
 
 def _compile_func_predicate(
@@ -1538,9 +1747,9 @@ def _compile_func_predicate(
         elif isinstance(stmt, ast.Return) and stmt.value is not None:
             ret_expr = compiler.compile(stmt.value)
         else:
-            raise TemporalCompileError(f"Unsupported statement in declarative predicate {fn.name}")
+            raise _err(f"Unsupported statement in declarative predicate {fn.name}", stmt, extractor.source_path)
     if ret_expr is None:
-        raise TemporalCompileError(f"Declarative predicate {fn.name} has no return statement")
+        raise _err(f"Declarative predicate {fn.name} has no return statement", fn, extractor.source_path)
     if lets:
         return "(LET " + "\n    ".join(f"{k} == {v}" for k, v in lets) + f" IN {ret_expr})"
     return ret_expr
@@ -1627,54 +1836,6 @@ def _fairness_subscript(vars_tuple: tuple[str, ...]) -> str:
     if not vars_tuple:
         return "_vars"
     return vars_tuple[0] if len(vars_tuple) == 1 else "<<" + ", ".join(vars_tuple) + ">>"
-
-
-def _uses_old(expr: ast.expr, extractor: _ModuleExtractor) -> bool:
-    return any(isinstance(n, ast.Call) and extractor._temporal_name(n.func) == "old" for n in ast.walk(expr))
-
-
-def _compile_conformance_action(
-    pred: ast.expr,
-    extractor: _ModuleExtractor,
-    spec: _SpecDecl,
-    var_types: dict[str, _TypeInfo],
-    impl_next: dict[str, str],
-    needs_helpers: set[str],
-) -> str:
-    assert isinstance(pred, ast.Lambda)
-    receiver = pred.args.args[0].arg if (not spec.is_module and pred.args.args) else None
-
-    class _SubstCompiler(_ExprCompiler):
-        def _state_ref(self, attr: str, primed: bool) -> str:
-            if primed and attr in impl_next:
-                return f"({impl_next[attr]})"
-            return super()._state_ref(attr, primed=False)
-
-    return _SubstCompiler(extractor, spec, var_types, receiver=receiver, needs_helpers=needs_helpers).compile(pred.body)
-
-
-def _compile_conformance_ensures(
-    pred: ast.expr,
-    extractor: _ModuleExtractor,
-    spec: _SpecDecl,
-    var_types: dict[str, _TypeInfo],
-    impl_next: dict[str, str],
-    impl_ret: Optional[str],
-    needs_helpers: set[str],
-) -> str:
-    assert isinstance(pred, ast.Lambda)
-    receiver = pred.args.args[0].arg if (not spec.is_module and pred.args.args) else None
-    pmap = {"result": impl_ret} if impl_ret is not None else {}
-
-    class _EnsCompiler(_ExprCompiler):
-        def _state_ref(self, attr: str, primed: bool) -> str:
-            if primed and attr in impl_next:
-                return f"({impl_next[attr]})"
-            return super()._state_ref(attr, primed=False)
-
-    return _EnsCompiler(
-        extractor, spec, var_types, receiver=receiver, post_by_default=True, param_map=pmap, needs_helpers=needs_helpers
-    ).compile(pred.body)
 
 
 # ---------------------------------------------------------------------------
@@ -1937,18 +2098,18 @@ def _compile_spec_model(
             # Conformance obligations (Action, Ensures, Preserves, return Where, Modifies/Unchanged)
             ob_parts: list[str] = []
             for ap in act.action_preds:
-                ob_parts.append(_compile_conformance_action(ap, extractor, spec, p_types, impl_next, needs_helpers))
+                ob_parts.append(_compile_lambda(ap, extractor, spec, p_types, needs_helpers, next_subst=impl_next))
             for ens in act.ensures:
                 pmap = {"result": impl_ret} if impl_ret is not None else {}
-                if _uses_old(ens, extractor):
-                    ob_parts.append(_compile_conformance_ensures(ens, extractor, spec, p_types, impl_next, impl_ret, needs_helpers))
-                else:
-                    ob_parts.append(
-                        _compile_lambda(ens, extractor, spec, p_types, needs_helpers, param_map=pmap, state_subst=impl_next)
+                ob_parts.append(
+                    _compile_lambda(
+                        ens, extractor, spec, p_types, needs_helpers,
+                        post_by_default=True, param_map=pmap, next_subst=impl_next,
                     )
+                )
             for pres in act.preserves:
                 pre_p = _compile_lambda(pres, extractor, spec, p_types, needs_helpers)
-                post_p = _compile_lambda(pres, extractor, spec, p_types, needs_helpers, state_subst=impl_next)
+                post_p = _compile_lambda(pres, extractor, spec, p_types, needs_helpers, post_by_default=True, next_subst=impl_next)
                 ob_parts.append(f"({pre_p} => {post_p})")
             if impl_ret is not None:
                 for w in act.return_type.wheres:
@@ -2034,8 +2195,19 @@ def _compile_spec_model(
             fairness_parts.append(f"SF_{_fairness_subscript(sf)}({fair_target})")
             has_fairness_or_liveness = True
 
+    snowcat_types: dict[str, str] = {}
+    for d in (*spec.constants.values(), *spec.states.values(), *spec.ghosts.values()):
+        st = _snowcat_type(d.type_info)
+        if st is not None:
+            snowcat_types[d.name] = st
+
     body_defs.append("Next == " + (" \\/ ".join(next_disjuncts) if next_disjuncts else "FALSE"))
-    body_defs.append("_vars == <<" + ", ".join(all_vars) + ">>")
+    if len(all_vars) == 1:
+        body_defs.append(f"_vars == {all_vars[0]}")
+    else:
+        if all_vars and all(v in snowcat_types for v in all_vars):
+            body_defs.append("\\* @type: <<" + ", ".join(snowcat_types[v] for v in all_vars) + ">>;")
+        body_defs.append("_vars == <<" + ", ".join(all_vars) + ">>")
 
     for pname, prop_body in preserves_props:
         body_defs.append(f"{pname} == [][{prop_body}]__vars")
@@ -2119,13 +2291,16 @@ def _compile_spec_model(
             const_names.append(mv)
             cfg_constants.append(f"  {mv} = {mv}")
 
+    for mv in model_values:
+        snowcat_types.setdefault(mv, "Str")
+    for cname, _ in sym_sets:
+        snowcat_types.setdefault(cname, "Set(Str)")
+
     lines = [f"---- MODULE {mod_name} ----"]
     if extends:
         lines.append("EXTENDS " + ", ".join(extends))
-    if const_names:
-        lines.append("CONSTANTS " + ", ".join(const_names))
-    if all_vars:
-        lines.append("VARIABLES " + ", ".join(all_vars))
+    lines.extend(_format_decl_block("CONSTANTS", const_names, snowcat_types))
+    lines.extend(_format_decl_block("VARIABLES", all_vars, snowcat_types))
     if "_Sum" in needs_helpers:
         lines.append("RECURSIVE _Sum(_)")
         lines.append("_Sum(s) == IF Len(s) = 0 THEN 0 ELSE Head(s) + _Sum(Tail(s))")

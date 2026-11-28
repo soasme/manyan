@@ -51,7 +51,12 @@ class BankAccount:
 
     def deposit(self, amount: Positive) -> Annotated[
         None,
-        Action(lambda s, amount: prime(s.balance) == s.balance + amount),
+        Action(
+            lambda s, amount: (
+                prime(s.balance) == s.balance + amount
+                and prime(s.ledger) == s.ledger + (amount,)
+            )
+        ),
         Preserves(lambda s: s.balance >= 0),
         Modifies("balance", "ledger"),
     ]:
@@ -60,7 +65,12 @@ class BankAccount:
     def withdraw(self, amount: Positive) -> Annotated[
         Positive,
         Requires(lambda s, amount: amount <= s.balance),
-        Action(lambda s, amount: prime(s.balance) == s.balance - amount),
+        Action(
+            lambda s, amount: (
+                prime(s.balance) == s.balance - amount
+                and prime(s.ledger) == s.ledger + (-amount,)
+            )
+        ),
         Ensures(lambda s, amount, result: result == amount),
         Modifies("balance", "ledger"),
     ]:
@@ -75,6 +85,7 @@ model = Model(
         "deposit.amount": Domain.range(1, 5),
         "withdraw.amount": Domain.range(1, 5),
     },
+    state_constraint=lambda s: s.balance <= 10 and len(s.ledger) <= 3,
 )
 ```
 

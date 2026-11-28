@@ -65,7 +65,9 @@ def _run_temporal_cli(subcmd: str, argv: list[str]) -> int:
             try:
                 models = emit_temporal(p, spec=args.spec, model=args.model, mode=mode)
             except (FileNotFoundError, TemporalCompileError, SyntaxError) as exc:
-                print(f"error: {p}: {exc}", file=sys.stderr)
+                err = str(exc)
+                prefix = "" if err.startswith(f"{p}:") else f"{p}: "
+                print(f"error: {prefix}{err}", file=sys.stderr)
                 return 1
             for cm in models:
                 any_found = True
@@ -94,7 +96,9 @@ def _run_temporal_cli(subcmd: str, argv: list[str]) -> int:
                 length=args.length,
             )
         except (FileNotFoundError, TemporalCompileError, SyntaxError) as exc:
-            print(f"error: {p}: {exc}", file=sys.stderr)
+            err = str(exc)
+            prefix = "" if err.startswith(f"{p}:") else f"{p}: "
+            print(f"error: {prefix}{err}", file=sys.stderr)
             return 1
 
         for tr in runs:

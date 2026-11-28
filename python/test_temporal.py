@@ -452,6 +452,95 @@ clamp_model = Model(
         self.assertEqual([r.name for r in fn_runs], ["clamp_model"])
         self.assertTrue(fn_runs[0].ok, fn_runs[0].run.output)
 
+    def test_replace_model_early_return_swap_dict_ops_and_property_ensures(self) -> None:
+        src = """from dataclasses import replace
+from typing import Annotated
+from temporal import (
+    Action, Constant, Domain, Ensures, Init, Invariant, Model, Pure, Requires, State, old, prime,
+)
+
+class Store:
+    keys_set: Constant[frozenset[str]]
+    a: State[int]
+    b: State[int]
+    data: State[dict[str, int]]
+
+    init: Annotated[
+        bool,
+        Init(lambda s: s.a == 1 and s.b == 2 and s.data == {k: 0 for k in s.keys_set}),
+    ]
+    inv: Annotated[
+        bool,
+        Invariant(
+            lambda s: (
+                s.a + s.b == 3
+                and len(s.data) == len(s.keys_set)
+                and all(k in s.data and s.data.get(k, -1) >= 0 for k in s.keys_set)
+                and s.data.keys() == s.keys_set
+                and all(v >= 0 for v in s.data.values())
+            )
+        ),
+    ]
+
+    @property
+    def total(self) -> Pure[int]:
+        return self.a + self.b
+
+    def swap(self) -> Annotated[
+        int,
+        Action(lambda s: prime(s.a) == s.b and prime(s.b) == s.a),
+        Ensures(lambda s, result: s.total == old(s.total) and result == s.a),
+    ]:
+        self.a, self.b = self.b, self.a
+        return self.a
+
+    def bump(self, k: str) -> Annotated[
+        int,
+        Requires(lambda s, k: k in s.keys_set),
+        Action(),
+        Ensures(lambda s, k, result: result == s.data[k] and result <= 2),
+    ]:
+        cur: int = self.data[k]
+        if cur >= 2:
+            return cur
+        cur += 1
+        d = dict(self.data)
+        d[k] = cur
+        self.data = d
+        return cur
+
+base_model = Model(
+    Store,
+    constants={"keys_set": frozenset({"k1", "k2"})},
+    domains={"k": Domain.values("k1", "k2")},
+)
+no_deadlock_model = replace(base_model, check_deadlock=False)
+"""
+        runs = manyan.check_temporal(src)
+        self.assertEqual([r.name for r in runs], ["base_model", "no_deadlock_model"])
+        for tr in runs:
+            self.assertTrue(tr.ok, f"{tr.name}: {tr.run.output}")
+        self.assertNotIn("CHECK_DEADLOCK FALSE", runs[0].compiled.cfg)
+        self.assertIn("CHECK_DEADLOCK FALSE", runs[1].compiled.cfg)
+
+    def test_compile_error_includes_line_number(self) -> None:
+        bad = """from typing import Annotated
+from temporal import Action, Init, Model, State
+
+class Bad:
+    x: State[int]
+    init: Annotated[bool, Init(lambda s: s.x == 0)]
+
+    def step(self) -> Annotated[None, Action()]:
+        for i in range(3):
+            self.x += i
+
+m = Model(Bad)
+"""
+        with self.assertRaises(manyan.TemporalCompileError) as ctx:
+            manyan.emit_temporal(bad)
+        self.assertIn("line 9:", str(ctx.exception))
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:
@@ -498,6 +587,23 @@ class TestTemporalCLI(unittest.TestCase):
             self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
             self.assertIn("PASS", res.stdout)
             self.assertIn("Checked 1 Temporal model(s): 1 passed.", res.stdout)
+
+    def test_cli_symbolic_and_workers(self) -> None:
+        # Symbolic SMT checking finds the 7-state Die Hard solution directly from Python
+        sym = _run_cli("check", "--symbolic", "--length", "7", "--model", "impl_model", str(EXAMPLES / "die_hard.py"))
+        self.assertEqual(sym.returncode, 12, sym.stdout + sym.stderr)
+        self.assertIn("not_solved", sym.stdout)
+        self.assertIn("big = 4", sym.stdout)
+
+        # Symbolic SMT checking proves Semaphore safe up to length 6
+        sym_ok = _run_cli("check", "--symbolic", "--length", "6", str(EXAMPLES / "semaphore.py"))
+        self.assertEqual(sym_ok.returncode, 0, sym_ok.stdout + sym_ok.stderr)
+        self.assertIn("PASS", sym_ok.stdout)
+
+        # Multi-worker checking on BankAccount matches exact distinct state count
+        w2 = _run_cli("check", "--workers", "2", str(EXAMPLES / "bank_account.py"))
+        self.assertEqual(w2.returncode, 0, w2.stdout + w2.stderr)
+        self.assertIn("884 distinct states", w2.stdout)
 
 
 if __name__ == "__main__":
