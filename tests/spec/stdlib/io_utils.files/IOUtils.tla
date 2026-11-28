@@ -6,5 +6,6 @@ LOCAL INSTANCE TLC
 IOExec(command) == CHOOSE r \in [exitValue : Int, stdout : STRING, stderr : STRING] : TRUE
 IOEnvExec(env, command) == CHOOSE r \in [exitValue : Int, stdout : STRING, stderr : STRING] : TRUE
 IOEnv == CHOOSE r \in [STRING -> STRING] : TRUE
+Serialize(value, dest, options) == CHOOSE r \in [exitValue : Int, stdout : STRING, stderr : STRING] : TRUE
 atoi(str) == CHOOSE i \in Int : ToString(i) = str
 ====
