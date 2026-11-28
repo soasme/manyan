@@ -570,6 +570,7 @@ class _ModuleExtractor:
             spec.fairness.extend(base.fairness)
             spec.actions.update(base.actions)
             spec.pure_ops.update(base.pure_ops)
+            spec.refinements.extend(base.refinements)
 
         has_temporal = bool(spec.bases)
         for stmt in cls.body:
@@ -641,11 +642,9 @@ class _ModuleExtractor:
             getattr(action, attr).append(vnames)
 
     def _extract_method_into(self, spec: _SpecDecl, fn: ast.FunctionDef, *, is_method: bool) -> bool:
-        if fn.returns is None:
-            return False
-
+        inherited = spec.actions.get(fn.name)
         is_prop = any(isinstance(d, ast.Name) and d.id == "property" for d in fn.decorator_list)
-        ret_base, ret_meta = self._annotated_parts(fn.returns)
+        ret_base, ret_meta = self._annotated_parts(fn.returns) if fn.returns is not None else (None, [])
         arg_list = fn.args.args[1:] if is_method else fn.args.args
 
         if isinstance(ret_base, ast.Subscript) and self._temporal_name(ret_base.value) == "Refines":
@@ -672,9 +671,6 @@ class _ModuleExtractor:
             )
             return True
 
-        if not ret_meta:
-            return False
-
         for m in ret_meta:
             if isinstance(m, ast.Call):
                 cname = self._temporal_name(m.func)
@@ -682,11 +678,22 @@ class _ModuleExtractor:
                     spec.add_clause(cname, fn.name, expr=m.args[0] if m.args else None, func=fn)
                     return True
 
-        if not any(isinstance(m, ast.Call) and self._temporal_name(m.func) in _ACTION_CLAUSES for m in ret_meta):
+        has_action_clauses = any(
+            isinstance(m, ast.Call) and self._temporal_name(m.func) in _ACTION_CLAUSES for m in ret_meta
+        )
+        if not has_action_clauses and inherited is None:
             return False
 
         params = [(a.arg, self._resolve_type(a.annotation)) for a in arg_list]
-        ret_type = self._resolve_type(fn.returns)
+        if inherited is not None and not params and inherited.params:
+            params = list(inherited.params)
+        elif inherited is not None:
+            # Fill missing parameter type info from inherited signature
+            inh_map = dict(inherited.params)
+            params = [(pn, pt if pt.kind != "any" or pt.name else inh_map.get(pn, pt)) for pn, pt in params]
+        ret_type = self._resolve_type(fn.returns) if fn.returns is not None else (
+            inherited.return_type if inherited is not None else _TypeInfo("any")
+        )
         receiver = fn.args.args[0].arg if (is_method and fn.args.args) else None
         mutates_state = any(
             (
@@ -706,16 +713,18 @@ class _ModuleExtractor:
             )
             for s in ast.walk(fn)
         )
+        has_body = not _is_ellipsis_body(fn.body)
         action = _ActionDecl(
             name=fn.name,
             params=params,
             return_type=ret_type,
             func=fn,
-            has_body=not _is_ellipsis_body(fn.body),
+            has_body=has_body,
             is_bool_action=(
                 ret_type.kind == "bool"
                 and not mutates_state
                 and not any(isinstance(m, ast.Call) and self._temporal_name(m.func) == "Ensures" for m in ret_meta)
+                and not (inherited is not None and inherited.ensures)
             ),
         )
         for m in ret_meta:
@@ -723,6 +732,17 @@ class _ModuleExtractor:
                 cname = self._temporal_name(m.func)
                 if cname in _ACTION_CLAUSES:
                     self._add_action_clause(action, cname, m)
+        if inherited is not None:
+            if not action.requires:
+                action.requires.extend(inherited.requires)
+            action.action_preds = list(inherited.action_preds) + action.action_preds
+            action.ensures = list(inherited.ensures) + action.ensures
+            action.preserves = list(inherited.preserves) + action.preserves
+            if not action.modifies:
+                action.modifies.extend(inherited.modifies)
+            action.unchanged = list(inherited.unchanged) + action.unchanged
+            action.weak_fairness = list(inherited.weak_fairness) + action.weak_fairness
+            action.strong_fairness = list(inherited.strong_fairness) + action.strong_fairness
         spec.actions[fn.name] = action
         return True
 
@@ -883,6 +903,28 @@ class _ExprCompiler:
             needs_helpers=self.needs_helpers,
         )
 
+    def _infer_type(self, node: ast.expr) -> Optional[_TypeInfo]:
+        if isinstance(node, ast.Name):
+            return self.var_types.get(node.id)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == self.receiver:
+            return self.var_types.get(node.attr)
+        if isinstance(node, ast.Call):
+            if self.extractor._temporal_name(node.func) in ("prime", "old") and node.args:
+                return self._infer_type(node.args[0])
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == self.receiver
+                and self.spec
+                and node.func.attr in self.spec.pure_ops
+            ):
+                return self.spec.pure_ops[node.func.attr].return_type
+        if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
+            base_t = self._infer_type(node.value)
+            if base_t is not None:
+                return base_t.val if base_t.kind == "map" else base_t.elem
+        return None
+
     def _infer_kind(self, node: ast.expr) -> str:
         if isinstance(node, ast.Constant):
             if isinstance(node.value, bool):
@@ -898,12 +940,12 @@ class _ExprCompiler:
             return "seq"
         if isinstance(node, (ast.Dict, ast.DictComp)):
             return "map"
-        if isinstance(node, ast.Name):
-            info = self.var_types.get(node.id)
-            return info.kind if info else "any"
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == self.receiver:
-            info = self.var_types.get(node.attr)
-            return info.kind if info else "any"
+        if isinstance(node, ast.IfExp):
+            k = self._infer_kind(node.body)
+            return k if k != "any" else self._infer_kind(node.orelse)
+        tinfo = self._infer_type(node)
+        if tinfo is not None:
+            return tinfo.kind
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id in ("frozenset", "set", "range"):
@@ -912,12 +954,19 @@ class _ExprCompiler:
                     return "seq"
                 if node.func.id in ("len", "sum", "min", "max", "abs"):
                     return "int"
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ("keys", "values", "union", "intersection", "difference"):
+                return "set"
             if self.extractor._temporal_name(node.func) in ("prime", "old") and node.args:
                 return self._infer_kind(node.args[0])
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
             return "seq"
-        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.BitOr, ast.BitAnd)):
-            return "set"
+        if isinstance(node, ast.BinOp):
+            if isinstance(node.op, (ast.BitOr, ast.BitAnd)):
+                return "set"
+            if isinstance(node.op, ast.Add) and (self._infer_kind(node.left) == "seq" or self._infer_kind(node.right) == "seq"):
+                return "seq"
+            if isinstance(node.op, ast.Sub) and (self._infer_kind(node.left) == "set" or self._infer_kind(node.right) == "set"):
+                return "set"
         return "any"
 
     def _state_ref(self, attr: str, primed: bool) -> str:
@@ -1014,13 +1063,22 @@ class _ExprCompiler:
             return self._compile_dict(node, use_prime)
 
         if isinstance(node, ast.DictComp):
-            if len(node.generators) == 1 and isinstance(node.generators[0].target, ast.Name):
+            if (
+                len(node.generators) == 1
+                and isinstance(node.generators[0].target, ast.Name)
+                and isinstance(node.key, ast.Name)
+                and node.key.id == node.generators[0].target.id
+            ):
                 gen = node.generators[0]
                 assert isinstance(gen.target, ast.Name)
                 orig = gen.target.id
                 safe = f"_q_{orig}" if orig in self._reserved_names() else orig
                 dom = self.compile(gen.iter, primed=use_prime)
-                val = self._sub(use_prime=use_prime, extra_params={orig: safe}).compile(node.value, primed=use_prime)
+                sub = self._sub(use_prime=use_prime, extra_params={orig: safe})
+                if gen.ifs:
+                    cond = " /\\ ".join(sub.compile(c, primed=use_prime) for c in gen.ifs)
+                    dom = "{" + f"{safe} \\in {dom} : {cond}" + "}"
+                val = sub.compile(node.value, primed=use_prime)
                 return f"[{safe} \\in {dom} |-> {val}]"
             raise _err("Unsupported dict comprehension", node, self.extractor.source_path)
 
@@ -1032,11 +1090,13 @@ class _ExprCompiler:
                 safe = f"_q_{orig}" if orig in self._reserved_names() else orig
                 dom = self.compile(gen.iter, primed=use_prime)
                 sub = self._sub(use_prime=use_prime, extra_params={orig: safe})
-                if gen.ifs and isinstance(node.elt, ast.Name) and node.elt.id == orig:
+                if gen.ifs:
                     cond = " /\\ ".join(sub.compile(c, primed=use_prime) for c in gen.ifs)
-                    return "{" + f"{safe} \\in {dom} : {cond}" + "}"
-                if not gen.ifs:
-                    return "{" + f"{sub.compile(node.elt, primed=use_prime)} : {safe} \\in {dom}" + "}"
+                    filtered = "{" + f"{safe} \\in {dom} : {cond}" + "}"
+                    if isinstance(node.elt, ast.Name) and node.elt.id == orig:
+                        return filtered
+                    return "{" + f"{sub.compile(node.elt, primed=use_prime)} : {safe} \\in {filtered}" + "}"
+                return "{" + f"{sub.compile(node.elt, primed=use_prime)} : {safe} \\in {dom}" + "}"
             raise _err("Unsupported set comprehension", node, self.extractor.source_path)
 
         if isinstance(node, ast.Subscript):
@@ -1092,9 +1152,12 @@ class _ExprCompiler:
             elif isinstance(cmp_op, ast.LtE):
                 parts.append(f"({l_str} \\subseteq {r_str})" if (lk == "set" or rk == "set") else f"({l_str} <= {r_str})")
             elif isinstance(cmp_op, ast.Gt):
-                parts.append(f"({l_str} > {r_str})")
+                if lk == "set" or rk == "set":
+                    parts.append(f"(({r_str} \\subseteq {l_str}) /\\ ({l_str} # {r_str}))")
+                else:
+                    parts.append(f"({l_str} > {r_str})")
             elif isinstance(cmp_op, ast.GtE):
-                parts.append(f"({l_str} >= {r_str})")
+                parts.append(f"({r_str} \\subseteq {l_str})" if (lk == "set" or rk == "set") else f"({l_str} >= {r_str})")
             elif isinstance(cmp_op, ast.In):
                 if rk == "seq":
                     self.needs_helpers.add("Sequences")
@@ -1257,6 +1320,13 @@ class _ExprCompiler:
             if isinstance(node.func.value, ast.Name) and node.func.value.id == self.receiver:
                 args = ", ".join(self.compile(a, primed=use_prime) for a in node.args)
                 return f"{node.func.attr}({args})" if args else node.func.attr
+            if node.func.attr == "issubset" and len(node.args) == 1:
+                return f"({self.compile(node.func.value, primed=use_prime)} \\subseteq {self.compile(node.args[0], primed=use_prime)})"
+            if node.func.attr == "issuperset" and len(node.args) == 1:
+                return f"({self.compile(node.args[0], primed=use_prime)} \\subseteq {self.compile(node.func.value, primed=use_prime)})"
+            if node.func.attr in ("union", "intersection", "difference") and len(node.args) == 1:
+                op = {"union": "\\cup", "intersection": "\\cap", "difference": "\\"}[node.func.attr]
+                return f"({self.compile(node.func.value, primed=use_prime)} {op} {self.compile(node.args[0], primed=use_prime)})"
             if node.func.attr == "keys" and not node.args:
                 return f"(DOMAIN {self.compile(node.func.value, primed=use_prime)})"
             if node.func.attr == "values" and not node.args:

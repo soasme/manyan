@@ -118,11 +118,14 @@ def _run_temporal_cli(subcmd: str, argv: list[str]) -> int:
             else:
                 if exit_code == 0:
                     exit_code = tr.run.status or 1
-                violated = (
-                    ", ".join(tr.run.result.violated)
-                    if tr.run.result and tr.run.result.violated
-                    else f"exit {tr.run.status}"
-                )
+                if tr.run.result and tr.run.result.violated:
+                    violated = ", ".join(tr.run.result.violated)
+                elif tr.run.status == 10:
+                    violated = "assumption failed (exit 10)"
+                elif tr.run.status == 11:
+                    violated = "deadlock (exit 11)"
+                else:
+                    violated = f"exit {tr.run.status}"
                 print(f"FAIL {label}: {violated}")
                 if args.verbose:
                     print(tr.run.output, end="")

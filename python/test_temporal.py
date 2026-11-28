@@ -564,6 +564,137 @@ fail_model = Model(Counter, init="init_five", actions=("reset",), invariants=("u
         assert runs[1].run.result is not None
         self.assertEqual(runs[1].run.result.violated, ["under_three"])
 
+    def test_protocol_inheritance_conformance_without_repeating_contracts(self) -> None:
+        base = """from typing import Annotated, Protocol
+from temporal import Action, Constant, Domain, Ensures, Init, Invariant, Model, Modifies, Requires, State, old, prime
+
+class BoundedQueue(Protocol):
+    capacity: Constant[int]
+    items: State[tuple[int, ...]]
+    init: Annotated[bool, Init(lambda s: s.items == ())]
+    bounded: Annotated[bool, Invariant(lambda s: 0 <= len(s.items) <= s.capacity)]
+
+    def push(self, item: int) -> Annotated[
+        None,
+        Requires(lambda s, item: len(s.items) < s.capacity),
+        Action(lambda s, item: prime(s.items) == s.items + (item,)),
+        Modifies("items"),
+    ]: ...
+
+    def pop(self) -> Annotated[
+        int,
+        Requires(lambda s: len(s.items) > 0),
+        Action(lambda s: prime(s.items) == s.items[1:]),
+        Ensures(lambda s, result: result == old(s.items)[0]),
+        Modifies("items"),
+    ]: ...
+
+class SimpleQueue(BoundedQueue):
+    def push(self, item: int) -> None:
+        self.items = self.items + (item,)
+
+    def pop(self) -> int:
+        val = self.items[0]
+        self.items = self.items[1:]
+        return val
+
+m = Model(SimpleQueue, constants={"capacity": 2}, domains={"item": Domain.range(1, 2)})
+"""
+        runs = manyan.check_temporal(base)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+
+        # Buggy concrete pop violating inherited Protocol Ensures/Action is caught automatically.
+        buggy = base.replace("val = self.items[0]\n        self.items = self.items[1:]", "val = self.items[-1]\n        self.items = self.items[:-1]")
+        bad_runs = manyan.check_temporal(buggy)
+        self.assertEqual(bad_runs[0].run.status, 12, bad_runs[0].run.output)
+        assert bad_runs[0].run.result is not None
+        self.assertIn("_Conform_pop", bad_runs[0].run.result.violated)
+
+    def test_set_ops_comprehensions_view_action_constraint_assume_deadlock_and_action_inv(self) -> None:
+        src = """from typing import Annotated
+from temporal import Action, ActionInvariant, Assume, Constant, Init, Invariant, Model, State, prime
+
+class SetsSpec:
+    universe: Constant[frozenset[int]]
+    a: State[frozenset[int]]
+    b: State[frozenset[int]]
+    m: State[dict[int, int]]
+
+    non_empty: Annotated[bool, Assume(lambda s: len(s.universe) > 0)]
+    init: Annotated[
+        bool,
+        Init(lambda s: s.a == {1} and s.b == {1, 2} and s.m == {k: k * 2 for k in s.universe if k > 0}),
+    ]
+    ok: Annotated[
+        bool,
+        Invariant(
+            lambda s: (
+                s.b >= s.a
+                and s.b > s.a
+                and s.a.issubset(s.b)
+                and s.b.issuperset(s.a)
+                and s.a.union({2}) == s.b
+                and s.b.intersection(s.a) == s.a
+                and s.b.difference(s.a) == {2}
+                and {x + 1 for x in s.b if x > 1} == {3}
+                and 1 in s.m
+                and 0 not in s.m
+            )
+        ),
+    ]
+    monotone: Annotated[bool, ActionInvariant(lambda s: prime(s.b) >= s.b)]
+    stutter: Annotated[bool, Action(lambda s: prime(s.a) == s.a and prime(s.b) == s.b)]
+
+m = Model(
+    SetsSpec,
+    constants={"universe": frozenset({0, 1, 2})},
+    view=lambda s: (s.a, s.b),
+    action_constraint=lambda s: len(prime(s.b)) <= 2,
+)
+"""
+        runs = manyan.check_temporal(src)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+
+        # Assumption violation -> exit 10
+        bad_assume = src.replace("frozenset({0, 1, 2})", "frozenset()")
+        r_assume = manyan.check_temporal(bad_assume)[0]
+        self.assertEqual(r_assume.run.status, 10, r_assume.run.output)
+
+        # ActionInvariant violation -> exit 13
+        bad_ainv = """from typing import Annotated
+from temporal import Action, ActionInvariant, Init, Model, State, prime
+
+class Mono:
+    x: State[int]
+    init: Annotated[bool, Init(lambda s: s.x == 1)]
+    non_decreasing: Annotated[bool, ActionInvariant(lambda s: prime(s.x) >= s.x)]
+    dec: Annotated[bool, Action(lambda s: prime(s.x) == 0)]
+
+m = Model(Mono)
+"""
+        r_ainv = manyan.check_temporal(bad_ainv)[0]
+        self.assertEqual(r_ainv.run.status, 13, r_ainv.run.output)
+        assert r_ainv.run.result is not None
+        self.assertIn("non_decreasing", r_ainv.run.result.violated)
+
+        # Deadlock detection -> exit 11 + human-readable CLI message
+        deadlock_src = """from typing import Annotated
+from temporal import Action, Init, Model, State, prime
+
+class OneShot:
+    x: State[int]
+    init: Annotated[bool, Init(lambda s: s.x == 0)]
+    step: Annotated[bool, Action(lambda s: s.x == 0 and prime(s.x) == 1)]
+
+m = Model(OneShot)
+"""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "dl.py"
+            p.write_text(deadlock_src, encoding="utf-8")
+            res = _run_cli("check", str(p))
+            self.assertEqual(res.returncode, 11, res.stdout + res.stderr)
+            self.assertIn("deadlock (exit 11)", res.stdout)
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:
