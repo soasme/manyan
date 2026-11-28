@@ -8,14 +8,17 @@ model-checks Python source files annotated with `temporal`:
     python -m manyan path/to/file.py
     python -m manyan [manyan-tla-flags] examples/DieHard
 """
+
+from __future__ import annotations
+
 import argparse
 import os
 import subprocess
 import sys
-from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from manyan import (
+    Run,
     TemporalCompileError,
     check_temporal,
     emit_temporal,
@@ -23,11 +26,11 @@ from manyan import (
 )
 
 
-def _format_trace(run_res) -> str:
+def _format_trace(run_res: Run) -> str:
     r = run_res.result
     if r is None or not r.states:
         return ""
-    lines = []
+    lines: list[str] = []
     for idx, state in enumerate(r.states, start=1):
         act = r.actions[idx - 1]["name"] if idx - 1 < len(r.actions) else ""
         label = f" <{act}>" if act else ""
@@ -39,7 +42,7 @@ def _format_trace(run_res) -> str:
     return "\n".join(lines)
 
 
-def _run_temporal_cli(subcmd: str, argv: List[str]) -> int:
+def _run_temporal_cli(subcmd: str, argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog=f"manyan {subcmd}")
     parser.add_argument("paths", nargs="+", help="Python source files or directories")
     parser.add_argument("--spec", default=None, help="Check only the named specification class or function")
@@ -136,16 +139,11 @@ def _run_temporal_cli(subcmd: str, argv: List[str]) -> int:
     return exit_code
 
 
-def _is_python_target(argv: List[str]) -> bool:
-    for arg in argv:
-        if arg.startswith("-"):
-            continue
-        if arg.endswith(".py"):
-            return True
-    return False
+def _is_python_target(argv: list[str]) -> bool:
+    return any(not arg.startswith("-") and arg.endswith(".py") for arg in argv)
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: Optional[list[str]] = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] in ("check", "emit"):
         sys.exit(_run_temporal_cli(args[0], args[1:]))

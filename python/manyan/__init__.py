@@ -15,10 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
-from .temporal import CompiledModel, TemporalCompileError, compile_file, compile_source
+from .temporal import (
+    CompiledModel as CompiledModel,
+    TemporalCompileError as TemporalCompileError,
+    compile_file as _compile_file,
+    compile_source as _compile_source,
+)
 
 
-def find_manyan_bin():
+def find_manyan_bin() -> str:
     """The path of the manyan executable this package installed."""
     env = os.environ.get("MANYAN")
     if env and os.path.isfile(env):
@@ -273,10 +278,10 @@ def emit_temporal(
 ) -> List[CompiledModel]:
     """Compile Temporal declarations in a Python file, directory, or source string to TLA+."""
     if isinstance(target, str) and "\n" in target and not os.path.exists(target):
-        return compile_source(target, spec=spec, model=model, mode=mode)
+        return _compile_source(target, spec=spec, model=model, mode=mode)
     compiled: List[CompiledModel] = []
     for path in _resolve_temporal_sources(target):
-        compiled.extend(compile_file(path, spec=spec, model=model, mode=mode))
+        compiled.extend(_compile_file(path, spec=spec, model=model, mode=mode))
     return compiled
 
 

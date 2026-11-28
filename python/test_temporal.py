@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
-import manyan  # noqa: E402
+import manyan
 
 EXAMPLES = ROOT / "temporal" / "examples"
 
@@ -25,6 +25,7 @@ def _run_cli(*args):
         env.setdefault("MANYAN_LIB", str(ROOT / "libmanyan.so"))
     return subprocess.run(
         [sys.executable, "-m", "manyan", *args],
+        check=False,
         capture_output=True,
         text=True,
         env=env,
@@ -254,6 +255,203 @@ m = Model(Safe)
         self.assertEqual(len(runs), 1)
         self.assertTrue(runs[0].ok, runs[0].run.output)
 
+    def test_catches_refinement_step_and_init_violations(self) -> None:
+        base = (EXAMPLES / "bounded_queue.py").read_text(encoding="utf-8")
+        # Buggy pop removes the newest item (LIFO) instead of oldest (FIFO) -> violates _Ref_refines_queue_Step.
+        lifo = base.replace(
+            "self._head = (self._head + 1) % self.capacity\n        self._size -= 1",
+            "self._size -= 1",
+        )
+        runs = manyan.check_temporal(lifo)
+        self.assertEqual(runs[0].run.status, 13, runs[0].run.output)
+        assert runs[0].run.result is not None
+        self.assertIn("_Ref_refines_queue_Step", runs[0].run.result.violated)
+
+        # Buggy init starts with _size == 1 -> violates _Ref_refines_queue_Init.
+        bad_init = base.replace("and s._size == 0", "and s._size == 1")
+        runs2 = manyan.check_temporal(bad_init)
+        self.assertEqual(runs2[0].run.status, 13, runs2[0].run.output)
+        assert runs2[0].run.result is not None
+        self.assertIn("_Ref_refines_queue_Init", runs2[0].run.result.violated)
+
+    def test_module_level_specification(self) -> None:
+        src = """import sys
+from typing import Annotated
+from temporal import Action, Constant, Init, Invariant, Model, Requires, State, prime
+
+LIMIT: Constant[int]
+count: State[int]
+
+init: Annotated[bool, Init(lambda: count == 0)]
+bounded: Annotated[bool, Invariant(lambda: 0 <= count <= LIMIT)]
+
+def step() -> Annotated[
+    None,
+    Requires(lambda: count < LIMIT),
+    Action(lambda: prime(count) == count + 1),
+]:
+    count += 1
+
+def reset() -> Annotated[
+    None,
+    Action(lambda: prime(count) == 0),
+]:
+    count = 0
+
+m = Model(sys.modules[__name__], constants={"LIMIT": 3})
+"""
+        runs = manyan.check_temporal(src)
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+        assert runs[0].run.result is not None
+        self.assertEqual(runs[0].run.result.distinct, 4)
+
+    def test_negative_sequence_slicing(self) -> None:
+        src = """from typing import Annotated
+from temporal import Action, Constant, Domain, Ensures, Init, Invariant, Model, Requires, State, old, prime
+
+class Stack:
+    cap: Constant[int]
+    items: State[tuple[int, ...]]
+    init: Annotated[bool, Init(lambda s: s.items == ())]
+    bounded: Annotated[bool, Invariant(lambda s: 0 <= len(s.items) <= s.cap)]
+
+    def push(self, x: int) -> Annotated[
+        None,
+        Requires(lambda s, x: len(s.items) < s.cap),
+        Action(lambda s, x: prime(s.items) == s.items + (x,)),
+    ]:
+        self.items = self.items + (x,)
+
+    def pop(self) -> Annotated[
+        int,
+        Requires(lambda s: len(s.items) > 0),
+        Action(lambda s: prime(s.items) == s.items[:-1]),
+        Ensures(lambda s, result: result == old(s.items)[-1]),
+    ]:
+        top = self.items[-1]
+        self.items = self.items[:-1]
+        return top
+
+m = Model(Stack, constants={"cap": 2}, domains={"x": Domain.range(1, 2)})
+"""
+        runs = manyan.check_temporal(src)
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+        assert runs[0].run.result is not None
+        self.assertEqual(runs[0].run.result.distinct, 7)
+
+    def test_implicit_framing_and_frame_conformance(self) -> None:
+        # Declarative action omitting Modifies implicitly leaves unmentioned `y` unchanged.
+        ok_src = """from typing import Annotated
+from temporal import Action, Init, Invariant, Model, State, prime
+
+class Pair:
+    x: State[int]
+    y: State[int]
+    init: Annotated[bool, Init(lambda s: s.x == 0 and s.y == 7)]
+    y_const: Annotated[bool, Invariant(lambda s: s.y == 7)]
+    flip: Annotated[bool, Action(lambda s: prime(s.x) == 1 - s.x)]
+
+m = Model(Pair)
+"""
+        runs = manyan.check_temporal(ok_src)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+
+        # Imperative method mutating a variable outside Modifies("x") violates conformance.
+        bad_frame = """from typing import Annotated
+from temporal import Action, Init, Model, Modifies, State, prime
+
+class Pair:
+    x: State[int]
+    y: State[int]
+    init: Annotated[bool, Init(lambda s: s.x == 0 and s.y == 0)]
+
+    def flip(self) -> Annotated[
+        None,
+        Action(lambda s: prime(s.x) == 1 - s.x),
+        Modifies("x"),
+    ]:
+        self.x = 1 - self.x
+        self.y = 1
+
+m = Model(Pair)
+"""
+        bad_runs = manyan.check_temporal(bad_frame)
+        self.assertEqual(bad_runs[0].run.status, 12, bad_runs[0].run.output)
+        assert bad_runs[0].run.result is not None
+        self.assertIn("_Conform_flip", bad_runs[0].run.result.violated)
+
+    def test_preserves_and_nullable_where_and_standalone_model(self) -> None:
+        # Nullable Where on State field allows None and checks positive when non-None.
+        src = """from typing import Annotated, Optional
+from temporal import Action, Init, Model, Preserves, State, Where, prime
+
+Positive = Annotated[int, Where(lambda x: x > 0)]
+
+class Slot:
+    val: State[Optional[Positive]]
+    init: Annotated[bool, Init(lambda s: s.val is None)]
+    set_one: Annotated[
+        bool,
+        Action(lambda s: prime(s.val) == 1),
+        Preserves(lambda s: s.val is None or s.val > 0),
+    ]
+    clear: Annotated[bool, Action(lambda s: prime(s.val) is None)]
+
+m = Model(Slot)
+"""
+        runs = manyan.check_temporal(src)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+
+        # Declarative action violating Preserves fails _Preserves_...
+        bad_pres = """from typing import Annotated
+from temporal import Action, Init, Model, Preserves, State, prime
+
+class Broken:
+    x: State[int]
+    init: Annotated[bool, Init(lambda s: s.x == 1)]
+    break_pos: Annotated[
+        bool,
+        Action(lambda s: prime(s.x) == -1),
+        Preserves(lambda s: s.x > 0),
+    ]
+
+m = Model(Broken)
+"""
+        bad_pres_runs = manyan.check_temporal(bad_pres)
+        self.assertEqual(bad_pres_runs[0].run.status, 13, bad_pres_runs[0].run.output)
+        assert bad_pres_runs[0].run.result is not None
+        self.assertIn("_Preserves_break_pos_0", bad_pres_runs[0].run.result.violated)
+
+        # Standalone pure function with explicit Model(fn, domains=...)
+        fn_src = """from typing import Annotated
+from temporal import Domain, Ensures, Model, Pure, Requires
+
+def clamp(value: int, low: int, high: int) -> Annotated[
+    Pure[int],
+    Requires(lambda low, high: low <= high),
+    Ensures(lambda value, low, high, result: low <= result <= high),
+]:
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+clamp_model = Model(
+    clamp,
+    domains={
+        "value": Domain.range(-4, 4),
+        "low": Domain.range(-2, 2),
+        "high": Domain.range(-2, 2),
+    },
+)
+"""
+        fn_runs = manyan.check_temporal(fn_src)
+        self.assertEqual([r.name for r in fn_runs], ["clamp_model"])
+        self.assertTrue(fn_runs[0].ok, fn_runs[0].run.output)
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:
@@ -291,6 +489,15 @@ class TestTemporalCLI(unittest.TestCase):
             res = _run_cli("check", str(p))
             self.assertEqual(res.returncode, 1)
             self.assertIn("no Temporal specifications found", res.stderr)
+
+    def test_cli_directory_check_skips_plain_python_files(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "helper.py").write_text("VALUE = 42\n", encoding="utf-8")
+            (Path(d) / "sem.py").write_text((EXAMPLES / "semaphore.py").read_text(encoding="utf-8"), encoding="utf-8")
+            res = _run_cli("check", d)
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            self.assertIn("PASS", res.stdout)
+            self.assertIn("Checked 1 Temporal model(s): 1 passed.", res.stdout)
 
 
 if __name__ == "__main__":
