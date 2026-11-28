@@ -46,26 +46,4 @@ set a frozenset, a function or record a `manyan.Function` (a dict a set can
 hold), and any other, such as a model value, a `manyan.Printed`: a str of
 TLC's text of it.
 
-## Checking Python `temporal` specifications
-
-`python -m manyan` can also statically analyse and model-check Python source
-annotated with [`temporal`](https://github.com/soasme/manyan/tree/main/temporal),
-without importing or executing user modules:
-
-```sh
-python -m manyan check path/to/spec.py
-python -m manyan check --spec-only path/to/spec.py
-python -m manyan check --workers 4 path/to/spec.py
-python -m manyan check --symbolic --length 10 path/to/spec.py
-python -m manyan emit path/to/spec.py
-python -m manyan path/to/spec.py
-```
-
-And from Python:
-
-```python
-runs = manyan.check_temporal("temporal/examples/semaphore.py")
-models = manyan.emit_temporal("temporal/examples/semaphore.py")
-```
-
 See [the manual](https://github.com/soasme/manyan/blob/main/docs/manual.md).

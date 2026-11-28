@@ -131,11 +131,9 @@ $(LIB): $(SRC) $(HDR)
 test-recover: manyan
 	python3 tests/recover_runner.py ./manyan
 
-# The Python package's run(), on this executable, its check(), on this library,
-# and its Temporal Python-source checker.
+# The Python package's run(), on this executable, and its check(), on this library.
 test-python: manyan $(LIB)
 	MANYAN_LIB=$(abspath $(LIB)) python3 python/test_manyan.py
-	MANYAN=$(abspath manyan) MANYAN_LIB=$(abspath $(LIB)) python3 python/test_temporal.py
 
 # The oracle must agree with every expected output, which validates the tests.
 test-spec-oracle: manyan $(TLA_JAR) $(COMMUNITY)
