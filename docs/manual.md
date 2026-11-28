@@ -559,6 +559,10 @@ Known gaps, not decisions, each to be closed:
 - With temporal properties, `-dump dot FILE` writes the state graph as
   TLC does; TLC also writes `FILE_liveness.dot`, its graph of states and
   tableau nodes named by its fingerprints, which Manyan does not.
+- With `-dumpTrace`, a `POSTCONDITION` of the spec's own that prints
+  `CounterExample` shows TLC's record as TLC builds it, `state` first,
+  where Manyan prints its fields in order, `action` first, as `ToString`
+  and the written file have them.
 - With some `-fp` seeds, TLC closes a liveness counterexample whose cycle
   ends where it starts, in its state but not its tableau node, by
   printing that state again and `State N: Stuttering` with the cycle's
