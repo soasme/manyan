@@ -15916,8 +15916,11 @@ static void conjuncts(Expr *e, Expr *call, Expr ***out, int *n, int spec) {
         return;
     }
     if (e->kind == K_INSTCALL && e->n == 0 && e->def->kind == D_OP && !e->def->native) {
-        conjuncts(e->def->body, through(call, e), out, n, spec);
-        return;
+        if (expr_level(e->def->body) > 1) {
+            conjuncts(e->def->body, through(call, e), out, n, spec);
+            return;
+        }
+        call = through(call, e), e = e->def->body;   /* an initial predicate kept whole, as a definition's */
     }
     *out = xrealloc(*out, sizeof(Expr *) * (size_t)(*n + 2));
     (*out)[(*n)++] = e;
@@ -16025,9 +16028,10 @@ static void use_specification(Expr *spec) {
             init = xrealloc(init, sizeof(Expr *) * (size_t)(ninit + 1));
             init[ninit++] = in_instance(call, init_where);
             Def *in = NULL;
-            if (call) instance_name(call, &in);
+            int name = call ? instance_name(call, &in) : 0;
             if (in) init_where = in->where;   /* TLC locates a part through an instance that substitutes there */
             if (renames_variable(in)) init_name = 0;
+            if (call && call->def->body == e) init_name = name;   /* the whole of I!Init: TLC names it so */
             add_init();
         } else if (e->kind == K_ALWAYS && unfold(e->args[0])->kind == X_SQACT) {
             Expr *sq = unfold(e->args[0]);

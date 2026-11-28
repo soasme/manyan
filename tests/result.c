@@ -32,10 +32,12 @@ static const char *action_name(ManyanValue *action) {
 }
 
 /* The step at p, "<Name ...", is the action's; TLC prints its
-   UnnamedAction as Action. */
+   UnnamedAction as Action, and an initial state outside a simulation
+   as <Initial predicate>, whatever its name. */
 static void check_action(const char *p, ManyanValue *action, size_t i) {
     const char *name = action_name(action);
     if (!strcmp(name, "UnnamedAction")) name = "Action";
+    if (!i && !strncmp(p, "<Initial predicate>", 19)) return;
     if (*p != '<' || strncmp(p + 1, name, strlen(name)))
         mismatch("the step into state %zu is %s, but %.40s is printed", i + 1, name, p);
 }

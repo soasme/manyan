@@ -1,0 +1,22 @@
+{ [ name |-> "I!Init",
+    location |->
+        [ beginLine |-> 9,
+          beginColumn |-> 1,
+          endLine |-> 9,
+          endColumn |-> 30,
+          module |-> "instance_init_named" ] ] }
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <I!Init line 9, col 1 to line 9, col 30 of module instance_init_named>
+/\ u = 1
+/\ w = 2
+
+State 2: <I!Next line 9, col 1 to line 9, col 30 of module instance_init_named>
+/\ u = 2
+/\ w = 2
+
+State 3: <I!Next line 9, col 1 to line 9, col 30 of module instance_init_named>
+/\ u = 3
+/\ w = 2
+exit 12
