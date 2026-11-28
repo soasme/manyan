@@ -12904,10 +12904,10 @@ static void trace_state_text(Buf *b, Value **st, Value **next, int level, int di
         }
         return;
     }
-    if (v) { state_text(b, st); return; }
-    for (int i = 0; i < nvars; i++)
+    for (int i = 0; i < nvars; i++)   /* not a record: the state, under -difftrace what changed */
         if (!diff || !shown_was(was_record, was_state, vars[i]->name, st[i]))
-            buf_printf(b, "/\\ %s = %s\n", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+            buf_printf(b, "%s%s = %s\n", v && nvars == 1 ? "" : "/\\ ", S(vars[i]->name), st[i] ? pretty(st[i]) : "null");
+    if (v) return;
     buf_printf(b, "/\\ _ALIASEvalError = %s\n", pretty(mk_str(intern(why.s))));
     xfree(why.s);
 }
@@ -13327,13 +13327,22 @@ static void dump_write(Value **st) {
     if (fprint_shown(dump_file, st)) fputc('\n', dump_file);
 }
 
-/* A state as a dot label: TLC's toString of it, or what changed after
-   prev, trimmed, its lines and quotes escaped. */
-static char *dot_label(Value **st, Value **prev) {
+/* A state as a dot label: through the ALIAS at level, if not 0; what
+   changed after prev, if not NULL; else TLC's toString of it. Trimmed, its
+   lines and quotes escaped. */
+static char *dot_label(Value **st, Value **prev, int level) {
     char *text = NULL;
     size_t len = 0;
     FILE *f = open_memstream(&text, &len);
-    if (prev) fprint_diff(f, prev, st);
+    if (level) {
+        Value *was_record = shown_record, **was_state = shown_state;
+        Buf b = {0};
+        if (prev) trace_state_text(&b, prev, NULL, level - 1, 0), b.n = 0;   /* shown before it */
+        trace_state_text(&b, st, NULL, level, prev != NULL);
+        fputs(b.s && b.n ? b.s : "", f);
+        xfree(b.s);
+        shown_record = was_record, shown_state = was_state;
+    } else if (prev) fprint_diff(f, prev, st);
     else fprint_shown(f, st);
     fclose(f);
     while (len && text[len - 1] == '\n') text[--len] = 0;
@@ -13357,10 +13366,13 @@ static void dump_rank(int idx) {
 /* A state new after prev, or initial (prev NULL). */
 static void dump_node(int idx, Value **st, Value **prev) {
     if (dump_text) { dump_write(st); return; }
-    /* TLC labels a state with its toString, under -difftrace a successor
-       with what changed, and gives that the toString as tooltip */
-    char *shown = dot_label(st, NULL), *label = diff_trace && prev ? dot_label(st, prev) : shown;
-    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), shown);
+    /* TLC labels a state through its ALIAS, else under -difftrace a
+       successor with what changed, else with its toString, which it gives
+       a successor as tooltip */
+    char *shown = dot_label(st, NULL, 0);
+    Value **after = diff_trace ? prev : NULL;
+    char *label = alias_name || after ? dot_label(st, after, alias_name ? state_depth(idx) : 0) : shown;
+    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), label);
     else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)state_fp(idx), label, shown);
     if (label != shown) xfree(label);
     xfree(shown);
@@ -13887,6 +13899,7 @@ static int live_cut_in(int n) {
 
 /* After a finite counterexample: as TLC, which stops its temporal checks
    with an exception it reports with -continue. */
+static void dump_again(int s);
 static int cut_reported(int violated) {
     check_posts(1);
     if (keep_going) {
@@ -13895,7 +13908,22 @@ static int cut_reported(int violated) {
         violated = MANYAN_ERROR;
     }
     print_counts_after(live_cut);
+    if (keep_going) dump_again(live_cut);
     return violated;
+}
+
+/* -dump dot: as TLC expands state s again to report an exception there,
+   its steps written once more. */
+static void dump_again(int s) {
+    if (!dump_file || dump_text || dumped_after[s] < 0) return;
+    long n = dumped_after[s] - dumped_from[s];
+    char *text = xmalloc((size_t)n + 1);
+    fseek(dump_file, dumped_from[s], SEEK_SET);
+    text[fread(text, 1, (size_t)n, dump_file)] = 0;
+    fseek(dump_file, 0, SEEK_END);
+    for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n"))
+        if (strstr(line, " -> ")) fprintf(dump_file, "%s\n", line);
+    xfree(text);
 }
 
 /* The last state TLC had found once state s had been expanded, as the
@@ -18930,16 +18958,7 @@ static int live_report(int fp) {
     if (!fp) printf("\n");
     live_print(fp);
     print_counts_after(live_at);
-    if (dump_file && !dump_text && dumped_after[live_at] >= 0) {   /* TLC expands it again to report where: its steps, once more */
-        long n = dumped_after[live_at] - dumped_from[live_at];
-        char *text = xmalloc((size_t)n + 1);
-        fseek(dump_file, dumped_from[live_at], SEEK_SET);
-        text[fread(text, 1, (size_t)n, dump_file)] = 0;
-        fseek(dump_file, 0, SEEK_END);
-        for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n"))
-            if (strstr(line, " -> ")) fprintf(dump_file, "%s\n", line);
-        xfree(text);
-    }
+    dump_again(live_at);
     return MANYAN_ERROR;
 }
 
@@ -28108,7 +28127,7 @@ static int check_model(const ManyanOptions *o) {
 
 int manyan_check(const ManyanOptions *o) {
     reset_check();
-    FILE *dump = o->dump && !o->simulate ? fopen(o->dump, "w") : NULL;   /* as TLC makes it as it starts: a run failing before its states leaves it so */
+    FILE *dump = o->dump ? fopen(o->dump, "w") : NULL;   /* as TLC makes it as it starts: a run failing before its states, or simulating, leaves it so */
     if (dump && !o->dump_text) fputs(DUMP_HEAD, dump);
     if (dump) fclose(dump);
     sigjmp_buf here;
@@ -28116,6 +28135,7 @@ int manyan_check(const ManyanOptions *o) {
     if (status) {   /* stopped by an error: the workers may be anywhere */
         for (int i = 0; workers_running && i < nforked; i++) kill(worker_pids[i], SIGKILL);
         stop_workers();
+        if (dump_file) dump_close();
     } else {
         quit = &here;
         status = check_model(o);

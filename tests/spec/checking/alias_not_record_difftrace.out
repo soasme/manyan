@@ -1,0 +1,38 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <Next line 8, col 9 to line 8, col 28 of module alias_not_record_difftrace>
+/\ x = 1
+
+State 3: <Next line 8, col 9 to line 8, col 28 of module alias_not_record_difftrace>
+/\ x = 2
+
+State 4: <Next line 8, col 9 to line 8, col 28 of module alias_not_record_difftrace>
+/\ x = 3
+/\ y = 0
+
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+exit 12
+--- states.dot
+strict digraph DiskGraph {
+node [shape=box,style=rounded]
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";
+s0 [label="/\\ x = 0\n/\\ y = 0",style = filled]
+s0 -> s1 [label="",color="black",fontcolor="black"];
+s1 [label="/\\ x = 1",tooltip="/\\ x = 1\n/\\ y = 0"];
+s1 -> s2 [label="",color="black",fontcolor="black"];
+s2 [label="/\\ x = 2",tooltip="/\\ x = 2\n/\\ y = 0"];
+s2 -> s3 [label="",color="black",fontcolor="black"];
+s3 [label="/\\ x = 3",tooltip="/\\ x = 3\n/\\ y = 0"];
+{rank = same; s0;}
+{rank = same; s1;}
+{rank = same; s2;}
+}
+}

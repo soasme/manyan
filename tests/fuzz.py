@@ -1200,7 +1200,6 @@ def differs(ours, theirs):
     npe = "The exception was a java.lang.NullPointerException"
     if npe in theirs and npe not in ours:
         return False
-    theirs = re.sub(r"^--- \S+_liveness\.dot\n(?:(?!--- ).*\n)*", "", theirs, flags=re.M)   # TLC's behavior graph: docs/manual.md
     return ours != back_into(theirs)
 
 

@@ -230,7 +230,7 @@ def dumped(directory, options):
     replaced by its number, dumped states, behaviors, user output and the
     counterexample."""
     text = ""
-    for dot in sorted(directory.glob("*.dot")):
+    for dot in sorted(d for d in directory.glob("*.dot") if not d.name.endswith("_liveness.dot")):   # TLC's own, as the manual says
         ids = {}
         number = lambda m: m.group(1) + "s%d" % ids.setdefault(m.group(2), len(ids))
         text += f"--- {dot.name}\n"
