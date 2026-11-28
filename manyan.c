@@ -10394,11 +10394,12 @@ static void bind_natives(void) {
                     d->lazy = native_arity(natives[k].method) < 0;
                     d->intop = native_intop(d->native);
                     /* TLC loads Integers for the trace spec it sets up, which
-                       -continue skips, and then takes Naturals' operators from
-                       its class; a method may name its own class in tlc2.module,
-                       or a class elsewhere in full. */
+                       -continue skips, and for -dumpTrace's modules, and then
+                       takes Naturals' operators from its class; a method may
+                       name its own class in tlc2.module, or a class elsewhere
+                       in full. */
                     const char *m = natives[k].method;
-                    const char *cls = !strcmp(natives[k].module, "Naturals") && !keep_going ? "Integers" : natives[k].module;
+                    const char *cls = !strcmp(natives[k].module, "Naturals") && (!keep_going || first_trace) ? "Integers" : natives[k].module;
                     int named = memchr(m, '.', (size_t)(strchr(m, '(') - m)) != NULL, full = !strncmp(m, "tlc2.", 5);
                     Buf b = {0};
                     buf_printf(&b, "public static %s %s%s%s%s", natives[k].ret, full ? "" : "tlc2.module.",

@@ -558,7 +558,11 @@ Known gaps, not decisions, each to be closed:
   as the lasso has, which may not violate the property.
 - With temporal properties, `-dump dot FILE` writes the state graph as
   TLC does; TLC also writes `FILE_liveness.dot`, its graph of states and
-  tableau nodes named by its fingerprints, which Manyan does not.
+  tableau nodes named by its fingerprints, which Manyan does not. A
+  property `[]P` whose `P` is a LET defining an action TLC checks as a
+  temporal property, with the same verdict, where Manyan checks it as an
+  invariant: TLC's `-dump FILE` then writes each state again after its
+  successors.
 - With `-dumpTrace`, a `POSTCONDITION` of the spec's own that prints
   `CounterExample` shows TLC's record as TLC builds it, `state` first,
   where Manyan prints its fields in order, `action` first, as `ToString`
