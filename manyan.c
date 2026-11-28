@@ -13145,15 +13145,17 @@ static int check_posts(int after_error) {
 
 /* An error TLC reports for a state, or a step from it to s2, is followed
    by its rebuilding the behavior for its POSTCONDITIONs, which evaluates
-   Init and Next again, then checking them. */
-static void rebuild_for_posts(int s1, Value **s2, int action) {
+   Init and Next again, then checking them; after an error evaluating
+   (erred), their CounterExample is empty. */
+static void rebuild_for_posts(int s1, Value **s2, int action, int erred) {
     trace_states(s1, s2, action, 0);
+    if (erred) post_trace.n = 0;
     check_posts(1);
 }
 
 static int reported_trace(int s1, Value **s2, int action) {
     int failed = print_trace(s1, s2, action);
-    rebuild_for_posts(s1, s2, action);
+    rebuild_for_posts(s1, s2, action, 0);
     return failed;
 }
 
@@ -13436,7 +13438,7 @@ static int check_initial(Value **st) {
         printf("Error: Invariant %s is violated by the initial state:\n", S(invariants[bad].name)), found_violated(invariants[bad].name);
         if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
         found_behavior(&st, (int[]){-1}, 1, 0, 0);
-        post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
+        if (!keep_going || simulating) post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);   /* going on, TLC's CounterExample is empty */
         if (!keep_going || simulating) return MANYAN_VIOLATION_SAFETY;   /* TLC's simulator stops */
     }
     bad = check_list(implied_inits, nimplied_inits, st);
@@ -13444,7 +13446,7 @@ static int check_initial(Value **st) {
         printf("Error: Property %s is violated by the initial state:\n", S(implied_inits[bad].name)), found_violated(implied_inits[bad].name);
         if (!print_shown(st)) print_trace_state(st, st, 1), printf("\n");   /* no blank line after a view */
         found_behavior(&st, (int[]){-1}, 1, 0, 0);
-        post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
+        if (!keep_going || simulating) post_behavior(&st, (int[]){-1}, 1, 0, 0, 0);
         return MANYAN_VIOLATION_LIVENESS;
     }
     return 0;
@@ -14999,9 +15001,9 @@ static int search(void) {
         int deadlocked = succ_count == 0 && check_deadlock;
         if (deadlocked && keep_going) {
             printf("Error: Deadlock reached.\n");
-            reported_trace(expanding, NULL, 0);
+            print_trace(expanding, NULL, 0);
         }
-        if (deadlocked && !keep_going) rebuild_for_posts(expanding, NULL, 0);
+        if (deadlocked) rebuild_for_posts(expanding, NULL, 0, 1);
         ErrorState first = error_save();
         /* With -continue TLC replays the step, its properties on the state
            first: an error there it reports, then the first again. */

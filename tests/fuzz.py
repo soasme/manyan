@@ -1100,7 +1100,8 @@ def check(engine, tlc, runs, seed):
     for _ in range(runs):
         path = rng.choice(models)
         options = [o for o in ["-deadlock", "-continue", "-difftrace", "-nowarning", "-view"] if rng.random() < 0.4]
-        options += rng.choice([[], [], ["-dump", "states"], ["-dump", "dot", "states"], ["-fp", str(rng.randint(0, 130))]])
+        options += rng.choice([[], [], ["-dump", "states"], ["-dump", "dot", "states"], ["-fp", str(rng.randint(0, 130))],
+                               ["-dumpTrace", "json", "trace.json"], ["-dumpTrace", "tla", "trace.tla"]])
         workers = rng.choice([[], ["-workers", "4"]])
         ours = spec_runner.run(engine + workers + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)

@@ -1,0 +1,11 @@
+Error: Invariant Small is violated by the initial state:
+x = 4
+
+Error: Invariant Small is violated by the initial state:
+x = 5
+
+Finished computing initial states: 5 distinct states generated.
+Model checking completed. No error has been found.
+10 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 0
