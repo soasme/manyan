@@ -945,6 +945,29 @@ gcd_model = Model(gcd, domains={"a": Domain.range(1, 6), "b": Domain.range(1, 6)
         for tr in runs:
             self.assertTrue(tr.ok, f"{tr.name}: {tr.run.output}")
 
+    def test_list_and_sum_comprehensions(self) -> None:
+        src = """from typing import Annotated
+from temporal import Action, Init, Invariant, Model, State, prime
+
+class Vec:
+    xs: State[tuple[int, ...]]
+    init: Annotated[bool, Init(lambda s: s.xs == tuple(i for i in range(1, 4)))]
+    ok: Annotated[
+        bool,
+        Invariant(
+            lambda s: (
+                [x * 2 for x in s.xs] == (2, 4, 6)
+                and sum(x * x for x in s.xs) == 14
+            )
+        ),
+    ]
+    stutter: Annotated[bool, Action(lambda s: prime(s.xs) == s.xs)]
+
+m = Model(Vec)
+"""
+        runs = manyan.check_temporal(src)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:

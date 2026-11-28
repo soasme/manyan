@@ -938,7 +938,7 @@ class _ExprCompiler:
             return "none"
         if isinstance(node, (ast.Set, ast.SetComp)):
             return "set"
-        if isinstance(node, (ast.Tuple, ast.List)):
+        if isinstance(node, (ast.Tuple, ast.List, ast.ListComp)):
             return "seq"
         if isinstance(node, (ast.Dict, ast.DictComp)):
             return "map"
@@ -1066,6 +1066,9 @@ class _ExprCompiler:
 
         if isinstance(node, (ast.Tuple, ast.List)):
             return "<<" + ", ".join(self.compile(e, primed=use_prime) for e in node.elts) + ">>"
+
+        if isinstance(node, ast.ListComp):
+            return self._compile_seq_comp(node.elt, node.generators, use_prime, node)
 
         if isinstance(node, ast.Set):
             return "{" + ", ".join(self.compile(e, primed=use_prime) for e in node.elts) + "}"
@@ -1313,7 +1316,10 @@ class _ExprCompiler:
                 return f"Len({arg})"
             if fname == "sum" and len(node.args) == 1:
                 self.needs_helpers.update({"Sequences", "_Sum"})
-                return f"_Sum({self.compile(node.args[0], primed=use_prime)})"
+                arg0 = node.args[0]
+                if isinstance(arg0, ast.GeneratorExp):
+                    return f"_Sum({self._compile_seq_comp(arg0.elt, arg0.generators, use_prime, arg0)})"
+                return f"_Sum({self.compile(arg0, primed=use_prime)})"
             if fname in ("min", "max") and len(node.args) >= 2:
                 op = "<" if fname == "min" else ">"
                 acc = self.compile(node.args[0], primed=use_prime)
@@ -1333,7 +1339,8 @@ class _ExprCompiler:
                     a, b = self.compile(node.args[0], primed=use_prime), self.compile(node.args[1], primed=use_prime)
                     return f"(({a})..(({b}) - 1))"
             if fname == "tuple" and len(node.args) == 1 and isinstance(node.args[0], ast.GeneratorExp):
-                return self._compile_tuple_gen(node.args[0], use_prime)
+                gen = node.args[0]
+                return self._compile_seq_comp(gen.elt, gen.generators, use_prime, gen)
             if tname == "ModelValue" and len(node.args) == 1:
                 mv_name = str(self.extractor._eval_const(node.args[0]))
                 self.needs_helpers.add(f"_MV:{mv_name}")
@@ -1496,21 +1503,36 @@ class _ExprCompiler:
             body = f"({q} {safe} \\in {dom} : {body})"
         return body
 
-    def _compile_tuple_gen(self, gen: ast.GeneratorExp, use_prime: bool) -> str:
-        if len(gen.generators) == 1:
-            comp = gen.generators[0]
-            if (
-                isinstance(comp.target, ast.Name)
-                and not comp.ifs
-                and isinstance(comp.iter, ast.Call)
-                and isinstance(comp.iter.func, ast.Name)
-                and comp.iter.func.id == "range"
-                and len(comp.iter.args) == 1
-            ):
-                n_expr = self.compile(comp.iter.args[0], primed=use_prime)
-                sub = self._sub(use_prime=use_prime, extra_params={comp.target.id: "(_i - 1)"})
-                return f"[_i \\in 1..({n_expr}) |-> {sub.compile(gen.elt, primed=use_prime)}]"
-        raise _err("Unsupported tuple generator expression", gen, self.extractor.source_path)
+    def _compile_seq_comp(
+        self,
+        elt: ast.expr,
+        generators: list[ast.comprehension],
+        use_prime: bool,
+        owner: ast.AST,
+    ) -> str:
+        if len(generators) == 1:
+            comp = generators[0]
+            if isinstance(comp.target, ast.Name) and not comp.ifs:
+                if (
+                    isinstance(comp.iter, ast.Call)
+                    and isinstance(comp.iter.func, ast.Name)
+                    and comp.iter.func.id == "range"
+                    and len(comp.iter.args) in (1, 2)
+                ):
+                    if len(comp.iter.args) == 1:
+                        n_expr = self.compile(comp.iter.args[0], primed=use_prime)
+                        sub = self._sub(use_prime=use_prime, extra_params={comp.target.id: "(_i - 1)"})
+                        return f"[_i \\in 1..({n_expr}) |-> {sub.compile(elt, primed=use_prime)}]"
+                    a_expr = self.compile(comp.iter.args[0], primed=use_prime)
+                    b_expr = self.compile(comp.iter.args[1], primed=use_prime)
+                    sub = self._sub(use_prime=use_prime, extra_params={comp.target.id: f"(({a_expr}) + (_i - 1))"})
+                    return f"[_i \\in 1..(({b_expr}) - ({a_expr})) |-> {sub.compile(elt, primed=use_prime)}]"
+                if self._infer_kind(comp.iter) == "seq":
+                    self.needs_helpers.add("Sequences")
+                    seq_expr = self.compile(comp.iter, primed=use_prime)
+                    sub = self._sub(use_prime=use_prime, extra_params={comp.target.id: f"{seq_expr}[_i]"})
+                    return f"[_i \\in 1..Len({seq_expr}) |-> {sub.compile(elt, primed=use_prime)}]"
+        raise _err("Unsupported sequence comprehension", owner, self.extractor.source_path)
 
 
 # ---------------------------------------------------------------------------
