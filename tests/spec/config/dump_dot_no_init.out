@@ -1,0 +1,8 @@
+Error: Parsing or semantic analysis failed.
+exit 150
+--- states.dot
+strict digraph DiskGraph {
+node [shape=box,style=rounded]
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";

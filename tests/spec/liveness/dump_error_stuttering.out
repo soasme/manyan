@@ -1,0 +1,22 @@
+Finished computing initial states: 1 distinct state generated.
+Error: TLC threw an unexpected exception.
+This was probably caused by an error in the spec or model.
+See the User Output or TLC Console for clues to what happened.
+The exception was a java.lang.RuntimeException
+: Attempted to compute the value of an expression of form
+CHOOSE x \in S: P, but no element of S satisfied P.
+line 8, col 14 to line 8, col 41 of module dump_error_stuttering
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+1 states generated, 1 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+exit 255
+--- states.dump
+State 1:
+x = 0
+
+State 2:
+x = 0
+

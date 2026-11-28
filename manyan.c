@@ -14940,8 +14940,10 @@ static int search(void) {
             return MANYAN_FAILURE_EVAL;   /* TLC: a failed Assert too */
         }
         /* TLC expands the state that failed again to report where: its
-           successors, seen now, it writes as edges once more */
+           successors, seen now, it writes as edges once more, and as a
+           text dump its stuttering step */
         for (int i = 0, n = dump_nredo; dump_file && i < n; i += 2) dump_edge(expanding, dump_redo[i], (int)dump_redo[i + 1]);
+        if (dump_file && dump_text && ntemporal_props) dump_write(expanding_state);
         if (over == 2) {   /* TLC prints its Java stack */
             print_exception("java.lang.StackOverflowError", "java.lang.StackOverflowError\n\n");
             print_counts(nstates - expanded - checking_invariant());
@@ -28169,6 +28171,8 @@ static int check_model(const ManyanOptions *o) {
         printf("Finished computing initial states: 0 distinct states generated.\n");
         printf("Model checking completed. No error has been found.\n");
         print_counts(0);
+        FILE *dump = o->dump && !o->dump_text ? fopen(o->dump, "a") : NULL;   /* the graph begun, empty */
+        if (dump) fputs("}\n}", dump), fclose(dump);
         return MANYAN_OK;
     }
     /* With nothing to check on steps, TLC computes the initial states first. */
