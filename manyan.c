@@ -12602,14 +12602,39 @@ static void print_state(Value **st) { fprint_state(stdout, st); }
 
 static int view_trace;   /* -view */
 
+static Expr *unfold(Expr *e);
+
+/* The constants and variables the VIEW uses (SANY's allParams), n of
+   them, as TLC orders them by their place in the state: the constants
+   share one, so it keeps one of them, the first declared, and then the
+   variables. kept: how many it keeps. */
+static Def **view_params(int *n, int *kept) {
+    Def **ps = NEWN(Def *, nvars + 1);
+    *n = *kept = 0;
+    for (int i = -root->ndecls; i < nvars; i++) {
+        List seen = {0};
+        Def *p = i < 0 ? root->decls[root->ndecls + i] : vars[i];
+        if ((i < 0 && p->kind != D_CONST) || !expr_uses(view_expr, p, &seen)) continue;
+        if (i >= 0 || !*kept) ps[(*kept)++] = p;
+        (*n)++;
+    }
+    return ps;
+}
+
 /* With -view, a reported state as its view's value: returns whether it
-   printed it. */
+   printed it. As TLC, a tuple as long as the constants and variables the
+   VIEW uses pairs its values with them in turn, `/\ name = value`. */
 static int print_shown(Value **st) {
     if (!view_trace || !view_expr) return 0;
     Value **saved = cur_state;
     cur_state = st;
-    printf("%s\n", pretty(eval(view_expr, root_ctx)));
+    Value *v = eval(view_expr, root_ctx);
     cur_state = saved;
+    int n, kept;
+    Def **ps = v->kind == V_TUPLE && v->n && unfold(view_expr)->kind != X_LET ? view_params(&n, &kept) : NULL;
+    if (!ps || n != v->n) { printf("%s\n", pretty(v)); return 1; }
+    for (int i = 0; i < kept; i++) printf("/\\ %s = %s\n", S(ps[i]->name), pretty(v->u.fcn.vals[i]));
+    puts("");
     return 1;
 }
 

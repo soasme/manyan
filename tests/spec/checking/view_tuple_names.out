@@ -1,0 +1,21 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ L = 5
+/\ x = 6
+/\ y = 0
+
+State 2: <Next line 11, col 9 to line 11, col 41 of module view_tuple_names>
+/\ L = 5
+/\ x = 6
+/\ y = 3
+
+State 3: <Next line 11, col 9 to line 11, col 41 of module view_tuple_names>
+/\ L = 5
+/\ x = 6
+/\ y = 6
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+exit 12

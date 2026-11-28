@@ -66,7 +66,7 @@ for it; [std.md](std.md) lists them.
 | `-version` | print the version and exit |
 | `-nowarning` | turn off TLC's warnings, such as that of an EXCEPT outside the domain |
 | `-continue` | go on after a violated invariant or action property, as TLC does: each new state's first violated invariant and each step's violated action property is reported, and the search ends with `No error has been found.`; a simulation ends the behavior and exits 255 at the end; one worker |
-| `-view` | print each state an error reports as the value of the configuration's `VIEW`, as TLC does |
+| `-view` | print each state an error reports as the value of the configuration's `VIEW`, as TLC does: a tuple as long as the constants and variables the VIEW uses as `/\ name = value` lines, its values paired with them in the order of the state, one constant first |
 | `-Dk=v` | set Java's system property `k`, which `TLCGet("-Dk")` reads, as `java -Dk=v` does; `-Dtlc2.tool.impl.Tool.cdot=true` turns on TLC's incomplete action composition `A \cdot B` |
 | `-stack N` | let expressions nest and definitions call at most N deep, and report TLC's `StackOverflowError` past that (exit 255 while parsing, 75 while evaluating); TLC's own depth depends on its Java stack. Without it calls go 5000 deep and parsing as deep as the C stack goes, so a spec nested far deeper crashes |
 | `-userFile FILE` | write the output of `Print` and `PrintT` to FILE instead of standard output |
@@ -528,11 +528,7 @@ check them either. `RandomElement`, `RandomSubset` and
 `RandomSetOfSubsets` draw as TLC in a simulation, and in the assumptions
 and constants when model checking. A temporal property's counterexample
 whose cycle comes back into the state it starts in goes back to it;
-TLC prints it stuttering there, a behavior fairness may rule out. With
-`-view`, a VIEW whose value is a tuple as long as the constants and
-variables it depends on TLC prints as `/\ name = value` lines, pairing
-the tuple's values with them in the order of a Java hash set, which no
-specification determines; Manyan prints the value.
+TLC prints it stuttering there, a behavior fairness may rule out.
 SANY reads `{y \in E}`, with no colon, with all of `E` as the right side
 of `\in`, unchecked for precedence: `{y \in S /\ P}` is `{y \in (S /\
 P)}` to TLC, and `{y \in S = T}` parses. Manyan follows TLA⁺'s
