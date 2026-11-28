@@ -73,9 +73,9 @@ for it; [std.md](std.md) lists them.
 | `-difftrace` | print each state of a trace after the first as the variables that changed, as TLC does; the last state model checking reports is printed whole |
 | `-inv EXPR` | also check `EXPR` as an invariant, after the configuration's, as TLC's `-inv`: an operator of the spec keeps its name, another expression is named `__DebuggerExpr__` and the time in milliseconds |
 | `-invlevel N` | report the first behavior of N states, as TLC's: the invariant `TLCGet("level") < N` |
-| `-postCondition M!Op` | also check `Op` of module `M` once the search is done, after the configuration's `POSTCONDITION`s; as TLC, the spec extends `M` |
+| `-postCondition M!Op` | also check `Op` of module `M` once the search is done, before the configuration's `POSTCONDITION`s; as TLC, the spec extends `M` |
 | `-dumpTrace json FILE` | write the counterexample to FILE in TLC's JSON: its states, the actions between them and the variables, as `CounterExample` of TLCExt gives them |
-| `-dumpTrace tla FILE` | write the counterexample to FILE as a module named after it, defining `CounterExample` as TLCExt gives it, as TLC does; each format may be given once, and they are written in the order given. TLC needs CommunityModules for it; Manyan does not |
+| `-dumpTrace tla FILE` | write the counterexample to FILE as a module named after it, defining `CounterExample` as TLCExt gives it, as TLC does; each format may be given once, and they are written in the order given, after the `-postCondition`s and before the configuration's `POSTCONDITION`s (TLC takes the command line's in its order). TLC needs CommunityModules for it; Manyan does not |
 | `-result FILE` | Manyan's own: write what the check found to FILE in JSON, however the run ends; the output is TLC's still (see [Library](#library)) |
 | `-noGenerateSpecTE` | as TLC's: TLC then sets up no trace spec, which shows in the order of `CounterExample`'s fields |
 | `-fp N` | take TLC's fingerprints with its Nth polynomial, 0 to 130 (0 without it, where TLC picks one at random): they order a state's successors in a temporal property's check, and so its counterexample, seed the draws of `RandomElement` and the Randomization module when model checking, and are `TLCFP`'s values |

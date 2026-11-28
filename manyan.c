@@ -7832,6 +7832,7 @@ static Value *fcndef_value(Def *d, Ctx c) {
 static int nowarning;   /* TLC's warnings off (-nowarning) */
 static int keep_going;   /* -continue: a violated invariant or action property is reported, and the search goes on */
 static int te_spec;      /* TLC sets up a trace exploration spec: not with -continue or -noGenerateSpecTE */
+static int json_traced;  /* -dumpTrace json: TLC reads its _JsonTrace, which names "actions" */
 
 /* Prints one of TLC's warnings; as TLC, the first of a run says how to
    turn them off. */
@@ -15228,10 +15229,10 @@ static Value *spec_value(void) {
                      list_set(&inits), list_set(&vs), checks_value(action_constraints, naction_constraints, 1),
                      checks_value(constraints, nconstraints, 1)};
     /* TLC sorts the fields as it interned them: "actions" first when it
-       sets up a trace spec, else after "temporals". */
+       sets up a trace spec or reads _JsonTrace, else after "temporals". */
     const char *names[10];
     Value *fields[10];
-    for (int i = 0, j = 0, at = te_spec ? 0 : 5; i < 10; i++) {
+    for (int i = 0, j = 0, at = te_spec || json_traced ? 0 : 5; i < 10; i++) {
         names[i] = i == at ? "actions" : rest[j];
         fields[i] = i == at ? list_set(&acts) : vals[j++];
     }
@@ -17012,10 +17013,12 @@ static int setup_model(void) {
             nsymmetry = s->n;
             symmetry_tables();
         } else if (strcmp(k, "ALIAS") == 0) alias_name = it->name;
-        else if (strncmp(k, "POSTCONDITION", 13) == 0) {
+        else if (strncmp(k, "POSTCONDITION", 13) == 0) {   /* TLC checks the command line's, of a module, first */
             posts = xrealloc(posts, sizeof *posts * (size_t)(nposts + 1));
-            posts[nposts].name = it->name;
-            posts[nposts++].module = it->module;
+            int at = nposts++;
+            for (; it->module && at > 0 && !posts[at - 1].module; at--) posts[at] = posts[at - 1];
+            posts[at].name = it->name;
+            posts[at].module = it->module;
         } else if (strcmp(k, "CHECK_DEADLOCK") == 0) {
             if (it->value->kind == V_BOOL && !it->value->u.i) check_deadlock = 0;
         } else if (strcmp(k, "_PERIODIC") == 0) periodic_expr = config_call(it->name, "periodic", 'r');
@@ -27840,7 +27843,7 @@ static void reset_check(void) {
     Z(level_walks); Z(param_probe); Z(nvars); Z(vars); Z(cur_state); Z(next_state); Z(gen_target);
     Z(shifted); Z(gen_init); Z(state_reads); Z(moving_reads); Z(at_value); Z(keep_lazy); Z(cur_level);
     Z(eval_depth); Z(boolean_set); Z(order_keys); Z(simulating); Z(enabled_mark); Z(nowarning);
-    Z(keep_going); Z(parsed_error_at); Z(parsed_error); Z(te_spec); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
+    Z(keep_going); Z(parsed_error_at); Z(parsed_error); Z(te_spec); Z(json_traced); Z(warned); Z(except_seen); Z(nexcept_seen); Z(fixed_making); Z(witnesses);
     Z(nwitnesses); Z(gen_values); Z(ngen_values); Z(gen_step); Z(apalache_name); Z(folds_name); Z(gen_name);
     Z(eval_tracking); Z(effects); Z(format_msg); Z(user_file); Z(reprinting); Z(expansion_printed);
     Z(starting); Z(registers); Z(nregisters); Z(checking_posts); Z(sim_traces); Z(props); Z(nprops);
@@ -28042,7 +28045,9 @@ static int check_model(const ManyanOptions *o) {
         root->extends[root->nextends++] = intern_n(*p, (int)(bang - *p));
     }
     if (ntraces) intern("action");   /* before CounterExample's "state", as TLC */
-    for (int k = 0; k < ntraces; k += 2) root->extends[root->nextends++] = intern(trace_module(traces[k]));
+    for (int k = 0; k < ntraces; k += 2)   /* -dumpTrace tla's IOUtils names it, before TLCGet's "name" */
+        if (!strcmp(traces[k], "tla")) intern("parameters");
+    for (int k = 0; k < ntraces; k += 2) root->extends[root->nextends++] = intern(trace_module(traces[k])), json_traced |= !strcmp(traces[k], "json");
     load_references(root);
     finish_module(root);
     resolve_module(root);

@@ -70,7 +70,7 @@ typedef struct {
     int lint;            /* check syntax, semantics, levels and lint as SANY does, without checking a model (-lint) */
     int fmt;             /* format the module to standard output, its meaning unchanged (-fmt) */
     const char *const *invariants;      /* expressions checked as invariants after the configuration's, NULL-terminated (-inv) */
-    const char *const *postconditions;  /* "Module!Operator" each, checked after the configuration's postconditions, NULL-terminated (-postCondition) */
+    const char *const *postconditions;  /* "Module!Operator" each, checked before the configuration's postconditions, NULL-terminated (-postCondition) */
     const char *dump_trace;  /* write a counterexample to this file in TLC's JSON, or NULL (-dumpTrace json) */
     const char *const *dump_traces;  /* after dump_trace, FORMAT and FILE in turn, NULL-terminated: write a counterexample to each FILE, as -dumpTrace FORMAT FILE in order; FORMAT json or tla, each once */
     int no_te_spec;      /* TLC sets up no trace exploration spec, which shows in the order of CounterExample's fields (-noGenerateSpecTE) */
