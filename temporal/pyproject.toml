@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "temporal"
 version = "0.1.0"
 description = "Declare behavioural specifications in Python using the semantics of TLA+."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "Ju Lin"}]
 requires-python = ">=3.9"
 dependencies = []
@@ -15,7 +16,6 @@ keywords = ["tla+", "formal-methods", "specification", "verification", "contract
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
