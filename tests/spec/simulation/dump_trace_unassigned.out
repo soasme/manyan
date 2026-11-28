@@ -1,0 +1,22 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Successor state is not completely specified by the next-state action. The following variable is not defined: y.
+
+Error: The behavior up to this point is:
+State 1: <Init line 7, col 9 to line 7, col 22 of module dump_trace_unassigned>
+/\ x = 0
+/\ y = 1
+
+State 2: <Next line 8, col 9 to line 8, col 39 of module dump_trace_unassigned>
+/\ x = 1
+/\ y = 1
+
+State 3: <Next line 8, col 9 to line 8, col 39 of module dump_trace_unassigned>
+/\ x = 2
+/\ y = 1
+
+State 4: <Next line 8, col 9 to line 8, col 39 of module dump_trace_unassigned>
+/\ x = 3
+/\ y = null
+
+Error: Postcondition _TLAPlusCounterExample at line 19, col 5 to line 28, col 75 of module _TLAPlusCounterExample is false.
+exit 75
