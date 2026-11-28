@@ -1,0 +1,55 @@
+{ [ name |-> "J!A",
+    location |->
+        [ beginLine |-> 15,
+          beginColumn |-> 12,
+          endLine |-> 15,
+          endColumn |-> 27,
+          module |-> "instance_action_parameters" ] ],
+  [ name |-> "J!B",
+    location |->
+        [ beginLine |-> 8,
+          beginColumn |-> 1,
+          endLine |-> 8,
+          endColumn |-> 37,
+          module |-> "instance_action_parameters" ],
+    context |-> [k |-> 1, m |-> 7],
+    parameters |-> <<"k", "m">> ],
+  [ name |-> "J!A",
+    location |->
+        [ beginLine |-> 8,
+          beginColumn |-> 1,
+          endLine |-> 8,
+          endColumn |-> 37,
+          module |-> "instance_action_parameters" ],
+    context |-> [k |-> 2, m |-> 0, x |-> 1],
+    parameters |-> <<"k", "m", "x">> ],
+  [ name |-> "J!A",
+    location |->
+        [ beginLine |-> 8,
+          beginColumn |-> 1,
+          endLine |-> 8,
+          endColumn |-> 37,
+          module |-> "instance_action_parameters" ],
+    context |-> [k |-> 3, m |-> 0, x |-> 3],
+    parameters |-> <<"k", "m", "x">> ],
+  [ name |-> "J2!A",
+    location |->
+        [ beginLine |-> 9,
+          beginColumn |-> 1,
+          endLine |-> 9,
+          endColumn |-> 32,
+          module |-> "instance_action_parameters" ],
+    context |-> [x |-> 4],
+    parameters |-> <<"x">> ] }
+Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+v = 0
+
+State 2: <J!A(3,0,3) line 8, col 1 to line 8, col 37 of module instance_action_parameters>
+v = 6
+
+5 states generated, 4 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 2.
+exit 12

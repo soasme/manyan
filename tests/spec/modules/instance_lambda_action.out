@@ -1,0 +1,18 @@
+Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+v = 0
+
+State 2: <J!Next(2) line 8, col 1 to line 8, col 61 of module instance_lambda_action>
+v = 2
+
+State 3: <J!Next(2) line 8, col 1 to line 8, col 61 of module instance_lambda_action>
+v = 4
+
+State 4: <J!Next(2) line 8, col 1 to line 8, col 61 of module instance_lambda_action>
+v = 6
+
+13 states generated, 8 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 5.
+exit 11

@@ -7609,16 +7609,16 @@ static Value *decl_value(Def *d, Ctx c, Expr *where) {
     return d->value;
 }
 
-/* The definition a constant operator stands for, by the substitution of
-   an instance the context is in or by the configuration, with the context
-   it is in; or NULL. */
+/* The definition a constant operator stands for, a LAMBDA's too, by the
+   substitution of an instance the context is in or by the configuration,
+   with the context it is in; or NULL. */
 static Def *const_operator(Def *d, Ctx c, Ctx *at) {
     for (Inst *in = c.inst; in; in = in->parent) {
         int i = subst_index(in->def, d);
         if (i >= 0) {
             Expr *x = in->def->subst_expr[i];
             *at = (Ctx){in->env, in->parent};
-            if (x->kind != X_OPREF && !((x->kind == K_CALL || (x->kind == K_PARAMCALL && x->def->kind == D_CONST)) && x->n == 0)) return NULL;
+            if (x->kind != X_OPREF && x->kind != X_LAMBDA && !((x->kind == K_CALL || (x->kind == K_PARAMCALL && x->def->kind == D_CONST)) && x->n == 0)) return NULL;
             return x->def->kind == D_CONST ? const_operator(x->def, *at, at) : x->def;
         }
     }
@@ -11200,7 +11200,7 @@ static int gen_untracked(Expr *e, Ctx c, Cont *k) {
         Ctx at = {NULL, NULL};
         Def *d = const_operator(e->def, c, &at);
         if (!d || d->kind != D_OP || d->native || d->local == 2 || d->nparams != e->n) break;
-        Env *env = NULL;
+        Env *env = at.env;   /* a LAMBDA's, which sees the instance's context */
         for (int i = 0; i < e->n; i++) {
             if (d->params[i]->arity) env = mk_binding(d->params[i], eval_operator_arg(e->args[i], c), env);
             else env = mk_arg(d->params[i], e->args[i], c, env);
@@ -11354,6 +11354,29 @@ static void add_action(Expr *e, Ctx c, int name, Expr *loc, Def *op) {
 
 typedef struct { Expr *body; int name; Def *op; } SplitData;
 
+/* The definition whose parameters label an action through instances, as
+   TLC's J!A(2,0,1) for J(2, 0)!A(1): the instances' and then the
+   definition's, bound in c, where only the label looks them up. NULL if
+   an argument is not constant: TLC's action is then the call. */
+static Def *instance_label(Expr *e, Ctx *c) {
+    Def *op = NEW(Def);
+    int total = e->def->nparams;
+    for (int i = 0; i < e->ndefs; i++) total += e->defs[i]->nparams;
+    op->params = NEWN(Def *, total);
+    for (int i = 0; i <= e->ndefs; i++) {
+        Def *d = i < e->ndefs ? e->defs[i] : e->def;
+        Expr **args = i < e->ndefs ? e->segs[i].args : e->args;
+        int n = i < e->ndefs ? e->segs[i].n : e->n;
+        for (int k = 0; k < d->nparams && k < n; k++) {
+            if (expr_level(args[k]) > 0) return NULL;
+            if (d->params[k]->arity) continue;
+            c->env = mk_thunk(d->params[k], args[k], *c, c->env);
+            op->params[op->nparams++] = d->params[k];
+        }
+    }
+    return op;
+}
+
 static void split_action(Expr *e, Ctx c, int name, Def *op);
 
 /* A definition seen through instances as TLC names it, I!A, and the first
@@ -11460,7 +11483,13 @@ static void split_action(Expr *e, Ctx c, int name, Def *op) {
         Def *in;
         int qualified = instance_name(e, &in);
         if (e->def->part) qualified = name;
-        if (in) { add_action(e, c, qualified, in->where, NULL); return; }
+        if (in) {
+            Ctx at = c;
+            Def *op = instance_label(e, &at);
+            if (op) add_action(e, at, qualified, in->where, op);
+            else add_action(e, c, qualified, e, NULL);
+            return;
+        }
         split_action(e->def->body, instance_ctx(e, c), qualified, NULL);
         return;
     }
