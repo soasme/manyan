@@ -1100,6 +1100,7 @@ def check(engine, tlc, runs, seed):
     for _ in range(runs):
         path = rng.choice(models)
         options = [o for o in ["-deadlock", "-continue", "-difftrace", "-nowarning", "-view"] if rng.random() < 0.4]
+        options += rng.choice([[], [], ["-dump", "states"], ["-dump", "dot", "states"], ["-fp", str(rng.randint(0, 130))]])
         workers = rng.choice([[], ["-workers", "4"]])
         ours = spec_runner.run(engine + workers + options, path, MEMORY)
         theirs = spec_runner.run(spec_runner.oracle_command(tlc) + options, path, MEMORY)
@@ -1193,11 +1194,13 @@ def differs(ours, theirs):
     their limits, of memory, time or output, print nothing to compare, nor
     does TLC's NullPointerException where the engine reports what the model
     does instead (docs/manual.md)."""
-    if ours.endswith("exit killed\n") and theirs.endswith("exit killed\n"):
+    killed = re.compile(r"^exit killed$", re.M)   # the files it wrote follow
+    if killed.search(ours) and killed.search(theirs):
         return False
     npe = "The exception was a java.lang.NullPointerException"
     if npe in theirs and npe not in ours:
         return False
+    theirs = re.sub(r"^--- \S+_liveness\.dot\n(?:(?!--- ).*\n)*", "", theirs, flags=re.M)   # TLC's behavior graph: docs/manual.md
     return ours != back_into(theirs)
 
 

@@ -1,0 +1,9 @@
+Error: The invariant Missing specified in the configuration file
+is not defined in the specification.
+exit 151
+--- states.dot
+strict digraph DiskGraph {
+node [shape=box,style=rounded]
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";

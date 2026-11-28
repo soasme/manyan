@@ -236,7 +236,11 @@ def dumped(directory, options):
         text += f"--- {dot.name}\n"
         for line in dot.read_text().splitlines():
             pattern = r"([ ;]|^)(-?\d+)(?=;)" if line.startswith("{rank") else r"(^|-> )(-?\d+)(?= )"
-            text += re.sub(pattern, number, line) + "\n"
+            line = re.sub(pattern, number, line)
+            if line.startswith("{rank = same; "):   # TLC's in the order of a hash set of its fingerprints
+                ranked = sorted(line[len("{rank = same; "):-2].split(";"), key=lambda s: int(s[1:]))
+                line = "{rank = same; " + ";".join(ranked) + ";}"
+            text += line + "\n"
     for written in sorted(directory.glob("*.dump")) + sorted(directory.glob("*_0_*")) + sorted(directory.glob("*.txt")):   # -dump, -simulate file=, -userFile
         text += f"--- {written.name}\n" + written.read_text()
     for i, option in enumerate(options[:-2]):

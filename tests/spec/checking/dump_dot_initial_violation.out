@@ -1,0 +1,9 @@
+Error: Invariant Inv is violated by the initial state:
+x = 1
+exit 12
+--- states.dot
+strict digraph DiskGraph {
+node [shape=box,style=rounded]
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";

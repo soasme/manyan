@@ -12621,20 +12621,33 @@ static Def **view_params(int *n, int *kept) {
     return ps;
 }
 
-/* With -view, a reported state as its view's value: returns whether it
-   printed it. As TLC, a tuple as long as the constants and variables the
-   VIEW uses pairs its values with them in turn, `/\ name = value`. */
-static int print_shown(Value **st) {
-    if (!view_trace || !view_expr) return 0;
+static void fprint_state(FILE *f, Value **st);
+
+/* A state as TLC's toString writes it: with -view, its view's value; a
+   tuple as long as the constants and variables the VIEW uses pairs its
+   values with them in turn, `/\\ name = value`, unless the VIEW is a LET.
+   Returns whether TLC follows it with a blank line. */
+static int fprint_shown(FILE *f, Value **st) {
+    if (!view_trace || !view_expr) {
+        fprint_state(f, st);
+        return 1;
+    }
     Value **saved = cur_state;
     cur_state = st;
     Value *v = eval(view_expr, root_ctx);
     cur_state = saved;
     int n, kept;
     Def **ps = v->kind == V_TUPLE && v->n && unfold(view_expr)->kind != X_LET ? view_params(&n, &kept) : NULL;
-    if (!ps || n != v->n) { printf("%s\n", pretty(v)); return 1; }
-    for (int i = 0; i < kept; i++) printf("/\\ %s = %s\n", S(ps[i]->name), pretty(v->u.fcn.vals[i]));
-    puts("");
+    if (!ps || n != v->n) { fprintf(f, "%s\n", pretty(v)); return 0; }
+    for (int i = 0; i < kept; i++) fprintf(f, "/\\ %s = %s\n", S(ps[i]->name), pretty(v->u.fcn.vals[i]));
+    return 1;
+}
+
+/* With -view, a reported state as its view's value: returns whether it
+   printed it. */
+static int print_shown(Value **st) {
+    if (!view_trace || !view_expr) return 0;
+    if (fprint_shown(stdout, st)) puts("");
     return 1;
 }
 
@@ -13302,7 +13315,35 @@ static void add_edge(int from, int to, int action) {
    by depth the initial states and those a step was taken from. */
 static FILE *dump_file;
 static int dump_actions, dump_text;   /* dump_text: -dump FILE, each state as a trace prints it */
-static int *dump_ranked, dump_nranked;
+static int *dump_ranked, dump_nranked, dump_written, dump_unclosed;
+static const char DUMP_HEAD[] = "strict digraph DiskGraph {\nnode [shape=box,style=rounded]\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n";
+
+/* -dump FILE: a state written, numbered as TLC counts them. */
+static void dump_write(Value **st) {
+    fprintf(dump_file, "State %d:\n", ++dump_written);
+    if (fprint_shown(dump_file, st)) fputc('\n', dump_file);
+}
+
+/* A state as a dot label: TLC's toString of it, or with all its variables,
+   trimmed, its lines and quotes escaped. */
+static char *dot_label(Value **st, int shown) {
+    char *text = NULL;
+    size_t len = 0;
+    FILE *f = open_memstream(&text, &len);
+    if (shown) fprint_shown(f, st);
+    else fprint_state(f, st);
+    fclose(f);
+    while (len && text[len - 1] == '\n') text[--len] = 0;
+    Buf b = {0};
+    buf_puts(&b, "");
+    for (const char *c = text; *c; c++) {
+        if (*c == '\n') { buf_puts(&b, "\\n"); continue; }
+        if (*c == '\\' || *c == '"') buf_add(&b, "\\", 1);
+        buf_add(&b, c, 1);
+    }
+    free(text);
+    return b.s;
+}
 
 static void dump_rank(int idx) {
     if (dump_nranked && dump_ranked[dump_nranked - 1] == idx) return;
@@ -13311,26 +13352,14 @@ static void dump_rank(int idx) {
 }
 
 static void dump_node(int idx, Value **st) {
-    if (dump_text) {
-        fprintf(dump_file, "State %d:\n", idx + 1);
-        fprint_state(dump_file, st);
-        fputc('\n', dump_file);
-        return;
-    }
-    Buf b = {0};
-    for (int i = 0; i < nvars; i++) {
-        if (i) buf_puts(&b, "\\n");
-        if (nvars > 1) buf_puts(&b, "/\\\\ ");
-        buf_printf(&b, "%s = ", S(vars[i]->name));
-        for (const char *c = st[i] ? pretty(st[i]) : "null"; *c; c++) {
-            if (*c == '\n') { buf_puts(&b, "\\n"); continue; }
-            if (*c == '\\' || *c == '"') buf_add(&b, "\\", 1);
-            buf_add(&b, c, 1);
-        }
-    }
-    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), b.s);
-    else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)state_fp(idx), b.s, b.s);
-    xfree(b.s);
+    if (dump_text) { dump_write(st); return; }
+    /* TLC labels a state with its toString, under -difftrace a successor
+       with all its variables, and gives that the toString as tooltip */
+    char *shown = dot_label(st, 1), *label = diff_trace && states[idx].parent >= 0 ? dot_label(st, 0) : shown;
+    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), shown);
+    else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)state_fp(idx), label, shown);
+    if (label != shown) xfree(label);
+    xfree(shown);
     if (states[idx].parent < 0) dump_rank(idx);
 }
 
@@ -13347,7 +13376,7 @@ static void dump_close(void) {
         if (!i || state_depth(s) != state_depth(dump_ranked[i - 1])) fprintf(dump_file, "%s{rank = same; ", i ? "}\n" : "");
         fprintf(dump_file, "%lld;", (long long)state_fp(s));
     }
-    if (!dump_text) fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
+    if (!dump_text && !dump_unclosed) fprintf(dump_file, "%s}\n}", dump_nranked ? "}\n" : "");
     fclose(dump_file);
     dump_file = NULL;
     xfree(dump_ranked);
@@ -13802,6 +13831,8 @@ static int live_cut = -1;   /* the state TLC stopped expanding at in its tempora
 static void print_counts_after(int s);
 static void live_follow(int idx);
 static unsigned char *printed;   /* each expanded state whose actions printed */
+static long *dumped_after;       /* -dump: the file's length once each state was expanded */
+static int *ranked_after;
 static void note_expanded(int idx) {
     if (!ntemporal_props) return;
     if (idx >= ngen_after) {
@@ -13809,10 +13840,15 @@ static void note_expanded(int idx) {
         gen_after = xrealloc(gen_after, sizeof(int64_t) * (size_t)n);
         printed = xrealloc(printed, (size_t)n);
         memset(printed + ngen_after, 0, (size_t)(n - ngen_after));
+        if (dump_file) {
+            dumped_after = xrealloc(dumped_after, sizeof(long) * (size_t)n);
+            ranked_after = xrealloc(ranked_after, sizeof(int) * (size_t)n);
+        }
         ngen_after = n;
     }
     gen_after[idx] = generated;
     printed[idx] = (unsigned char)expansion_printed;
+    if (dump_file) dumped_after[idx] = ftell(dump_file), ranked_after[idx] = dump_nranked;
     if (!simulating) live_follow(idx);
     expansion_printed = 0;
 }
@@ -13868,6 +13904,11 @@ static int last_seen(int s) {
 /* The counts TLC reports when it stops in its temporal checks, once
    state s had been expanded. */
 static void print_counts_after(int s) {
+    if (dump_file && dumped_after[s] >= 0) {   /* TLC wrote what it found until then */
+        fflush(dump_file);
+        if (ftruncate(fileno(dump_file), dumped_after[s]) == 0) fseek(dump_file, dumped_after[s], SEEK_SET);
+        dump_nranked = ranked_after[s];
+    }
     int seen = last_seen(s);
     printf("%" PRId64 " states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
     printf("The depth of the complete state graph search is %d.\n", state_depth(seen));
@@ -13919,6 +13960,7 @@ static int expand_state(int idx) {
         print_counts(nstates - expanded);
         return MANYAN_VIOLATION_DEADLOCK;
     }
+    if (dump_text && ntemporal_props) dump_write(cur_state);   /* TLC's stuttering step, which it adds to its temporal checks */
     note_expanded(idx);
     arena_reset(&scratch_arena);
     return 0;
@@ -14752,6 +14794,11 @@ static int recover(void) {
         }
         gen_after = xrealloc(gen_after, sizeof(int64_t) * (size_t)(ngen_after = h.expanded + 1));
         printed = xrealloc(printed, (size_t)ngen_after);
+        if (dump_file) {   /* what was written before the checkpoint is not known */
+            dumped_after = xrealloc(dumped_after, sizeof(long) * (size_t)ngen_after);
+            ranked_after = xrealloc(ranked_after, sizeof(int) * (size_t)ngen_after);
+            memset(dumped_after, 0xff, sizeof(long) * (size_t)ngen_after);
+        }
         checkpoint_read(f, gen_after, sizeof(int64_t) * (size_t)h.expanded, path);
         checkpoint_read(f, printed, (size_t)h.expanded, path);
     }
@@ -14913,6 +14960,15 @@ static int search(void) {
     int start = recover_from ? recover() : 0;
     if (!recover_from && !init_parallel()) gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
+    /* Stopped at a violation by an initial state, TLC leaves the file as
+       it began, unflushed and unclosed. */
+    if (dump_file && !live_init_failed && (violation == MANYAN_VIOLATION_SAFETY || violation == MANYAN_VIOLATION_LIVENESS)) {
+        dump_unclosed = 1;
+        fflush(dump_file);
+        long head = dump_text ? 0 : (long)strlen(DUMP_HEAD);
+        if (ftruncate(fileno(dump_file), head) == 0) fseek(dump_file, head, SEEK_SET);
+        dump_nranked = 0;
+    }
     if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");
         print_counts(nstates);
@@ -27738,7 +27794,7 @@ static void reset_check(void) {
     Z(shown_record); Z(shown_state); Z(numbered_text); Z(trace_path); Z(ntrace_path); Z(trace_failure);
     Z(trace_failure_java); Z(posts); Z(nposts); Z(possibles); Z(npossibles); Z(possible_counts);
     Z(expanding_depth); Z(expanding_state); Z(succ); Z(succ_count); Z(violation); Z(error_check);
-    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions); Z(dump_text);
+    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions); Z(dump_text); Z(dump_written); Z(dump_unclosed); Z(dumped_after); Z(ranked_after);
     Z(dump_ranked); Z(dump_nranked); Z(picked_explored); Z(violation_fresh); Z(fingerprinting); Z(started);
     Z(empty_counter_example); Z(gen_after); Z(ngen_after); Z(printed); Z(follow); Z(seen_after);
     Z(nseen_after); Z(control); Z(batches); Z(claims); Z(results); Z(to_worker); Z(from_worker);
@@ -28006,7 +28062,7 @@ static int check_model(const ManyanOptions *o) {
         if (!(dump_file = fopen(o->dump, "w"))) { fprintf(stderr, "manyan: cannot write %s\n", o->dump); return MANYAN_ERROR; }
         dump_actions = o->dump_actions;
         dump_text = o->dump_text;
-        if (!dump_text) fputs("strict digraph DiskGraph {\nnode [shape=box,style=rounded]\nnodesep=0.35;\nsubgraph cluster_graph {\ncolor=\"white\";\n", dump_file);
+        if (!dump_text) fputs(DUMP_HEAD, dump_file);
     }
     /* A simulation is TLC's with one worker; -continue reports in the search's order.
        A 32-bit build has one worker, which prints what any number print. */
@@ -28024,6 +28080,9 @@ static int check_model(const ManyanOptions *o) {
 
 int manyan_check(const ManyanOptions *o) {
     reset_check();
+    FILE *dump = o->dump && !o->simulate ? fopen(o->dump, "w") : NULL;   /* as TLC makes it as it starts: a run failing before its states leaves it so */
+    if (dump && !o->dump_text) fputs(DUMP_HEAD, dump);
+    if (dump) fclose(dump);
     sigjmp_buf here;
     int status = sigsetjmp(here, 0);
     if (status) {   /* stopped by an error: the workers may be anywhere */
