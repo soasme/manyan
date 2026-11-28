@@ -138,8 +138,13 @@ report as TLC with one worker.
   temporal properties under weak and strong fairness, with TLC's
   counterexamples; random simulation (`-simulate`, `-generate`), drawing
   the same behaviors as TLC for a seed, and writing them to files (`file=`);
-  TLC's `-continue`, `-difftrace`, `-view`, `-userFile`, `-dump dot`,
-  `-inv`, `-invlevel`, `-postCondition` and `-dumpTrace json`.
+  TLC's `-continue`, `-difftrace`, `-view`, `-userFile`, `-dump` (dot or
+  the states), `-inv`, `-invlevel`, `-postCondition` and `-dumpTrace` (json
+  or tla).
+- Larger models and long runs: `-metadir` keeps the states found in files
+  the system pages out as memory fills; `-checkpoint` writes the search
+  every so many minutes, and `-recover` goes on from it (`-gzip`
+  compresses it).
 - TLC's error messages and exit statuses for evaluation errors, parse
   errors and configuration errors.
 - Formatting and linting: `-fmt` formats a TLA⁺ module in one canonical
@@ -162,8 +167,8 @@ report as TLC with one worker.
 
 Left out by decision, each for a reason the
 [manual](docs/manual.md#limitations) gives: TLC's `-terse`, `-maxSetSize`,
-`-dfid`, `-coverage`, `-tool` and `-generateSpecTE`, checkpoints,
-and distributed checking. Real numbers and `\AA`/`\EE`
+`-dfid`, `-coverage`, `-tool` and `-generateSpecTE`, reading TLC's
+checkpoints, and distributed checking. Real numbers and `\AA`/`\EE`
 give TLC's errors, as TLC cannot check them either. The proof language is
 parsed and skipped.
 
