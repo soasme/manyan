@@ -1,0 +1,8 @@
+Error: Out Of Memory. There are probably too many initial states.
+exit 255
+--- states.dot
+strict digraph DiskGraph {
+node [shape=box,style=rounded]
+nodesep=0.35;
+subgraph cluster_graph {
+color="white";

@@ -235,11 +235,11 @@ def dumped(directory, options):
         number = lambda m: m.group(1) + "s%d" % ids.setdefault(m.group(2), len(ids))
         text += f"--- {dot.name}\n"
         for line in dot.read_text().splitlines():
-            pattern = r"([ ;]|^)(-?\d+)(?=;)" if line.startswith("{rank") else r"(^|-> )(-?\d+)(?= )"
-            line = re.sub(pattern, number, line)
-            if line.startswith("{rank = same; "):   # TLC's in the order of a hash set of its fingerprints
-                ranked = sorted(line[len("{rank = same; "):-2].split(";"), key=lambda s: int(s[1:]))
-                line = "{rank = same; " + ";".join(ranked) + ";}"
+            line, rank, ranks = line.partition("{rank = same; ")   # after a label cut short too
+            line = re.sub(r"(^|-> )(-?\d+)(?= )", number, line)
+            if rank:   # TLC's in the order of a hash set of its fingerprints
+                ranked = [re.sub(r"^()(-?\d+)$", number, s) for s in ranks[:-2].split(";")]
+                line += rank + ";".join(sorted(ranked, key=lambda s: int(s[1:]))) + ";}"
             text += line + "\n"
     for written in sorted(directory.glob("*.dump")) + sorted(directory.glob("*_0_*")) + sorted(directory.glob("*.txt")):   # -dump, -simulate file=, -userFile
         text += f"--- {written.name}\n" + written.read_text()

@@ -13364,16 +13364,21 @@ static void dump_rank(int idx) {
 }
 
 /* A state new after prev, or initial (prev NULL). */
+static Value **dump_labeling;   /* the initial state whose label is being written */
 static void dump_node(int idx, Value **st, Value **prev) {
     if (dump_text) { dump_write(st); return; }
     /* TLC labels a state through its ALIAS, else under -difftrace a
        successor with what changed, else with its toString, which it gives
-       a successor as tooltip */
+       a successor as tooltip; it writes the label's start before it, an
+       error making it stops it there */
+    fprintf(dump_file, "%lld [label=\"", (long long)state_fp(idx));
+    if (states[idx].parent < 0) dump_labeling = st;
     char *shown = dot_label(st, NULL, 0);
     Value **after = diff_trace ? prev : NULL;
     char *label = alias_name || after ? dot_label(st, after, alias_name ? state_depth(idx) : 0) : shown;
-    if (states[idx].parent < 0) fprintf(dump_file, "%lld [label=\"%s\",style = filled]\n", (long long)state_fp(idx), label);
-    else fprintf(dump_file, "%lld [label=\"%s\",tooltip=\"%s\"];\n", (long long)state_fp(idx), label, shown);
+    dump_labeling = NULL;
+    if (states[idx].parent < 0) fprintf(dump_file, "%s\",style = filled]\n", label);
+    else fprintf(dump_file, "%s\",tooltip=\"%s\"];\n", label, shown);
     if (label != shown) xfree(label);
     xfree(shown);
     if (states[idx].parent < 0) dump_rank(idx);
@@ -13387,6 +13392,21 @@ static void dump_edge(int from, int to, int action) {
     if (states[from].parent >= 0) dump_rank(from);
     fprintf(dump_file, "%lld -> %lld [label=\"%s\",color=\"black\",fontcolor=\"black\"];\n", (long long)state_fp(from),
             (long long)state_fp(to), dump_actions ? S(actions[action].name) : "");
+}
+
+/* The file cut back to its first at bytes, as TLC had written it, ranked
+   of its states ranked. */
+static void dump_cut(long at, int ranked) {
+    fflush(dump_file);
+    if (ftruncate(fileno(dump_file), at) == 0) fseek(dump_file, at, SEEK_SET);
+    dump_nranked = ranked;
+}
+
+/* As TLC leaves it exiting before it flushed what it wrote: as it began,
+   unclosed. */
+static void dump_unflushed(void) {
+    dump_cut(dump_text ? 0 : (long)strlen(DUMP_HEAD), 0);
+    dump_unclosed = 1;
 }
 
 static void dump_close(void) {
@@ -13944,11 +13964,7 @@ static int last_seen(int s) {
 /* The counts TLC reports when it stops in its temporal checks, once
    state s had been expanded. */
 static void print_counts_after(int s) {
-    if (dump_file && dumped_after[s] >= 0) {   /* TLC wrote what it found until then */
-        fflush(dump_file);
-        if (ftruncate(fileno(dump_file), dumped_after[s]) == 0) fseek(dump_file, dumped_after[s], SEEK_SET);
-        dump_nranked = ranked_after[s];
-    }
+    if (dump_file && dumped_after[s] >= 0) dump_cut(dumped_after[s], ranked_after[s]);   /* TLC wrote what it found until then */
     int seen = last_seen(s);
     printf("%" PRId64 " states generated, %d distinct states found, %d states left on queue.\n", gen_after[s], seen + 1, seen - s);
     printf("The depth of the complete state graph search is %d.\n", state_depth(seen));
@@ -14881,6 +14897,20 @@ static int search(void) {
         memcpy(fps, fp_trace, sizeof(Expr *) * (size_t)nfp);
         fp_depth = 0;
         live_first();
+        if (expanding < 0 && dump_labeling && error_java && !strcmp(error_java, "java.lang.OutOfMemoryError")) {
+            printf("Error: Out Of Memory. There are probably too many initial states.\n");
+            dump_unflushed();
+            return MANYAN_ERROR;
+        }
+        if (expanding < 0 && dump_labeling) {   /* TLC: an error of the initial state it was adding */
+            print_error_message();
+            printf("While working on the initial state:\n");
+            print_state(dump_labeling);
+            printf("\n");
+            dump_labeling = NULL;
+            print_counts(nstates - 1);
+            return MANYAN_ERROR;
+        }
         if (expanding < 0) {
             if (!live_init_failed) print_error_message();
             if (error_state && error_module != 1 && !live_init_failed) {
@@ -15008,13 +15038,7 @@ static int search(void) {
     arena_reset(&scratch_arena);
     /* Stopped at a violation by an initial state, TLC leaves the file as
        it began, unflushed and unclosed. */
-    if (dump_file && !live_init_failed && (violation == MANYAN_VIOLATION_SAFETY || violation == MANYAN_VIOLATION_LIVENESS)) {
-        dump_unclosed = 1;
-        fflush(dump_file);
-        long head = dump_text ? 0 : (long)strlen(DUMP_HEAD);
-        if (ftruncate(fileno(dump_file), head) == 0) fseek(dump_file, head, SEEK_SET);
-        dump_nranked = 0;
-    }
+    if (dump_file && !live_init_failed && (violation == MANYAN_VIOLATION_SAFETY || violation == MANYAN_VIOLATION_LIVENESS)) dump_unflushed();
     if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");
         print_counts(nstates);
@@ -27841,7 +27865,7 @@ static void reset_check(void) {
     Z(shown_record); Z(shown_state); Z(numbered_text); Z(trace_path); Z(ntrace_path); Z(trace_failure);
     Z(trace_failure_java); Z(posts); Z(nposts); Z(possibles); Z(npossibles); Z(possible_counts);
     Z(expanding_depth); Z(expanding_state); Z(succ); Z(succ_count); Z(violation); Z(error_check);
-    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions); Z(dump_text); Z(dump_written); Z(dump_nredo); Z(dump_unclosed); Z(dumped_after); Z(dumped_from); Z(dump_from); Z(ranked_after);
+    Z(error_state); Z(edge_pool); Z(edge_pool_used); Z(edge_pool_size); Z(dump_file); Z(dump_actions); Z(dump_text); Z(dump_written); Z(dump_labeling); Z(dump_nredo); Z(dump_unclosed); Z(dumped_after); Z(dumped_from); Z(dump_from); Z(ranked_after);
     Z(dump_ranked); Z(dump_nranked); Z(picked_explored); Z(violation_fresh); Z(fingerprinting); Z(started);
     Z(empty_counter_example); Z(gen_after); Z(ngen_after); Z(printed); Z(follow); Z(seen_after);
     Z(nseen_after); Z(control); Z(batches); Z(claims); Z(results); Z(to_worker); Z(from_worker);
