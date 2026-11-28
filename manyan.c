@@ -14551,6 +14551,7 @@ static void print_unfingerprinted(Expr **fps, int n) {
    as they were: what each state's bytes refer to, the strings and the
    interned values, is in it too. With workers it is written between
    levels; the store's halves are put together. -gzip compresses it. */
+static int live_clean, live_watched;   /* liveness's, as the search goes */
 static double checkpoint_minutes;
 static int checkpoint_gzip;
 static const char *recover_from;
@@ -14558,7 +14559,7 @@ static struct timespec checkpoint_last;
 
 typedef struct {
     char version[32];
-    int nvars, nstates, expanded, nlevels, nstrs, max_depth;
+    int nvars, nstates, expanded, nlevels, nstrs, max_depth, live_clean, live_watched, follow;
     int64_t generated, initials, rng_aril;
     uint64_t store_n, interned, nislots;
     double growth;
@@ -14587,7 +14588,7 @@ static void checkpoint_write(int next) {
     printf("Checkpointing of run %s\n", run_dir());
     fflush(stdout);
     size_t high = nworkers > 1 ? atomic_load(&control->encoded) - store.cap : 0;
-    Checkpoint h = {"manyan " MANYAN_VERSION, nvars, nstates, next, nlevels, nstrs, max_depth, generated, initials,
+    Checkpoint h = {"manyan " MANYAN_VERSION, nvars, nstates, next, nlevels, nstrs, max_depth, live_clean, live_watched, follow, generated, initials,
                     rng_aril, store.n + high, atomic_load(interned), nislots, growth, rng};
     FILE *f = checkpoint_open(tmp, 1, checkpoint_gzip);
     int ok = f != NULL;
@@ -14607,6 +14608,9 @@ static void checkpoint_write(int next) {
             ok &= fwrite(&off, sizeof off, 1, f) == 1;
         }
         ok &= fwrite(islots, sizeof(ISlot), nislots, f) == nislots;
+        for (int i = 0; ntemporal_props && i < nstates; i++)
+            ok &= fwrite(&state_edges[i].nedges, sizeof(int), 1, f) == 1 && fwrite(state_edges[i].edges, sizeof(int), 2 * (size_t)state_edges[i].nedges, f) == 2 * (size_t)state_edges[i].nedges;
+        if (ntemporal_props) ok &= fwrite(gen_after, sizeof(int64_t), (size_t)next, f) == (size_t)next && fwrite(printed, 1, (size_t)next, f) == (size_t)next;
         ok &= (checkpoint_gzip ? pclose(f) : fclose(f)) == 0;
     }
     if (!ok || rename(tmp, path)) { fprintf(stderr, "manyan: cannot write %s\n", path); stop(MANYAN_ERROR); }
@@ -14617,9 +14621,10 @@ static void checkpoint_write(int next) {
     fflush(stdout);
 }
 
-/* A checkpoint if one is due, next the first state still to expand. */
+/* A checkpoint if one is due, next the first state still to expand; not
+   while the search follows a property's product, which it does not keep. */
 static void checkpoint_due(int next) {
-    if (!checkpoint_minutes) return;
+    if (!checkpoint_minutes || follow >= 0) return;
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     if ((double)(t.tv_sec - checkpoint_last.tv_sec) + (double)(t.tv_nsec - checkpoint_last.tv_nsec) / 1e9 < checkpoint_minutes * 60) return;
@@ -14683,8 +14688,22 @@ static int recover(void) {
     intern_grow(h.nislots);
     if (nislots != h.nislots) checkpoint_bad(path, "its values do not fit");
     checkpoint_read(f, islots, sizeof(ISlot) * h.nislots, path);
+    if (ntemporal_props) {
+        state_edges = xrealloc(state_edges, sizeof(Edges) * (size_t)(capedges = nstates + 1));
+        memset(state_edges, 0, sizeof(Edges) * (size_t)capedges);
+        for (int i = 0; i < nstates; i++) {
+            int n, step[2];
+            checkpoint_read(f, &n, sizeof n, path);
+            for (int k = 0; k < n; k++) checkpoint_read(f, step, sizeof step, path), add_edge(i, step[0], step[1]);
+        }
+        gen_after = xrealloc(gen_after, sizeof(int64_t) * (size_t)(ngen_after = h.expanded + 1));
+        printed = xrealloc(printed, (size_t)ngen_after);
+        checkpoint_read(f, gen_after, sizeof(int64_t) * (size_t)h.expanded, path);
+        checkpoint_read(f, printed, (size_t)h.expanded, path);
+    }
     if (gzip ? pclose(f) : fclose(f)) checkpoint_bad(path, "it is damaged");
     xfree(path);
+    live_clean = h.live_clean, live_watched = h.live_watched, follow = h.follow;
     max_depth = h.max_depth, generated = h.generated, initials = h.initials, growth = h.growth, rng = h.rng, rng_aril = h.rng_aril;
     printf("Recovery completed. %d states examined. %d states on queue.\n", nstates, nstates - h.expanded);
     fflush(stdout);
@@ -14693,8 +14712,8 @@ static int recover(void) {
 
 /* Breadth-first search (§10.4). Returns the exit status. */
 static int search(void) {
-    if ((checkpoint_minutes || recover_from) && (ntemporal_props || keep_going)) {
-        fputs("manyan: -checkpoint and -recover keep no state graph for temporal properties, nor what -continue found\n", stderr);
+    if ((checkpoint_minutes || recover_from) && keep_going) {
+        fputs("manyan: -checkpoint and -recover keep not what -continue found\n", stderr);
         return MANYAN_ERROR;
     }
     if (dump_file || npossibles) nworkers = 1;
