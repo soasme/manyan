@@ -37,7 +37,7 @@ class BankAccount:
     balance: State[int] = 0
     ledger: Ghost[tuple[int, ...]] = ()
 
-    valid_owner: ClassVar[Annotated[bool, Assume(lambda s: len(s.owner) > 0)]]
+    valid_owner: ClassVar[Annotated[bool, Assume(lambda s: s.owner != "")]]
     init: ClassVar[Annotated[bool, Init(lambda s: s.balance == 0 and s.ledger == ())]]
     within_limit: ClassVar[Annotated[bool, Invariant(lambda s: s.balance >= -s.credit_limit)]]
     ledger_matches_balance: ClassVar[

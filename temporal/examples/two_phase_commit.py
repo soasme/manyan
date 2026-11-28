@@ -17,8 +17,8 @@ from temporal import (
     Requires,
     State,
     Symmetry,
-    eventually,
     implies,
+    leads_to,
     prime,
     unchanged,
     weak_fairness,
@@ -84,9 +84,9 @@ class TwoPhaseCommit(Protocol):
     decision_propagates: Annotated[
         bool,
         Property(
-            lambda s: implies(
+            lambda s: leads_to(
                 s.tm_state == "committed",
-                eventually(all(s.rm_state[r] == "committed" for r in s.rms)),
+                all(s.rm_state[r] == "committed" for r in s.rms),
             )
         ),
     ]
