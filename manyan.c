@@ -11963,6 +11963,53 @@ static void *mapped(size_t bytes) {
 #endif
 }
 
+/* -metadir DIR: the store and the state records are mapped from files
+   there, so the system writes their pages out and drops them as memory
+   fills, where anonymous memory has only swap. The files are sparse, and
+   removed as the check ends. */
+static const char *metadir;
+static char *backed_files[4];
+static int nbacked_files;
+
+static void *backed(const char *name, size_t bytes) {
+#if defined(__CYGWIN__) || !WIDE
+    (void)name, (void)bytes;
+    return NULL;
+#else
+    if (!metadir || nbacked_files == 4) return NULL;
+    if (mkdir(metadir, 0777) && errno != EEXIST) { fprintf(stderr, "manyan: cannot make %s\n", metadir); stop(MANYAN_ERROR); }
+    char *path = xmalloc(strlen(metadir) + strlen(name) + 2);
+    sprintf(path, "%s/%s", metadir, name);
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    void *p = fd < 0 || ftruncate(fd, (off_t)bytes) ? MAP_FAILED : mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NORESERVE, fd, 0);
+    if (fd >= 0) close(fd);
+    if (p == MAP_FAILED) { fprintf(stderr, "manyan: cannot map %s\n", path); unlink(path); stop(MANYAN_ERROR); }
+    void *grown = realloc(maps, sizeof *maps * (nmaps + 1));
+    if (!grown) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
+    maps = grown;
+    maps[nmaps].p = p, maps[nmaps++].n = bytes;
+    backed_files[nbacked_files++] = path;
+    return p;
+#endif
+}
+
+/* Memory for name: its file in -metadir, or shared between the workers,
+   or this process's mapping. */
+static void *shared(size_t bytes);
+static void *region(const char *name, size_t bytes, int share) {
+    void *p = backed(name, bytes);
+    return p ? p : share ? shared(bytes) : mapped(bytes);
+}
+
+/* The files of -metadir, gone as the check ends. */
+static void unback(void) {
+    while (nbacked_files) {
+        char *path = backed_files[--nbacked_files];
+        unlink(path);
+        xfree(path);
+    }
+}
+
 static int fp_mapped;         /* the table is mapped, not allocated */
 static char *fp_region;       /* shared memory the tables are taken from, in turn */
 static size_t fp_region_used, fp_region_size;
@@ -13905,9 +13952,9 @@ static void share_search(void) {
     while ((all >> shift) > memory / 4) shift++;
 #endif
     store.cap = ((size_t)1 << 36) >> shift;   /* the search's half */
-    store.s = shared(2 * store.cap);
+    store.s = region("store", 2 * store.cap, 1);
     capstates = (1 << 29) >> shift;
-    states = shared(sizeof(StateRec) * (size_t)capstates);
+    states = region("states", sizeof(StateRec) * (size_t)capstates, 1);
     fp_region_size = ((size_t)1 << 36) >> shift;
     fp_region = shared(fp_region_size);
     control = shared(sizeof(Control));
@@ -14474,9 +14521,9 @@ static void print_unfingerprinted(Expr **fps, int n) {
 static int search(void) {
     if (dump_file || npossibles) nworkers = 1;
     if (nworkers > 1) share_search();
-    else if (!states && (states = mapped(sizeof(StateRec) * ((size_t)1 << 29)))) {
+    else if (!states && (states = region("states", sizeof(StateRec) * ((size_t)1 << 29), 0))) {
         capstates = 1 << 29, states_mapped = 1;
-        char *s = mapped((size_t)1 << 36);
+        char *s = region("store", (size_t)1 << 36, 0);
         if (s && store.s) memcpy(s, store.s, store.n + 1), xfree(store.s);
         if (s) store.s = s, store.cap = (size_t)1 << 36, store_mapped = 1;
     }
@@ -27423,7 +27470,7 @@ static void reset_check(void) {
     Z(nconstraints); Z(naction_constraints); Z(naction_props); Z(ntemporal_props); Z(view_expr);
     Z(periodic_expr); Z(symmetry); Z(nsymmetry); Z(fairness); Z(nfairness);
     Z(sym_models); Z(nsym_models); Z(sym_elem); Z(sym_word); Z(sym_bufs); Z(nsym_bufs); Z(fp_fps); Z(fp_vh);
-    Z(fp_last); Z(fp_last_resets); Z(states_mapped); Z(store_mapped); Z(islots); Z(nislots); Z(capids);
+    Z(fp_last); Z(fp_last_resets); Z(metadir); Z(backed_files); Z(states_mapped); Z(store_mapped); Z(islots); Z(nislots); Z(capids);
     Z(ioff); Z(own_interned); Z(intern_region); Z(intern_frozen); Z(intern_region_used);
     Z(intern_region_size); Z(enc_tries); Z(enc_saved); Z(enc_whole); Z(enc_last); Z(enc_last_resets);
     Z(enc_last_id); Z(add_one); Z(expanded); Z(view_trace); Z(cur_action); Z(replay_target); Z(replay_fp);
@@ -27555,6 +27602,7 @@ static int check_model(const ManyanOptions *o) {
     view_trace = o->view;
     keep_going = o->keep_going;
     te_spec = !o->keep_going && !o->no_te_spec;
+    metadir = o->metadir;
     for (const char *const *p = o->properties; p && *p; p++) {
         const char *eq = strchr(*p, '=');
         if (!eq) { fprintf(stderr, "manyan: property %s needs =\n", *p); return MANYAN_ERROR; }
@@ -27725,6 +27773,7 @@ int manyan_check(const ManyanOptions *o) {
         status = check_model(o);
     }
     quit = NULL;
+    unback();
     fflush(stdout);
     return status;
 }
@@ -27904,7 +27953,8 @@ int main(int argc, char **argv) {
         }
         /* TLC's, for its own files and fingerprints and when it checks liveness: manyan has no files, and
            checks liveness once the states are found */
-        else if ((!strcmp(argv[i], "-metadir") || !strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits") ||
+        else if (!strcmp(argv[i], "-metadir") && i + 1 < argc) o.metadir = argv[++i];
+        else if ((!strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits") ||
                   !strcmp(argv[i], "-teSpecOutDir") || !strcmp(argv[i], "-lncheck")) && i + 1 < argc) i++;
         else if (strcmp(argv[i], "-noGenerateSpecTE") == 0) o.no_te_spec = 1;
         else if (!strcmp(argv[i], "-gzip") || !strcmp(argv[i], "-cleanup")) {}

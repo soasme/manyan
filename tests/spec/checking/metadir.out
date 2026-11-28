@@ -1,0 +1,26 @@
+Finished computing initial states: 2 distinct states generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 1
+
+State 2: <Next line 8, col 12 to line 8, col 45 of module metadir>
+/\ x = 1
+/\ y = 1
+
+State 3: <Next line 8, col 12 to line 8, col 45 of module metadir>
+/\ x = 2
+/\ y = 1
+
+State 4: <Next line 8, col 12 to line 8, col 45 of module metadir>
+/\ x = 3
+/\ y = 1
+
+State 5: <Next line 8, col 12 to line 8, col 45 of module metadir>
+/\ x = 4
+/\ y = 1
+
+17 states generated, 10 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 5.
+exit 12

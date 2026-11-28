@@ -79,7 +79,8 @@ for it; [std.md](std.md) lists them.
 | `-result FILE` | Manyan's own: write what the check found to FILE in JSON, however the run ends; the output is TLC's still (see [Library](#library)) |
 | `-noGenerateSpecTE` | as TLC's: TLC then sets up no trace spec, which shows in the order of `CounterExample`'s fields |
 | `-fp N` | take TLC's fingerprints with its Nth polynomial, 0 to 130 (0 without it, where TLC picks one at random): they order a state's successors in a temporal property's check, and so its counterexample, seed the draws of `RandomElement` and the Randomization module when model checking, and are `TLCFP`'s values |
-| `-metadir DIR`, `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup`, `-teSpecOutDir DIR`, `-lncheck WHEN` | accepted for TLC's command lines, and ignored: Manyan writes no metadata or trace spec, and checks liveness once the states are found, as `-lncheck final` |
+| `-metadir DIR` | keep the states found in files in DIR, made if need be: the system writes their pages to disk and drops them as memory fills, so a model of more states than memory holds can be checked. The fingerprint set, values and the state graph liveness checks stay in memory. The files are sparse and removed as the check ends |
+| `-fpmem F`, `-fpbits N`, `-gzip`, `-cleanup`, `-teSpecOutDir DIR`, `-lncheck WHEN` | accepted for TLC's command lines, and ignored: Manyan writes no trace spec, and checks liveness once the states are found, as `-lncheck final` |
 | `-h` | print the usage and exit |
 
 A run prints TLC's report on standard output: the initial states, then
