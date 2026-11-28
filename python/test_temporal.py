@@ -695,6 +695,123 @@ m = Model(OneShot)
             self.assertEqual(res.returncode, 11, res.stdout + res.stderr)
             self.assertIn("deadlock (exit 11)", res.stdout)
 
+    def test_all_remaining_temporal_primitives_end_to_end(self) -> None:
+        src = """from typing import Annotated
+from temporal import (
+    Action, Domain, Fairness, Init, Invariant, Model, Property, State,
+    StrongFairness, Unchanged, always, choose, enabled, eventually, iff, prime, weak_fairness,
+)
+
+class Primitives:
+    x: State[int]
+    flag: State[bool]
+    mapping: State[dict[int, str]]
+
+    init: Annotated[
+        bool,
+        Init(
+            lambda s: (
+                s.x == choose(Domain.range(0, 2), lambda v: v == 0)
+                and s.flag is False
+                and s.mapping == {0: "zero", 1: "one"}
+            )
+        ),
+    ]
+    check_iff_and_enabled: Annotated[
+        bool,
+        Invariant(
+            lambda s: (
+                s.x in Domain.range(0, 1)
+                and iff(s.x == 0, s.mapping[s.x] == "zero")
+                and (enabled(s.to_one) if s.x == 0 else enabled(s.to_zero))
+            )
+        ),
+    ]
+    infinitely_often_one: Annotated[bool, Property(lambda s: always(eventually(s.x == 1)))]
+    eventually_flag: Annotated[bool, Property(lambda s: eventually(always(s.flag)))]
+    fair_zero: Annotated[bool, Fairness(lambda s: weak_fairness(s.to_zero, on=s.x))]
+
+    to_one: Annotated[
+        bool,
+        Action(lambda s: s.x == 0 and prime(s.x) == 1 and prime(s.flag) is True),
+        Unchanged("mapping"),
+        StrongFairness(),
+    ]
+    to_zero: Annotated[
+        bool,
+        Action(lambda s: s.x == 1 and prime(s.x) == 0),
+        Unchanged("flag", "mapping"),
+    ]
+
+m = Model(Primitives)
+"""
+        runs = manyan.check_temporal(src)
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+
+    def test_sequence_iteration_enumerate_dict_items_tuple_unpacking_and_local_collections(self) -> None:
+        src = """from typing import Annotated
+from temporal import Action, Domain, Init, Invariant, Model, Requires, State
+
+class Collections:
+    log: State[tuple[int, ...]]
+    seen: State[frozenset[int]]
+    pairs: State[frozenset[tuple[int, int]]]
+    scores: State[dict[int, int]]
+
+    init: Annotated[
+        bool,
+        Init(
+            lambda s: (
+                s.log == ()
+                and s.seen == frozenset()
+                and s.pairs == frozenset()
+                and s.scores == {1: 10, 2: 20}
+            )
+        ),
+    ]
+    inv: Annotated[
+        bool,
+        Invariant(
+            lambda s: (
+                all(x in {1, 2} for x in s.log)
+                and all(i < 2 and x > 0 for i, x in enumerate(s.log))
+                and all(k in {1, 2} for k in s.scores)
+                and all(v == k * 10 for k, v in s.scores.items())
+                and all(a == b for a, b in s.pairs)
+                and {x + 10 for x in s.log} <= {11, 12}
+            )
+        ),
+    ]
+
+    def record(self, item: int) -> Annotated[
+        None,
+        Requires(lambda s, item: len(s.log) < 2),
+        Action(),
+    ]:
+        buf = list(self.log)
+        buf.append(item)
+        self.log = tuple(buf)
+        st = set(self.seen)
+        st.add(item)
+        self.seen = frozenset(st)
+        self.pairs = self.pairs | {(item, item)}
+
+    def forget(self, item: int) -> Annotated[
+        None,
+        Requires(lambda s, item: item in s.seen),
+        Action(),
+    ]:
+        st = set(self.seen)
+        st.discard(item)
+        self.seen = frozenset(st)
+
+m = Model(Collections, domains={"item": Domain.values(1, 2)}, check_deadlock=False)
+"""
+        runs = manyan.check_temporal(src)
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].ok, runs[0].run.output)
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:

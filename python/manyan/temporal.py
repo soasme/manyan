@@ -1083,19 +1083,15 @@ class _ExprCompiler:
             raise _err("Unsupported dict comprehension", node, self.extractor.source_path)
 
         if isinstance(node, ast.SetComp):
-            if len(node.generators) == 1 and isinstance(node.generators[0].target, ast.Name):
+            if len(node.generators) == 1:
                 gen = node.generators[0]
-                assert isinstance(gen.target, ast.Name)
-                orig = gen.target.id
-                safe = f"_q_{orig}" if orig in self._reserved_names() else orig
-                dom = self.compile(gen.iter, primed=use_prime)
-                sub = self._sub(use_prime=use_prime, extra_params={orig: safe})
+                safe, dom, renames = self._bind_comprehension(gen, 0, self._reserved_names(), use_prime, node)
+                sub = self._sub(use_prime=use_prime, extra_params=renames)
                 if gen.ifs:
                     cond = " /\\ ".join(sub.compile(c, primed=use_prime) for c in gen.ifs)
-                    filtered = "{" + f"{safe} \\in {dom} : {cond}" + "}"
-                    if isinstance(node.elt, ast.Name) and node.elt.id == orig:
-                        return filtered
-                    return "{" + f"{sub.compile(node.elt, primed=use_prime)} : {safe} \\in {filtered}" + "}"
+                    dom = "{" + f"{safe} \\in {dom} : {cond}" + "}"
+                if isinstance(node.elt, ast.Name) and renames.get(node.elt.id) == safe:
+                    return dom
                 return "{" + f"{sub.compile(node.elt, primed=use_prime)} : {safe} \\in {dom}" + "}"
             raise _err("Unsupported set comprehension", node, self.extractor.source_path)
 
@@ -1118,9 +1114,12 @@ class _ExprCompiler:
         if isinstance(node.op, ast.Sub):
             return f"({left} \\ {right})" if (lk == "set" or rk == "set") else f"({left} - {right})"
         if isinstance(node.op, ast.Mult):
-            if isinstance(node.left, ast.Tuple) and len(node.left.elts) == 1:
+            if isinstance(node.left, (ast.Tuple, ast.List)) and len(node.left.elts) == 1:
                 val_tla = self.compile(node.left.elts[0], primed=use_prime)
                 return f"[_i \\in 1..({right}) |-> {val_tla}]"
+            if isinstance(node.right, (ast.Tuple, ast.List)) and len(node.right.elts) == 1:
+                val_tla = self.compile(node.right.elts[0], primed=use_prime)
+                return f"[_i \\in 1..({left}) |-> {val_tla}]"
             return f"({left} * {right})"
         if isinstance(node.op, ast.FloorDiv):
             return f"({left} \\div {right})"
@@ -1190,13 +1189,25 @@ class _ExprCompiler:
             return f"[{base} EXCEPT " + ", ".join(updates) + "]"
         if not node.keys:
             return "[_k \\in {} |-> 0]"
-        if all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.keys):
+        if all(
+            isinstance(k, ast.Constant) and isinstance(k.value, str) and k.value.isidentifier()
+            for k in node.keys
+        ):
             pairs = []
             for k, v in zip(node.keys, node.values):
                 assert isinstance(k, ast.Constant) and isinstance(k.value, str)
                 pairs.append(f"{k.value} |-> {self.compile(v, primed=use_prime)}")
             return "[" + ", ".join(pairs) + "]"
-        raise _err("Unsupported non-string dict literal", node, self.extractor.source_path)
+        compiled_pairs = []
+        for k, v in zip(node.keys, node.values):
+            if k is None:
+                raise _err("Unsupported dict unpacking", node, self.extractor.source_path)
+            compiled_pairs.append((self.compile(k, primed=use_prime), self.compile(v, primed=use_prime)))
+        dom = "{" + ", ".join(ks for ks, _ in compiled_pairs) + "}"
+        body = compiled_pairs[-1][1]
+        for ks, vs in reversed(compiled_pairs[:-1]):
+            body = f"(IF _dk = {ks} THEN {vs} ELSE {body})"
+        return f"[_dk \\in {dom} |-> {body}]"
 
     def _compile_subscript(self, node: ast.Subscript, use_prime: bool) -> str:
         obj_kind = self._infer_kind(node.value)
@@ -1317,6 +1328,13 @@ class _ExprCompiler:
                 return f"{fname}({args})" if args else fname
 
         if isinstance(node.func, ast.Attribute):
+            if self.extractor._temporal_name(node.func.value) == "Domain":
+                if node.func.attr == "range" and len(node.args) == 2:
+                    return f"(({self.compile(node.args[0], primed=use_prime)})..({self.compile(node.args[1], primed=use_prime)}))"
+                if node.func.attr == "values":
+                    return "{" + ", ".join(self.compile(a, primed=use_prime) for a in node.args) + "}"
+                if node.func.attr == "boolean" and not node.args:
+                    return "BOOLEAN"
             if isinstance(node.func.value, ast.Name) and node.func.value.id == self.receiver:
                 args = ", ".join(self.compile(a, primed=use_prime) for a in node.args)
                 return f"{node.func.attr}({args})" if args else node.func.attr
@@ -1362,18 +1380,89 @@ class _ExprCompiler:
             return self._compile_action_ref(node.body)
         return self.compile(node, primed=False)
 
+    def _bind_comprehension(
+        self,
+        comp: ast.comprehension,
+        idx: int,
+        reserved: set[str],
+        use_prime: bool,
+        owner: ast.AST,
+    ) -> tuple[str, str, dict[str, str]]:
+        # Handle `for k, v in m.items()`
+        if (
+            isinstance(comp.iter, ast.Call)
+            and isinstance(comp.iter.func, ast.Attribute)
+            and comp.iter.func.attr == "items"
+            and not comp.iter.args
+            and isinstance(comp.target, ast.Tuple)
+            and len(comp.target.elts) == 2
+            and all(isinstance(e, ast.Name) for e in comp.target.elts)
+        ):
+            k_node, v_node = comp.target.elts
+            assert isinstance(k_node, ast.Name) and isinstance(v_node, ast.Name)
+            m_expr = self.compile(comp.iter.func.value, primed=use_prime)
+            safe = f"_q_{k_node.id}" if k_node.id in reserved else k_node.id
+            return safe, f"(DOMAIN {m_expr})", {k_node.id: safe, v_node.id: f"{m_expr}[{safe}]"}
+
+        # Handle `for i, x in enumerate(seq)`
+        if (
+            isinstance(comp.iter, ast.Call)
+            and isinstance(comp.iter.func, ast.Name)
+            and comp.iter.func.id == "enumerate"
+            and len(comp.iter.args) == 1
+            and isinstance(comp.target, ast.Tuple)
+            and len(comp.target.elts) == 2
+            and all(isinstance(e, ast.Name) for e in comp.target.elts)
+        ):
+            i_node, x_node = comp.target.elts
+            assert isinstance(i_node, ast.Name) and isinstance(x_node, ast.Name)
+            self.needs_helpers.add("Sequences")
+            seq_expr = self.compile(comp.iter.args[0], primed=use_prime)
+            safe = f"_e_{idx}"
+            return safe, f"(1..Len({seq_expr}))", {i_node.id: f"({safe} - 1)", x_node.id: f"{seq_expr}[{safe}]"}
+
+        iter_kind = self._infer_kind(comp.iter)
+        raw_iter = self.compile(comp.iter, primed=use_prime)
+
+        # Sequence iteration: `for x in seq` or `for a, b in seq`
+        if iter_kind == "seq":
+            self.needs_helpers.add("Sequences")
+            safe = f"_i_{idx}"
+            elem = f"{raw_iter}[{safe}]"
+            if isinstance(comp.target, ast.Name):
+                return safe, f"(1..Len({raw_iter}))", {comp.target.id: elem}
+            if isinstance(comp.target, ast.Tuple) and all(isinstance(e, ast.Name) for e in comp.target.elts):
+                renames = {
+                    e.id: f"{elem}[{pos}]"
+                    for pos, e in enumerate(comp.target.elts, start=1)
+                    if isinstance(e, ast.Name)
+                }
+                return safe, f"(1..Len({raw_iter}))", renames
+            raise _err("Unsupported comprehension target", owner, self.extractor.source_path)
+
+        dom = f"(DOMAIN {raw_iter})" if iter_kind == "map" else raw_iter
+        if isinstance(comp.target, ast.Name):
+            orig = comp.target.id
+            safe = f"_q_{orig}" if orig in reserved else orig
+            return safe, dom, {orig: safe}
+        if isinstance(comp.target, ast.Tuple) and all(isinstance(e, ast.Name) for e in comp.target.elts):
+            safe = f"_t_{idx}"
+            renames = {
+                e.id: f"{safe}[{pos}]"
+                for pos, e in enumerate(comp.target.elts, start=1)
+                if isinstance(e, ast.Name)
+            }
+            return safe, dom, renames
+        raise _err("Unsupported comprehension target", owner, self.extractor.source_path)
+
     def _compile_quantifier(self, fname: str, gen: ast.GeneratorExp, use_prime: bool) -> str:
         q = "\\A" if fname == "all" else "\\E"
         reserved = self._reserved_names()
         renames: dict[str, str] = {}
         bound_specs: list[tuple[str, str, list[ast.expr]]] = []
-        for comp in gen.generators:
-            if not isinstance(comp.target, ast.Name):
-                raise _err("Only simple variable targets are supported in quantifiers", gen, self.extractor.source_path)
-            orig = comp.target.id
-            safe = f"_q_{orig}" if orig in reserved else orig
-            renames[orig] = safe
-            dom = self.compile(comp.iter, primed=use_prime)
+        for idx, comp in enumerate(gen.generators):
+            safe, dom, comp_renames = self._bind_comprehension(comp, idx, reserved, use_prime, gen)
+            renames.update(comp_renames)
             bound_specs.append((safe, dom, comp.ifs))
         sub = self._sub(use_prime=use_prime, extra_params=renames)
         body = sub.compile(gen.elt, primed=use_prime)
@@ -1418,6 +1507,7 @@ def _compile_imperative_body(
     locals_env: dict[str, str] = {}
     local_list_copies: dict[str, str] = {}
     local_dict_copies: dict[str, str] = {}
+    local_set_copies: dict[str, str] = {}
     ret_expr: Optional[str] = None
 
     def mk_compiler() -> _ExprCompiler:
@@ -1440,7 +1530,7 @@ def _compile_imperative_body(
                 raw_rhs is not None
                 and isinstance(raw_rhs, ast.Call)
                 and isinstance(raw_rhs.func, ast.Name)
-                and raw_rhs.func.id in ("tuple", "dict")
+                and raw_rhs.func.id in ("tuple", "dict", "frozenset", "set")
                 and len(raw_rhs.args) == 1
                 and isinstance(raw_rhs.args[0], ast.Name)
             ):
@@ -1450,6 +1540,9 @@ def _compile_imperative_body(
                     return
                 if raw_rhs.func.id == "dict" and src_name in local_dict_copies:
                     state_exprs[sname] = local_dict_copies[src_name]
+                    return
+                if raw_rhs.func.id in ("frozenset", "set") and src_name in local_set_copies:
+                    state_exprs[sname] = local_set_copies[src_name]
                     return
             state_exprs[sname] = rhs_expr
             return
@@ -1468,6 +1561,11 @@ def _compile_imperative_body(
                 if raw_rhs.func.id == "dict":
                     copied = mk_compiler().compile(raw_rhs.args[0])
                     local_dict_copies[tgt.id] = copied
+                    locals_env[tgt.id] = copied
+                    return
+                if raw_rhs.func.id == "set":
+                    copied = mk_compiler().compile(raw_rhs.args[0])
+                    local_set_copies[tgt.id] = copied
                     locals_env[tgt.id] = copied
                     return
             locals_env[tgt.id] = rhs_expr
@@ -1492,6 +1590,31 @@ def _compile_imperative_body(
         for idx, s in enumerate(stmts):
             if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant) and isinstance(s.value.value, str):
                 continue
+            if (
+                isinstance(s, ast.Expr)
+                and isinstance(s.value, ast.Call)
+                and isinstance(s.value.func, ast.Attribute)
+                and isinstance(s.value.func.value, ast.Name)
+                and len(s.value.args) == 1
+            ):
+                vname, mname = s.value.func.value.id, s.value.func.attr
+                arg_tla = mk_compiler().compile(s.value.args[0])
+                if mname == "append" and vname in local_list_copies:
+                    needs_helpers.add("Sequences")
+                    updated = f"({local_list_copies[vname]} \\o <<{arg_tla}>>)"
+                    local_list_copies[vname] = updated
+                    locals_env[vname] = updated
+                    continue
+                if mname == "add" and vname in local_set_copies:
+                    updated = f"({local_set_copies[vname]} \\cup {{{arg_tla}}})"
+                    local_set_copies[vname] = updated
+                    locals_env[vname] = updated
+                    continue
+                if mname in ("discard", "remove") and vname in local_set_copies:
+                    updated = f"({local_set_copies[vname]} \\ {{{arg_tla}}})"
+                    local_set_copies[vname] = updated
+                    locals_env[vname] = updated
+                    continue
             if isinstance(s, (ast.Pass, ast.Assert, ast.Global)):
                 continue
             if isinstance(s, ast.Return):
@@ -1505,7 +1628,7 @@ def _compile_imperative_body(
                     for t_elt, val, raw_v in zip(tgt.elts, vals, s.value.elts):
                         assign_one(t_elt, val, raw_v, s)
                 else:
-                    # Defer compilation inside assign_one for list()/dict()/tuple() copy constructors
+                    # Defer compilation inside assign_one for list()/dict()/set()/tuple()/frozenset() copies
                     defer = False
                     if (
                         isinstance(s.value, ast.Call)
@@ -1514,11 +1637,15 @@ def _compile_imperative_body(
                     ):
                         cfn = s.value.func.id
                         arg0 = s.value.args[0]
-                        if (isinstance(tgt, ast.Name) and cfn in ("list", "dict")) or (
+                        if (isinstance(tgt, ast.Name) and cfn in ("list", "dict", "set")) or (
                             state_target_name(tgt) is not None
-                            and cfn in ("tuple", "dict")
+                            and cfn in ("tuple", "dict", "frozenset", "set")
                             and isinstance(arg0, ast.Name)
-                            and (arg0.id in local_list_copies or arg0.id in local_dict_copies)
+                            and (
+                                arg0.id in local_list_copies
+                                or arg0.id in local_dict_copies
+                                or arg0.id in local_set_copies
+                            )
                         ):
                             defer = True
                     rhs_str = "" if defer else mk_compiler().compile(s.value)
@@ -1548,6 +1675,7 @@ def _compile_imperative_body(
                     dict(locals_env),
                     dict(local_list_copies),
                     dict(local_dict_copies),
+                    dict(local_set_copies),
                     ret_expr,
                 )
                 then_returned = run_stmts(s.body)
@@ -1563,7 +1691,9 @@ def _compile_imperative_body(
                 local_list_copies.update(saved[2])
                 local_dict_copies.clear()
                 local_dict_copies.update(saved[3])
-                ret_expr = saved[4]
+                local_set_copies.clear()
+                local_set_copies.update(saved[4])
+                ret_expr = saved[5]
 
                 else_returned = run_stmts(s.orelse) if s.orelse else False
                 if not else_returned and rest:
