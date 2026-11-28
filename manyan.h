@@ -74,7 +74,10 @@ typedef struct {
     const char *dump_trace;  /* write a counterexample to this file in TLC's JSON, or NULL (-dumpTrace json) */
     const char *const *dump_traces;  /* after dump_trace, FORMAT and FILE in turn, NULL-terminated: write a counterexample to each FILE, as -dumpTrace FORMAT FILE in order; FORMAT json or tla, each once */
     int no_te_spec;      /* TLC sets up no trace exploration spec, which shows in the order of CounterExample's fields (-noGenerateSpecTE) */
-    const char *metadir;  /* map the states found onto files in this directory, which the system pages out as memory fills, or NULL (-metadir) */
+    const char *metadir;  /* the directory of runs' files; the states found are mapped onto files of the run's, which the system pages out as memory fills, or NULL (-metadir) */
+    double checkpoint;    /* minutes between checkpoints of the search, in the run's directory, of metadir or else states; 0 for none (-checkpoint) */
+    const char *recover;  /* a run's directory, to go on from its checkpoint, or NULL (-recover) */
+    int gzip;             /* checkpoints are compressed by gzip (-gzip) */
     ManyanResult *result;  /* filled in with what the check found, or NULL */
 } ManyanOptions;
 

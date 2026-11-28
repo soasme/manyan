@@ -55,7 +55,7 @@ TLAPS_URL = https://github.com/tlaplus/tlapm/releases/download/1.6.0-pre/tlapm-1
 TLAPS = $(OBJDIR)/tlaps-1.6.0-pre/tlapm/bin/tlapm
 APALACHE_RUN = env $(if $(findstring /,$(JAVA)),JAVA_HOME=$(abspath $(dir $(JAVA))..)) JVM_ARGS=-Xmx2g $(abspath $(APALACHE))
 
-.PHONY: all lib test test-spec test-again test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-fmt-oracle fuzz-lint fuzz-lint-oracle fuzz-typecheck fuzz-sym fuzz-oracle fuzz-sim fuzz-check fuzz-live fuzz-prove fuzz-ref fuzz-model fuzz-model-simulate fuzz-model-symbolic bench full-bench full-bench-symbolic etcd-bench install clean
+.PHONY: all lib test test-spec test-again test-recover test-spec-oracle bless test-symbolic test-symbolic-oracle bless-symbolic test-typecheck test-typecheck-oracle bless-typecheck test-lint test-lint-oracle bless-lint test-fmt test-fmt-oracle bless-fmt test-tla tla-tools wasm test-javascript site sanitize sanitize-linux fuzz fuzz-fmt fuzz-fmt-oracle fuzz-lint fuzz-lint-oracle fuzz-typecheck fuzz-sym fuzz-oracle fuzz-sim fuzz-check fuzz-live fuzz-prove fuzz-ref fuzz-model fuzz-model-simulate fuzz-model-symbolic bench full-bench full-bench-symbolic etcd-bench install clean
 
 all: manyan
 
@@ -91,7 +91,7 @@ else
 	$(CC) $(CFLAGS) $(PGO_USE) $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
 endif
 
-test: test-spec test-result test-again test-python test-symbolic test-typecheck test-lint test-fmt
+test: test-spec test-result test-again test-recover test-python test-symbolic test-typecheck test-lint test-fmt
 
 test-spec: manyan
 	python3 tests/spec_runner.py ./manyan --strict
@@ -126,6 +126,10 @@ LIB = libmanyan.$(SOEXT)
 lib: $(LIB)
 $(LIB): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) -shared -fPIC -DMANYAN_NO_MAIN $(LDFLAGS) $(SRC) $(LDLIBS) -o $@
+
+# A check killed after a checkpoint goes on from it with -recover.
+test-recover: manyan
+	python3 tests/recover_runner.py ./manyan
 
 # The Python package's run(), on this executable, its check(), on this library,
 # and its Temporal Python-source checker.

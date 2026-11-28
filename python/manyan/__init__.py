@@ -136,7 +136,7 @@ class _Options(ctypes.Structure):   # manyan.h's ManyanOptions, in its order
                 ("properties", _Strings), ("symbolic", ctypes.c_int), ("length", ctypes.c_long), ("length_given", ctypes.c_int),
                 ("cinit", ctypes.c_char_p), ("max_error", ctypes.c_long), ("run_dir", ctypes.c_char_p),
                 ("typecheck", ctypes.c_int), ("lint", ctypes.c_int), ("fmt", ctypes.c_int), ("invariants", _Strings), ("postconditions", _Strings),
-                ("dump_trace", ctypes.c_char_p), ("dump_traces", _Strings), ("no_te_spec", ctypes.c_int), ("metadir", ctypes.c_char_p), ("result", ctypes.POINTER(_Result))]
+                ("dump_trace", ctypes.c_char_p), ("dump_traces", _Strings), ("no_te_spec", ctypes.c_int), ("metadir", ctypes.c_char_p), ("checkpoint", ctypes.c_double), ("recover", ctypes.c_char_p), ("gzip", ctypes.c_int), ("result", ctypes.POINTER(_Result))]
 
 
 _lib = None

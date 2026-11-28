@@ -11963,32 +11963,58 @@ static void *mapped(size_t bytes) {
 #endif
 }
 
-/* -metadir DIR: the store and the state records are mapped from files
-   there, so the system writes their pages out and drops them as memory
-   fills, where anonymous memory has only swap. The files are sparse, and
-   removed as the check ends. */
-static const char *metadir;
-static char *backed_files[4];
-static int nbacked_files;
+/* A run's files are in a directory of the metadata directory, named, as
+   TLC's, when the run started; it and they are removed as the check
+   ends. With -metadir DIR the store and the state records are mapped
+   from files there, so the system writes their pages out and drops them
+   as memory fills, where anonymous memory has only swap; they are sparse.
+   A checkpoint is written there too. */
+static const char *metadir;   /* -metadir; else checkpoints go to TLC's states */
+static char *run_path;
+static char *run_files[4];
+static int nrun_files;
+
+static const char *run_dir(void) {
+    if (run_path) return run_path;
+    const char *base = metadir ? metadir : "states";
+    struct timespec t;
+    struct tm tm;
+    char name[32];
+    clock_gettime(CLOCK_REALTIME, &t);
+    strftime(name, sizeof name, "%y-%m-%d-%H-%M-%S", localtime_r(&t.tv_sec, &tm));
+    char *path = xmalloc(strlen(base) + sizeof name + 8);
+    sprintf(path, "%s/%s.%03ld", base, name, t.tv_nsec / 1000000);
+    if ((mkdir(base, 0777) && errno != EEXIST) || mkdir(path, 0777)) {
+        fprintf(stderr, "manyan: cannot make %s\n", path);
+        xfree(path);
+        stop(MANYAN_ERROR);
+    }
+    return run_path = path;
+}
+
+/* The path of a file of the run, removed with it. */
+static char *run_file(const char *name) {
+    const char *dir = run_dir();
+    char *path = xmalloc(strlen(dir) + strlen(name) + 2);
+    sprintf(path, "%s/%s", dir, name);
+    return run_files[nrun_files++] = path;
+}
 
 static void *backed(const char *name, size_t bytes) {
 #if defined(__CYGWIN__) || !WIDE
     (void)name, (void)bytes;
     return NULL;
 #else
-    if (!metadir || nbacked_files == 4) return NULL;
-    if (mkdir(metadir, 0777) && errno != EEXIST) { fprintf(stderr, "manyan: cannot make %s\n", metadir); stop(MANYAN_ERROR); }
-    char *path = xmalloc(strlen(metadir) + strlen(name) + 2);
-    sprintf(path, "%s/%s", metadir, name);
+    if (!metadir) return NULL;
+    char *path = run_file(name);
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     void *p = fd < 0 || ftruncate(fd, (off_t)bytes) ? MAP_FAILED : mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NORESERVE, fd, 0);
     if (fd >= 0) close(fd);
-    if (p == MAP_FAILED) { fprintf(stderr, "manyan: cannot map %s\n", path); unlink(path); stop(MANYAN_ERROR); }
+    if (p == MAP_FAILED) { fprintf(stderr, "manyan: cannot map %s\n", path); stop(MANYAN_ERROR); }
     void *grown = realloc(maps, sizeof *maps * (nmaps + 1));
     if (!grown) { fputs("manyan: out of memory\n", stderr); stop(MANYAN_ERROR); }
     maps = grown;
     maps[nmaps].p = p, maps[nmaps++].n = bytes;
-    backed_files[nbacked_files++] = path;
     return p;
 #endif
 }
@@ -12001,13 +12027,16 @@ static void *region(const char *name, size_t bytes, int share) {
     return p ? p : share ? shared(bytes) : mapped(bytes);
 }
 
-/* The files of -metadir, gone as the check ends. */
-static void unback(void) {
-    while (nbacked_files) {
-        char *path = backed_files[--nbacked_files];
+/* The run's files and directory, gone as the check ends. */
+static void leave_run(void) {
+    while (nrun_files) {
+        char *path = run_files[--nrun_files];
         unlink(path);
         xfree(path);
     }
+    if (run_path) rmdir(run_path);
+    xfree(run_path);
+    run_path = NULL;
 }
 
 static int fp_mapped;         /* the table is mapped, not allocated */
@@ -14517,8 +14546,157 @@ static void print_unfingerprinted(Expr **fps, int n) {
     print_error_text();
 }
 
+/* -checkpoint N: every N minutes the search is written to a file of its
+   run, from which -recover DIR goes on, the states found and the queue
+   as they were: what each state's bytes refer to, the strings and the
+   interned values, is in it too. With workers it is written between
+   levels; the store's halves are put together. -gzip compresses it. */
+static double checkpoint_minutes;
+static int checkpoint_gzip;
+static const char *recover_from;
+static struct timespec checkpoint_last;
+
+typedef struct {
+    char version[32];
+    int nvars, nstates, expanded, nlevels, nstrs, max_depth;
+    int64_t generated, initials, rng_aril;
+    uint64_t store_n, interned, nislots;
+    double growth;
+    JRandom rng;
+} Checkpoint;
+
+static FILE *checkpoint_open(const char *path, int writing, int gzip) {
+    if (!gzip) return fopen(path, writing ? "wb" : "rb");
+    Buf cmd = {0};
+    buf_puts(&cmd, writing ? "gzip -c > '" : "gzip -dc < '");
+    for (const char *p = path; *p; p++) buf_puts(&cmd, *p == '\'' ? "'\\''" : (char[]){*p, 0});
+    buf_puts(&cmd, "'");
+    FILE *f = popen(cmd.s, writing ? "w" : "r");
+    xfree(cmd.s);
+    return f;
+}
+
+/* An offset in the store as the checkpoint has it, the workers' half after the search's. */
+static uint64_t checkpoint_off(size_t off) { return nworkers > 1 && off >= store.cap ? off - store.cap + store.n : off; }
+
+static char *checkpoint_path, *checkpoint_tmp;
+
+static void checkpoint_write(int next) {
+    if (!checkpoint_path) checkpoint_path = run_file(checkpoint_gzip ? "checkpoint.gz" : "checkpoint"), checkpoint_tmp = run_file("checkpoint.tmp");
+    char *path = checkpoint_path, *tmp = checkpoint_tmp;
+    printf("Checkpointing of run %s\n", run_dir());
+    fflush(stdout);
+    size_t high = nworkers > 1 ? atomic_load(&control->encoded) - store.cap : 0;
+    Checkpoint h = {"manyan " MANYAN_VERSION, nvars, nstates, next, nlevels, nstrs, max_depth, generated, initials,
+                    rng_aril, store.n + high, atomic_load(interned), nislots, growth, rng};
+    FILE *f = checkpoint_open(tmp, 1, checkpoint_gzip);
+    int ok = f != NULL;
+    if (ok) {
+        ok &= fwrite(&h, sizeof h, 1, f) == 1;
+        for (int i = 0; i < nstrs; i++) ok &= fwrite(&strs[i].len, sizeof(int), 1, f) == 1 && fwrite(strs[i].s, 1, (size_t)strs[i].len, f) == (size_t)strs[i].len;
+        for (int i = 0; i < nstates; i++) {
+            StateRec r = states[i];
+            uint64_t off = checkpoint_off(state_off(i));
+            r.off_lo = (uint32_t)off, r.off_hi_action = (r.off_hi_action & ~0xffu) | (uint32_t)(off >> 32 & 0xff);
+            ok &= fwrite(&r, sizeof r, 1, f) == 1;
+        }
+        ok &= fwrite(store.s, 1, store.n, f) == store.n && fwrite(store.s + store.cap, 1, high, f) == high;
+        ok &= fwrite(level_at, sizeof(int), (size_t)nlevels, f) == (size_t)nlevels;
+        for (uint64_t i = 0; i < h.interned; i++) {
+            uint64_t off = checkpoint_off(ioff[i]);
+            ok &= fwrite(&off, sizeof off, 1, f) == 1;
+        }
+        ok &= fwrite(islots, sizeof(ISlot), nislots, f) == nislots;
+        ok &= (checkpoint_gzip ? pclose(f) : fclose(f)) == 0;
+    }
+    if (!ok || rename(tmp, path)) { fprintf(stderr, "manyan: cannot write %s\n", path); stop(MANYAN_ERROR); }
+    time_t now = time(NULL);
+    char at[32];
+    strftime(at, sizeof at, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    printf("Checkpointing completed at (%s)\n", at);
+    fflush(stdout);
+}
+
+/* A checkpoint if one is due, next the first state still to expand. */
+static void checkpoint_due(int next) {
+    if (!checkpoint_minutes) return;
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    if ((double)(t.tv_sec - checkpoint_last.tv_sec) + (double)(t.tv_nsec - checkpoint_last.tv_nsec) / 1e9 < checkpoint_minutes * 60) return;
+    checkpoint_write(next);
+    clock_gettime(CLOCK_MONOTONIC, &checkpoint_last);
+}
+
+static _Noreturn void checkpoint_bad(const char *path, const char *why) {
+    fprintf(stderr, "manyan: cannot recover from %s: %s\n", path, why);
+    stop(MANYAN_ERROR);
+}
+
+static void checkpoint_read(FILE *f, void *p, size_t n, const char *path) {
+    if (n && fread(p, 1, n, f) != n) checkpoint_bad(path, "it is cut short");
+}
+
+/* The search as the checkpoint in recover_from has it; the state to expand next. */
+static int recover(void) {
+    size_t n = strlen(recover_from);
+    int slash = n && recover_from[n - 1] == '/', gzip = 0;
+    char *path = xmalloc(n + 32);
+    sprintf(path, "%s%scheckpoint", recover_from, slash ? "" : "/");
+    if (access(path, R_OK)) strcat(path, ".gz"), gzip = 1;
+    printf("Starting recovery from checkpoint %s%s\n", recover_from, slash ? "" : "/");
+    fflush(stdout);
+    FILE *f = access(path, R_OK) ? NULL : checkpoint_open(path, 0, gzip);
+    if (!f) checkpoint_bad(recover_from, "it has no checkpoint");
+    Checkpoint h;
+    checkpoint_read(f, &h, sizeof h, path);
+    if (strcmp(h.version, "manyan " MANYAN_VERSION)) checkpoint_bad(path, "another version of manyan wrote it");
+    if (h.nvars != nvars || h.nstrs < nstrs) checkpoint_bad(path, "it is of another model");
+    for (int i = 0; i < h.nstrs; i++) {
+        int len;
+        checkpoint_read(f, &len, sizeof len, path);
+        if (len < 0) checkpoint_bad(path, "it is damaged");
+        char *s = xmalloc((size_t)len + 1);
+        checkpoint_read(f, s, (size_t)len, path);
+        int same = i < nstrs ? strs[i].len == len && !memcmp(strs[i].s, s, (size_t)len) : intern_n(s, len) == i;
+        xfree(s);
+        if (!same) checkpoint_bad(path, "it is of another model");
+    }
+    if (h.nstates > capstates && (states_mapped || nworkers > 1)) checkpoint_bad(path, "its states do not fit");
+    if (h.nstates > capstates) states = xrealloc(states, sizeof(StateRec) * (size_t)(capstates = h.nstates));
+    checkpoint_read(f, states, sizeof(StateRec) * (size_t)h.nstates, path);
+    if ((store_mapped || nworkers > 1) && h.store_n + 1 > store.cap) checkpoint_bad(path, "its store does not fit");
+    store.n = 0;
+    buf_room(&store, h.store_n + 1);
+    checkpoint_read(f, store.s, h.store_n, path);
+    store.n = h.store_n;
+    store.s[store.n] = 0;
+    for (nstates = 0; nstates < h.nstates; nstates++) fp_insert(nstates);
+    if (h.nlevels > caplevels) level_at = xrealloc(level_at, sizeof(int) * (size_t)(caplevels = h.nlevels));
+    checkpoint_read(f, level_at, sizeof(int) * (size_t)h.nlevels, path);
+    nlevels = h.nlevels;
+    if (h.interned > capids) {
+        if (nworkers > 1) checkpoint_bad(path, "its values do not fit");
+        ioff = xrealloc(ioff, sizeof(uint64_t) * (capids = h.interned));
+    }
+    checkpoint_read(f, ioff, sizeof(uint64_t) * h.interned, path);
+    atomic_store(interned, h.interned);
+    intern_grow(h.nislots);
+    if (nislots != h.nislots) checkpoint_bad(path, "its values do not fit");
+    checkpoint_read(f, islots, sizeof(ISlot) * h.nislots, path);
+    if (gzip ? pclose(f) : fclose(f)) checkpoint_bad(path, "it is damaged");
+    xfree(path);
+    max_depth = h.max_depth, generated = h.generated, initials = h.initials, growth = h.growth, rng = h.rng, rng_aril = h.rng_aril;
+    printf("Recovery completed. %d states examined. %d states on queue.\n", nstates, nstates - h.expanded);
+    fflush(stdout);
+    return h.expanded;
+}
+
 /* Breadth-first search (§10.4). Returns the exit status. */
 static int search(void) {
+    if ((checkpoint_minutes || recover_from) && (ntemporal_props || keep_going)) {
+        fputs("manyan: -checkpoint and -recover keep no state graph for temporal properties, nor what -continue found\n", stderr);
+        return MANYAN_ERROR;
+    }
     if (dump_file || npossibles) nworkers = 1;
     if (nworkers > 1) share_search();
     else if (!states && (states = region("states", sizeof(StateRec) * ((size_t)1 << 29), 0))) {
@@ -14659,7 +14837,8 @@ static int search(void) {
     arena = &scratch_arena;
     init_draws = draw_model;
     draw_restart(NULL);
-    if (!init_parallel()) gen(init_expr, root_ctx, NULL);
+    int start = recover_from ? recover() : 0;
+    if (!recover_from && !init_parallel()) gen(init_expr, root_ctx, NULL);
     arena_reset(&scratch_arena);
     if (live_init_failed) {   /* TLC stops */
         if (violation) printf("\n");
@@ -14670,7 +14849,8 @@ static int search(void) {
         check_posts(1);
         return violation;
     }
-    if (generated == nstates)
+    if (recover_from) ;
+    else if (generated == nstates)
         printf("Finished computing initial states: %d distinct state%s generated.\n", nstates, nstates == 1 ? "" : "s");
     else
         printf("Finished computing initial states: %" PRId64 " state%s generated, with %d of them distinct.\n", generated, generated == 1 ? "" : "s", nstates);
@@ -14679,18 +14859,21 @@ static int search(void) {
         printf("Error: No next state actions defined to generate successor states from.\n");
         return MANYAN_FAILURE_EVAL;
     }
-    initials = generated;
+    if (!recover_from) initials = generated;
     gen_init = 0;
     gen_emit = next_emit;
-    for (int lo = 0; lo < nstates;) {
-        int hi = nstates, status = 0;
+    clock_gettime(CLOCK_MONOTONIC, &checkpoint_last);
+    for (int lo = start; lo < nstates;) {
+        int depth = state_depth(lo), hi = depth < nlevels ? level_at[depth] : nstates, status = 0;   /* its level's end */
         if (nworkers > 1 && hi - lo >= PARALLEL_LEVEL) status = expand_level(lo, hi);
-        else for (int idx = lo; idx < hi && !status && !exit_requested; idx++) status = expand_state(idx);
+        else for (int idx = lo; idx < hi && !status && !exit_requested; idx++)
+            if (!(status = expand_state(idx)) && idx % 256 == 255) checkpoint_due(idx + 1);
         if (status) return status;
         if (exit_requested) break;
         growth = (double)(nstates - hi) / (hi - lo);
         lo = hi;
         live_watch(lo);
+        checkpoint_due(lo);
     }
     expanding = -1;
     if (ntemporal_props) {
@@ -27470,7 +27653,7 @@ static void reset_check(void) {
     Z(nconstraints); Z(naction_constraints); Z(naction_props); Z(ntemporal_props); Z(view_expr);
     Z(periodic_expr); Z(symmetry); Z(nsymmetry); Z(fairness); Z(nfairness);
     Z(sym_models); Z(nsym_models); Z(sym_elem); Z(sym_word); Z(sym_bufs); Z(nsym_bufs); Z(fp_fps); Z(fp_vh);
-    Z(fp_last); Z(fp_last_resets); Z(metadir); Z(backed_files); Z(states_mapped); Z(store_mapped); Z(islots); Z(nislots); Z(capids);
+    Z(fp_last); Z(fp_last_resets); Z(metadir); Z(run_files); Z(checkpoint_minutes); Z(checkpoint_gzip); Z(recover_from); Z(checkpoint_last); Z(checkpoint_path); Z(checkpoint_tmp); Z(states_mapped); Z(store_mapped); Z(islots); Z(nislots); Z(capids);
     Z(ioff); Z(own_interned); Z(intern_region); Z(intern_frozen); Z(intern_region_used);
     Z(intern_region_size); Z(enc_tries); Z(enc_saved); Z(enc_whole); Z(enc_last); Z(enc_last_resets);
     Z(enc_last_id); Z(add_one); Z(expanded); Z(view_trace); Z(cur_action); Z(replay_target); Z(replay_fp);
@@ -27603,6 +27786,7 @@ static int check_model(const ManyanOptions *o) {
     keep_going = o->keep_going;
     te_spec = !o->keep_going && !o->no_te_spec;
     metadir = o->metadir;
+    checkpoint_minutes = o->checkpoint, checkpoint_gzip = o->gzip, recover_from = o->recover;
     for (const char *const *p = o->properties; p && *p; p++) {
         const char *eq = strchr(*p, '=');
         if (!eq) { fprintf(stderr, "manyan: property %s needs =\n", *p); return MANYAN_ERROR; }
@@ -27773,7 +27957,7 @@ int manyan_check(const ManyanOptions *o) {
         status = check_model(o);
     }
     quit = NULL;
-    unback();
+    leave_run();
     fflush(stdout);
     return status;
 }
@@ -27957,7 +28141,14 @@ int main(int argc, char **argv) {
         else if ((!strcmp(argv[i], "-fpmem") || !strcmp(argv[i], "-fpbits") ||
                   !strcmp(argv[i], "-teSpecOutDir") || !strcmp(argv[i], "-lncheck")) && i + 1 < argc) i++;
         else if (strcmp(argv[i], "-noGenerateSpecTE") == 0) o.no_te_spec = 1;
-        else if (!strcmp(argv[i], "-gzip") || !strcmp(argv[i], "-cleanup")) {}
+        else if (!strcmp(argv[i], "-checkpoint") && i + 1 < argc) {
+            char *end, *n = argv[++i];
+            o.checkpoint = strtod(n, &end);
+            if (!*n || *end || !(o.checkpoint >= 0)) { fprintf(stderr, "manyan: -checkpoint takes minutes, not %s\n", n); return MANYAN_ERROR; }
+        }
+        else if (!strcmp(argv[i], "-recover") && i + 1 < argc) o.recover = argv[++i];
+        else if (!strcmp(argv[i], "-gzip")) o.gzip = 1;
+        else if (!strcmp(argv[i], "-cleanup")) {}
         else if (argv[i][0] == '-') { fprintf(stderr, "manyan: unknown option %s\n", argv[i]); return MANYAN_ERROR; }
         else o.spec = argv[i];
     }
