@@ -908,6 +908,43 @@ m = Model(Switch)
         assert spec_runs[0].run.result is not None
         self.assertEqual(spec_runs[0].run.result.distinct, 3)
 
+    def test_pure_function_if_else_continuation_and_while_if_continuation(self) -> None:
+        src = """from typing import Annotated
+from temporal import Domain, Ensures, Model, Pure, Requires
+
+def abs_val(x: int) -> Annotated[
+    Pure[int],
+    Ensures(lambda x, result: result >= 0 and (result == x or result == -x)),
+]:
+    y = 0
+    if x >= 0:
+        y = x
+    else:
+        y = -x
+    return y
+
+def gcd(a: int, b: int) -> Annotated[
+    Pure[int],
+    Requires(lambda a, b: a > 0 and b > 0),
+    Ensures(lambda a, b, result: result > 0 and a % result == 0 and b % result == 0),
+]:
+    assert a > 0 and b > 0
+    steps = 0
+    while a != b:
+        if a > b:
+            a = a - b
+        else:
+            b = b - a
+        steps += 1
+    return a
+
+gcd_model = Model(gcd, domains={"a": Domain.range(1, 6), "b": Domain.range(1, 6)})
+"""
+        runs = manyan.check_temporal(src)
+        self.assertEqual([r.name for r in runs], ["gcd_model", "abs_val"])
+        for tr in runs:
+            self.assertTrue(tr.ok, f"{tr.name}: {tr.run.output}")
+
 
 class TestTemporalCLI(unittest.TestCase):
     def test_cli_check_pass_and_fail(self) -> None:

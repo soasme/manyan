@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -1527,10 +1528,9 @@ def _compile_imperative_body(
     receiver = fn.args.args[0].arg if (not spec.is_module and fn.args.args) else None
     state_exprs: dict[str, str] = {v: v for v in (*spec.states, *spec.ghosts)}
     locals_env: dict[str, str] = {}
-    local_list_copies: dict[str, str] = {}
-    local_dict_copies: dict[str, str] = {}
-    local_set_copies: dict[str, str] = {}
+    local_copies: dict[str, tuple[str, str]] = {}  # name -> ("list" | "dict" | "set", tla_expr)
     ret_expr: Optional[str] = None
+    _COPY_FREEZE = {"tuple": "list", "dict": "dict", "frozenset": "set", "set": "set"}
 
     def mk_compiler() -> _ExprCompiler:
         return _ExprCompiler(
@@ -1545,66 +1545,37 @@ def _compile_imperative_body(
             return tgt.id
         return None
 
-    def assign_one(tgt: ast.expr, rhs_expr: str, raw_rhs: Optional[ast.expr], stmt_node: ast.AST) -> None:
+    def eval_rhs(raw_rhs: ast.expr) -> tuple[Optional[str], str]:
+        if isinstance(raw_rhs, ast.Call) and isinstance(raw_rhs.func, ast.Name) and len(raw_rhs.args) == 1:
+            cfn, arg0 = raw_rhs.func.id, raw_rhs.args[0]
+            if isinstance(arg0, ast.Name) and arg0.id in local_copies and _COPY_FREEZE.get(cfn) == local_copies[arg0.id][0]:
+                return None, local_copies[arg0.id][1]
+            if cfn in ("list", "dict", "set"):
+                return cfn, mk_compiler().compile(arg0)
+        return None, mk_compiler().compile(raw_rhs)
+
+    def assign_one(tgt: ast.expr, copy_kind: Optional[str], rhs_expr: str, stmt_node: ast.AST) -> None:
         sname = state_target_name(tgt)
         if sname is not None:
-            if (
-                raw_rhs is not None
-                and isinstance(raw_rhs, ast.Call)
-                and isinstance(raw_rhs.func, ast.Name)
-                and raw_rhs.func.id in ("tuple", "dict", "frozenset", "set")
-                and len(raw_rhs.args) == 1
-                and isinstance(raw_rhs.args[0], ast.Name)
-            ):
-                src_name = raw_rhs.args[0].id
-                if raw_rhs.func.id == "tuple" and src_name in local_list_copies:
-                    state_exprs[sname] = local_list_copies[src_name]
-                    return
-                if raw_rhs.func.id == "dict" and src_name in local_dict_copies:
-                    state_exprs[sname] = local_dict_copies[src_name]
-                    return
-                if raw_rhs.func.id in ("frozenset", "set") and src_name in local_set_copies:
-                    state_exprs[sname] = local_set_copies[src_name]
-                    return
             state_exprs[sname] = rhs_expr
             return
         if isinstance(tgt, ast.Name):
-            if (
-                raw_rhs is not None
-                and isinstance(raw_rhs, ast.Call)
-                and isinstance(raw_rhs.func, ast.Name)
-                and len(raw_rhs.args) == 1
-            ):
-                if raw_rhs.func.id == "list":
-                    copied = mk_compiler().compile(raw_rhs.args[0])
-                    local_list_copies[tgt.id] = copied
-                    locals_env[tgt.id] = copied
-                    return
-                if raw_rhs.func.id == "dict":
-                    copied = mk_compiler().compile(raw_rhs.args[0])
-                    local_dict_copies[tgt.id] = copied
-                    locals_env[tgt.id] = copied
-                    return
-                if raw_rhs.func.id == "set":
-                    copied = mk_compiler().compile(raw_rhs.args[0])
-                    local_set_copies[tgt.id] = copied
-                    locals_env[tgt.id] = copied
-                    return
+            if copy_kind is not None:
+                local_copies[tgt.id] = (copy_kind, rhs_expr)
             locals_env[tgt.id] = rhs_expr
             return
-        if isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name):
-            if tgt.value.id in local_list_copies:
-                idx = mk_compiler().compile(tgt.slice)
-                updated = f"[{local_list_copies[tgt.value.id]} EXCEPT ![({idx}) + 1] = {rhs_expr}]"
-                local_list_copies[tgt.value.id] = updated
-                locals_env[tgt.value.id] = updated
-                return
-            if tgt.value.id in local_dict_copies:
-                key = mk_compiler().compile(tgt.slice)
-                updated = f"[{local_dict_copies[tgt.value.id]} EXCEPT ![{key}] = {rhs_expr}]"
-                local_dict_copies[tgt.value.id] = updated
-                locals_env[tgt.value.id] = updated
-                return
+        if isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name) and tgt.value.id in local_copies:
+            kind, cur = local_copies[tgt.value.id]
+            idx = mk_compiler().compile(tgt.slice)
+            if kind == "list":
+                updated = f"[{cur} EXCEPT ![({idx}) + 1] = {rhs_expr}]"
+            elif kind == "dict":
+                updated = f"[{cur} EXCEPT ![{idx}] = {rhs_expr}]"
+            else:
+                raise _err(f"Unsupported subscript assignment on {kind} in {fn.name}", stmt_node, extractor.source_path)
+            local_copies[tgt.value.id] = (kind, updated)
+            locals_env[tgt.value.id] = updated
+            return
         raise _err(f"Unsupported assignment in {fn.name}: {ast.dump(stmt_node)}", stmt_node, extractor.source_path)
 
     def run_stmts(stmts: list[ast.stmt]) -> bool:
@@ -1618,25 +1589,23 @@ def _compile_imperative_body(
                 and isinstance(s.value.func, ast.Attribute)
                 and isinstance(s.value.func.value, ast.Name)
                 and len(s.value.args) == 1
+                and s.value.func.value.id in local_copies
             ):
                 vname, mname = s.value.func.value.id, s.value.func.attr
+                kind, cur = local_copies[vname]
                 arg_tla = mk_compiler().compile(s.value.args[0])
-                if mname == "append" and vname in local_list_copies:
+                if kind == "list" and mname == "append":
                     needs_helpers.add("Sequences")
-                    updated = f"({local_list_copies[vname]} \\o <<{arg_tla}>>)"
-                    local_list_copies[vname] = updated
-                    locals_env[vname] = updated
-                    continue
-                if mname == "add" and vname in local_set_copies:
-                    updated = f"({local_set_copies[vname]} \\cup {{{arg_tla}}})"
-                    local_set_copies[vname] = updated
-                    locals_env[vname] = updated
-                    continue
-                if mname in ("discard", "remove") and vname in local_set_copies:
-                    updated = f"({local_set_copies[vname]} \\ {{{arg_tla}}})"
-                    local_set_copies[vname] = updated
-                    locals_env[vname] = updated
-                    continue
+                    updated = f"({cur} \\o <<{arg_tla}>>)"
+                elif kind == "set" and mname == "add":
+                    updated = f"({cur} \\cup {{{arg_tla}}})"
+                elif kind == "set" and mname in ("discard", "remove"):
+                    updated = f"({cur} \\ {{{arg_tla}}})"
+                else:
+                    raise _err(f"Unsupported method call {vname}.{mname} in {fn.name}", s, extractor.source_path)
+                local_copies[vname] = (kind, updated)
+                locals_env[vname] = updated
+                continue
             if isinstance(s, (ast.Pass, ast.Assert, ast.Global)):
                 continue
             if isinstance(s, ast.Return):
@@ -1646,34 +1615,15 @@ def _compile_imperative_body(
             if isinstance(s, ast.Assign) and len(s.targets) == 1:
                 tgt = s.targets[0]
                 if isinstance(tgt, ast.Tuple) and isinstance(s.value, ast.Tuple) and len(tgt.elts) == len(s.value.elts):
-                    vals = [mk_compiler().compile(v) for v in s.value.elts]
-                    for t_elt, val, raw_v in zip(tgt.elts, vals, s.value.elts):
-                        assign_one(t_elt, val, raw_v, s)
+                    vals = [eval_rhs(v) for v in s.value.elts]
+                    for t_elt, (ck, val) in zip(tgt.elts, vals):
+                        assign_one(t_elt, ck, val, s)
                 else:
-                    # Defer compilation inside assign_one for list()/dict()/set()/tuple()/frozenset() copies
-                    defer = False
-                    if (
-                        isinstance(s.value, ast.Call)
-                        and isinstance(s.value.func, ast.Name)
-                        and len(s.value.args) == 1
-                    ):
-                        cfn = s.value.func.id
-                        arg0 = s.value.args[0]
-                        if (isinstance(tgt, ast.Name) and cfn in ("list", "dict", "set")) or (
-                            state_target_name(tgt) is not None
-                            and cfn in ("tuple", "dict", "frozenset", "set")
-                            and isinstance(arg0, ast.Name)
-                            and (
-                                arg0.id in local_list_copies
-                                or arg0.id in local_dict_copies
-                                or arg0.id in local_set_copies
-                            )
-                        ):
-                            defer = True
-                    rhs_str = "" if defer else mk_compiler().compile(s.value)
-                    assign_one(tgt, rhs_str, s.value, s)
+                    ck, val = eval_rhs(s.value)
+                    assign_one(tgt, ck, val, s)
             elif isinstance(s, ast.AnnAssign) and s.value is not None:
-                assign_one(s.target, mk_compiler().compile(s.value), s.value, s)
+                ck, val = eval_rhs(s.value)
+                assign_one(s.target, ck, val, s)
             elif isinstance(s, ast.AugAssign):
                 sname = state_target_name(s.target)
                 if sname is not None:
@@ -1692,14 +1642,7 @@ def _compile_imperative_body(
             elif isinstance(s, ast.If):
                 cond = mk_compiler().compile(s.test)
                 rest = stmts[idx + 1:]
-                saved = (
-                    dict(state_exprs),
-                    dict(locals_env),
-                    dict(local_list_copies),
-                    dict(local_dict_copies),
-                    dict(local_set_copies),
-                    ret_expr,
-                )
+                saved = (dict(state_exprs), dict(locals_env), dict(local_copies), ret_expr)
                 then_returned = run_stmts(s.body)
                 if not then_returned and rest:
                     then_returned = run_stmts(rest)
@@ -1709,13 +1652,9 @@ def _compile_imperative_body(
                 state_exprs.update(saved[0])
                 locals_env.clear()
                 locals_env.update(saved[1])
-                local_list_copies.clear()
-                local_list_copies.update(saved[2])
-                local_dict_copies.clear()
-                local_dict_copies.update(saved[3])
-                local_set_copies.clear()
-                local_set_copies.update(saved[4])
-                ret_expr = saved[5]
+                local_copies.clear()
+                local_copies.update(saved[2])
+                ret_expr = saved[3]
 
                 else_returned = run_stmts(s.orelse) if s.orelse else False
                 if not else_returned and rest:
@@ -1752,7 +1691,11 @@ def _compile_pure_function(
     params = [a.arg for a in fn.args.args]
     extra_defs: list[str] = []
 
-    def compile_block(stmts: list[ast.stmt], env: dict[str, str]) -> str:
+    def compile_block(
+        stmts: list[ast.stmt],
+        env: dict[str, str],
+        cont: Callable[[dict[str, str]], str],
+    ) -> str:
         cur_env = dict(env)
 
         def comp() -> _ExprCompiler:
@@ -1760,6 +1703,8 @@ def _compile_pure_function(
 
         for idx, s in enumerate(stmts):
             if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant) and isinstance(s.value.value, str):
+                continue
+            if isinstance(s, (ast.Pass, ast.Assert)):
                 continue
             if isinstance(s, ast.Return):
                 if s.value is None:
@@ -1785,8 +1730,17 @@ def _compile_pure_function(
                 )
             elif isinstance(s, ast.If):
                 cond = comp().compile(s.test)
-                then_expr = compile_block(s.body, cur_env)
-                else_expr = compile_block(s.orelse if s.orelse else stmts[idx + 1:], cur_env)
+                rest = stmts[idx + 1:]
+
+                def next_cont(
+                    e: dict[str, str],
+                    _r: list[ast.stmt] = rest,
+                    _c: Callable[[dict[str, str]], str] = cont,
+                ) -> str:
+                    return compile_block(_r, e, _c) if _r else _c(e)
+
+                then_expr = compile_block(s.body, cur_env, next_cont)
+                else_expr = compile_block(s.orelse, cur_env, next_cont) if s.orelse else next_cont(cur_env)
                 return f"(IF {cond} THEN {then_expr} ELSE {else_expr})"
             elif isinstance(s, ast.While):
                 loop_vars = sorted(cur_env.keys())
@@ -1798,52 +1752,16 @@ def _compile_pure_function(
                 loop_cond = _ExprCompiler(
                     extractor, None, var_types, param_map=loop_env, needs_helpers=needs_helpers
                 ).compile(s.test)
-                after_expr = compile_block(stmts[idx + 1:], loop_env)
+                after_expr = compile_block(stmts[idx + 1:], loop_env, cont)
 
-                def compile_loop_body(
-                    body_stmts: list[ast.stmt],
-                    lenv: dict[str, str],
-                    _loop_name: str = loop_name,
-                    _all_args: list[str] = all_args,
+                def loop_cont(
+                    le: dict[str, str],
+                    _ln: str = loop_name,
+                    _aa: list[str] = all_args,
                 ) -> str:
-                    le = dict(lenv)
+                    return f"{_ln}({', '.join(le[v] for v in _aa)})"
 
-                    def lc() -> _ExprCompiler:
-                        return _ExprCompiler(extractor, None, var_types, param_map=le, needs_helpers=needs_helpers)
-
-                    for bi, bs in enumerate(body_stmts):
-                        if isinstance(bs, ast.Return):
-                            if bs.value is None:
-                                needs_helpers.add("NONE")
-                                return "NONE"
-                            return lc().compile(bs.value)
-                        if isinstance(bs, ast.Assign) and len(bs.targets) == 1:
-                            btgt = bs.targets[0]
-                            if isinstance(btgt, ast.Name):
-                                le[btgt.id] = lc().compile(bs.value)
-                            elif isinstance(btgt, ast.Tuple) and isinstance(bs.value, ast.Tuple):
-                                bvals = [lc().compile(v) for v in bs.value.elts]
-                                for t_elt, val in zip(btgt.elts, bvals):
-                                    if isinstance(t_elt, ast.Name):
-                                        le[t_elt.id] = val
-                            else:
-                                raise _err(f"Unsupported assignment in while loop of {fn.name}", bs, extractor.source_path)
-                        elif isinstance(bs, ast.AnnAssign) and isinstance(bs.target, ast.Name) and bs.value is not None:
-                            le[bs.target.id] = lc().compile(bs.value)
-                        elif isinstance(bs, ast.AugAssign) and isinstance(bs.target, ast.Name):
-                            le[bs.target.id] = lc().compile(
-                                ast.BinOp(left=ast.Name(id=bs.target.id, ctx=ast.Load()), op=bs.op, right=bs.value)
-                            )
-                        elif isinstance(bs, ast.If):
-                            c = lc().compile(bs.test)
-                            t_br = compile_loop_body(bs.body, le)
-                            e_br = compile_loop_body(bs.orelse if bs.orelse else body_stmts[bi + 1:], le)
-                            return f"(IF {c} THEN {t_br} ELSE {e_br})"
-                        else:
-                            raise _err(f"Unsupported statement in while loop of {fn.name}", bs, extractor.source_path)
-                    return f"{_loop_name}({', '.join(le[v] for v in _all_args)})"
-
-                step_expr = compile_loop_body(s.body, loop_env)
+                step_expr = compile_block(s.body, loop_env, loop_cont)
                 extra_defs.append(f"RECURSIVE {loop_name}({', '.join('_' for _ in all_args)})")
                 extra_defs.append(
                     f"{loop_name}({', '.join(loop_formals)}) ==\n"
@@ -1853,10 +1771,13 @@ def _compile_pure_function(
                 return f"{loop_name}({', '.join(init_vals)})"
             else:
                 raise _err(f"Unsupported statement in pure function {fn.name}: {type(s).__name__}", s, extractor.source_path)
+        return cont(cur_env)
+
+    def default_none(_e: dict[str, str]) -> str:
         needs_helpers.add("NONE")
         return "NONE"
 
-    body_expr = compile_block(fn.body, {p: f"{param_prefix}{p}" for p in params})
+    body_expr = compile_block(fn.body, {p: f"{param_prefix}{p}" for p in params}, default_none)
     return extra_defs, body_expr
 
 
