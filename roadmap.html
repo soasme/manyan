@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmap · Manyan</title>
+<link rel="icon" href="logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="index.html">Manyan</a><a href="playground.html">Playground</a><a href="manual.html">Manual</a><a href="roadmap.html" aria-current=page>Roadmap</a><a href="benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="roadmap">Roadmap</h1>
+<p>Manyan aims to be the TLC people run every day. It should give the same answers
+and the same output, start instantly, need nothing installed, and be easy to
+embed. It is not a new model checker with its own semantics, a proof checker
+(TLAPS) or a symbolic one (Apalache).</p>
+<p>The goals come in order. A later goal never costs an earlier one.</p>
+<h2 id="1-same-as-tlc">1. Same as TLC</h2>
+<p>Every other goal relies on people trusting a result from Manyan as much as one
+from TLC.</p>
+<ul>
+<li>Run the specs of <a href="https://github.com/tlaplus/Examples">tlaplus/Examples</a>
+  against TLC (<code>make full-bench</code>), and publish how many give identical
+  output (<a href="fullbench.html">full benchmark</a>). Each spec that differs becomes a test in
+  <code>tests/spec</code> and then a fix. The goal is all of them.</li>
+<li>The gaps the <a href="manual.html#limitations">manual</a> lists by decision are
+  left, each for the reason it gives; one is reopened when a
+  specification needs it. Its known gaps are to be closed. The order of <code>Print</code> output in a simulation
+  that stops early is TLC's threads' timing.</li>
+<li>Open, found by the fuzzers and not yet closed:</li>
+<li>With <code>-dumpTrace</code>, a spec's own <code>POSTCONDITION</code> that prints
+    <code>CounterExample</code> shows TLC's record <code>state</code> first, as TLC builds it,
+    where Manyan prints it sorted, <code>action</code> first (the manual's
+    limitation). Closing it means keeping a record in the order it was
+    built until a field of it is read, as TLC normalizes then. It is
+    most of what <code>fuzz-check</code> and <code>fuzz-sim</code> still report.</li>
+<li>Where an error stops a simulation, the number of states generated
+    can differ from TLC's (1 for 2; 10 for 5 with <code>num=4</code>). The runners
+    ignore the line, so no test catches it.</li>
+<li><code>fuzz-check</code> draws neither <code>-metadir</code> nor <code>-gzip</code>.</li>
+<li>Follow new TLC releases. For each one, re-pin
+  the oracle and re-bless the tests that changed.</li>
+<li>Give TLC's counterexample to a temporal property. Of 1500 random graphs
+  <code>tests/fuzz.py live</code> makes on five seeds, each checked with the same
+  random <code>-fp</code>, all print what TLC prints: Manyan orders a state's
+  successors as TLC's table of them does, by TLC's fingerprints, checks
+  the properties as TLC does, by its possible error models, and builds
+  TLC's tableau of particles. A simulation searches its behavior as
+  TLC's <code>LiveCheck1</code> does, and prints the lasso it finds where TLC
+  prints the behavior's first states.</li>
+<li>Check Manyan against the semantics of TLA⁺, not only TLC: <code>make
+  fuzz-prove</code> asks TLAPS to prove the value Manyan prints, <code>make
+  fuzz-ref</code> compares it with <code>lean/</code>, a reference semantics in Lean 4,
+  and <code>make fuzz-model</code> Manyan's verdicts, counts and traces; <code>lean/</code>
+  proves that its computable oracle agrees with the classical one. Next:
+  a proof that its evaluator respects <code>=</code> for values it keeps
+  unevaluated (it is proved for the rest; <code>make fuzz-ref</code> tests it with
+  twins of each expression written otherwise).</li>
+<li>Model more of Manyan's algorithms in <code>tests/tla</code>, such as symmetry, and
+  fuzz what the models cannot reach. The parallel search, the slicing of
+  Init, the search for a fair cycle, the tableau, level checking and
+  canonical formatting have models.</li>
+</ul>
+<h2 id="2-fast-where-tlc-is-slow">2. Fast where TLC is slow</h2>
+<ul>
+<li>Most specs are small or medium and get checked again after every edit.
+  They should finish in milliseconds, fast enough to check on save, in a
+  pre-commit hook or in CI.</li>
+<li>Large models should fit in less memory per state, and state spaces
+  larger than RAM should check at disk speed. <code>-metadir</code> (after 0.18.0)
+  maps the store of states and their records from files. In a Linux
+  container without swap, PaxosCommit (1.32M states, 149 MB in memory)
+  is killed under 100 MB without it; with it, it checks under 100 MB in
+  55 s, as fast as without a cap, under 50 MB in 506 s, and under 30 MB
+  it thrashes until killed after 46 minutes. What stays in memory, and
+  what makes it thrash:</li>
+<li>The fingerprint set holds each state's index, not its fingerprint:
+    each lookup reads the state's record, at random in its file.
+    TLC's <code>DiskFPSet</code> keeps the fingerprints, a bounded table in memory
+    and a sorted file it searches with about one read per lookup.</li>
+<li>Every state found is kept, encoded, for traces and liveness. TLC
+    keeps only the states still to expand (<code>DiskStateQueue</code>), and for a
+    trace a file of each state's fingerprint and predecessor
+    (<code>TLCTrace</code>), from which it computes the states again.</li>
+<li>A state's steps for liveness (<code>state_edges</code>) are in memory. TLC's
+    <code>DiskGraph</code> keeps them in files, with an in-memory table from
+    fingerprint to file offset.</li>
+<li>Up to 2^29 states: the fingerprint set's slots are 30 bits.
+  TLC's design is the one to follow: the same files, each a bounded
+  buffer in memory. The first step is the fingerprint set; then the
+  steps for liveness.</li>
+<li>Checking should scale with cores, liveness checking included.</li>
+<li>Before any speedup is kept, <code>docs/benchmark.md</code> must show it and show no
+  regression elsewhere.</li>
+</ul>
+<h2 id="3-embeddable">3. Embeddable</h2>
+<ul>
+<li>Make <code>manyan.h</code> a stable C API: load a spec, check it, and walk the result
+  without parsing printed text.</li>
+<li>Ship it where people install their tools: the executable on PyPI, a
+  WebAssembly build on npm. Done in 0.14.0.</li>
+<li>Build bindings on that API: Python first, then an editor or language
+  server integration.</li>
+<li>A browser playground, where anyone can paste a spec and check it with
+  nothing installed. Done in 0.14.0.</li>
+</ul>
+<h2 id="next-0190">Next: 0.19.0</h2>
+<p>0.18.0 hardened what 0.17.0 had: the fixes for a red-team pass and
+tlaplus/model-checker-hardening, and fuzzers that reach where those bugs
+were (<code>fuzz-typecheck</code>, <code>fuzz-sym</code>, SANY oracles for <code>-fmt</code> and <code>-lint</code>,
+richer values, models and temporal formulas). It agrees with TLC on all
+2000 entries of a model-checker-hardening pbt campaign.</p>
+<ol>
+<li><strong>Liveness on every core.</strong> A property of state atoms alone is
+   checked on one process, where forking the workers costs more than
+   they save (<a href="optimizations.html">optimizations</a>). Make more workers
+   check it faster, its output unchanged.</li>
+</ol>
+<h2 id="what-stays">What stays</h2>
+<ul>
+<li>The core language in one C file and one header, and the operators TLC
+  computes in Java in another pair, on the core's API; no dependencies.</li>
+<li>Every expected output comes from TLC, unless TLA⁺'s semantics says
+  TLC's verdict is wrong: then the semantics wins, and the manual says
+  where. How a result is printed stays TLC's.</li>
+<li>With any number of workers, the output is identical to a one-worker run.</li>
+<li>An improvement over TLC that changes the output, such as a clearer error
+  message, is opt-in. The default output stays TLC's.</li>
+</ul>
+</article>
+</body>
+</html>

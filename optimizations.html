@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimizations · Manyan</title>
+<link rel="icon" href="logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="index.html">Manyan</a><a href="playground.html">Playground</a><a href="manual.html">Manual</a><a href="roadmap.html">Roadmap</a><a href="benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="optimizations">Optimizations</h1>
+<p>What made Manyan fast, what was tried and gave nothing, and how to measure.
+Each entry gives wall-clock seconds on the bench specs (arm64, best of 5)
+before and after; <a href="benchmark.html">benchmark.md</a> has the current comparison
+with TLC.</p>
+<h2 id="measuring">Measuring</h2>
+<ul>
+<li><code>bench/quick.sh [-workers N] OLD NEW</code>: the best of 5 runs of each engine
+  on each bench spec, side by side. Compare binaries built from two
+  commits, at the same time; nothing else may run meanwhile (a stray
+  background job once hid a result).</li>
+<li><code>sample PID 3 -file out.sample</code> on a build with <code>-O2 -g</code>, run on a model
+  big enough to sample (counters with <code>Max = 8</code>: 4.78M states). Self
+  samples point at the hot function; to split an inlined one, build a copy
+  with <code>__attribute__((noinline))</code> on its parts.</li>
+<li>To count work instead of time, build a copy that counts <code>eval</code> calls by
+  kind and arena allocations by caller (<code>__builtin_return_address</code>). For
+  counters: 148 evaluations and 53 allocations per state expanded.</li>
+<li><code>make bench</code> re-measures <a href="benchmark.html">benchmark.md</a> against TLC with the
+  profile-guided build; do it before a release.</li>
+</ul>
+<h2 id="kept">Kept</h2>
+<p>In the order they were made.</p>
+<table>
+<thead>
+<tr>
+<th>change</th>
+<th>effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fingerprints hash values directly, not their encoding; the encoding is made only for new states; a fingerprint slot keeps the state beside it</td>
+<td>counters 2.34 → 1.63</td>
+</tr>
+<tr>
+<td>Standard-module operators of up to four arguments take them on the stack</td>
+<td>(in the above)</td>
+</tr>
+<tr>
+<td>Workers: forked processes expand wide levels over a shared store; the search merges in order, so output is that of one process</td>
+<td>counters 1.62 → 0.58 with 8</td>
+</tr>
+<tr>
+<td><code>sigsetjmp(.., 0)</code>: no signal-mask system calls per handler</td>
+<td>(in the above)</td>
+</tr>
+<tr>
+<td>A binding read from the current state keeps its value for the state's expansion</td>
+<td>closure 284 → 1.12</td>
+</tr>
+<tr>
+<td>Workers claim a new state once: one invariant check per state, not per worker</td>
+<td>duplicate work no longer grows with workers</td>
+</tr>
+<tr>
+<td>Union of sorted sets merges; small sets sort by insertion; arrays the caller fills are not zeroed</td>
+<td>closure 1.16 → 0.90, counters 1.66 → 1.48</td>
+</tr>
+<tr>
+<td>Workers merge each batch as it is done and find seen states themselves</td>
+<td>counters 0.46 → 0.38 with 8</td>
+</tr>
+<tr>
+<td>Atoms and tuples compare without the general case</td>
+<td>closure 0.86 → 0.83</td>
+</tr>
+<tr>
+<td>An argument that is a bound name with a fixed value binds the value, not a thunk; <code>x \in S</code> quantifies without a stack</td>
+<td>closure 0.83 → 0.70, counters 1.27 → 1.18</td>
+</tr>
+<tr>
+<td>Fingerprints: an atom hashes inline</td>
+<td>counters 1.18 → 1.15</td>
+</tr>
+<tr>
+<td>Fingerprints are sums of element hashes, kept by each set and function, so EXCEPT and Append update them by one term and decoding computes them</td>
+<td>counters 1.15 → 1.04</td>
+</tr>
+<tr>
+<td><code>eval</code> is an inline lookup in a table of one function per kind, so each call site has its own indirect branch to predict</td>
+<td>closure 0.68 → 0.60, counters 1.04 → 0.88</td>
+</tr>
+<tr>
+<td>Set membership compares atoms and flat tuples inline in its binary search</td>
+<td>closure 0.61 → 0.57</td>
+</tr>
+<tr>
+<td>EXCEPT looks its key up once, not three times</td>
+<td>counters 0.88 → 0.86</td>
+</tr>
+<tr>
+<td><code>-workers N</code> is N processes: the search expands a batch while it waits for one, instead of spinning</td>
+<td>counters (4.78M states) 1.65 → 1.55 with 8</td>
+</tr>
+<tr>
+<td>Workers take room in the claim table 64 claims at a time, not one atomic add per claim</td>
+<td>counters 0.28 → 0.23 with 8</td>
+</tr>
+<tr>
+<td>Profile-guided optimization (<code>make</code>), trained on the conformance suite (training on the bench specs instead gains about as much, so the suite is a fair profile)</td>
+<td>clang: closure 0.55 → 0.48, counters 0.85 → 0.72, queue 0.18 → 0.16; gcc 15: counters 1.00 → 0.82</td>
+</tr>
+<tr>
+<td>An instance's substitution of state level, but a variable, is computed once per state, as TLC keeps a LazyValue</td>
+<td>refinement with K = 8 2.09 → 1.55, counters (no instance) +1%</td>
+</tr>
+<tr>
+<td><code>&lt;&lt;x, y&gt;&gt; \in S</code>, of atoms and an enumerated S, probes S with the components, not a tuple made of them</td>
+<td>closure 0.48 → 0.46</td>
+</tr>
+<tr>
+<td>A stored state's words are zigzag varints, a small number one byte</td>
+<td>memory: PaxosCommit 2067 → 1140 MB, counters 188 → 145 MB; time: counters +3%, others under 1%</td>
+</tr>
+<tr>
+<td>Two enumerated sets or tuples compare their atoms first, before <code>vcmp</code>'s checks for other kinds</td>
+<td>partition with N = 10 1.25 → 1.15; tuples too: Examples' TLCSailfish1 9.95 → 9.65</td>
+</tr>
+<tr>
+<td>A native operator reached through an instance takes its arguments as values, without thunks, as <code>ev_call</code> does; a root module's call through instances without parameters keeps its <code>Inst</code> chain on the expression</td>
+<td>Examples' Huang (1 worker) 66 → 46 → 43</td>
+</tr>
+<tr>
+<td><code>r.f</code> keeps on the expression where the field was in the last record, and checks there first</td>
+<td>Examples' MCPaxosSmall (1 worker) 20.3 → 18.6, 12% fewer instructions</td>
+</tr>
+<tr>
+<td>Computing the initial states, the scratch arena takes regions: a quantifier's body and an initial state's invariants drop what they made, as constants do</td>
+<td>Examples' MCBakery (655200 initial states) 2.14 → 1.93, 1.2 → 0.4 GB</td>
+</tr>
+<tr>
+<td>A declaration keeps the index of its substitution by the module last instantiated, not searching the instance's substitutions at each read</td>
+<td>instructions: Examples' AllocatorImplementation −3.6%, MCPaxosSmall −1.8%</td>
+</tr>
+<tr>
+<td>A declaration read outside an instance skips the instance and ENABLED checks (a separate noinline function); a stored word under 64 writes one byte inline; <code>gen</code> does not expand a constant call</td>
+<td>against 0.6.0's bench regressions: counters 2549 → 2510 M cycles, symmetry 621 → 606, log 173 → 165</td>
+</tr>
+<tr>
+<td>Workers compute the initial states: <code>Init</code>'s first choices split it into slices, numbered as one process takes them; each worker computes a batch of slices, skipping the others' alternatives, and the search merges them in order through the claims a level uses</td>
+<td>Examples' MCBakery (4 workers) 1.33 → 0.73, its initial states 1.06 → 0.42</td>
+</tr>
+<tr>
+<td>A temporal property's action atoms are kept for each edge of the state graph, not evaluated again for each tableau node and each pass over the product</td>
+<td>Examples' AllocatorImplementation 1.34 → 0.99 (1 worker), 1.11 → 0.76 (4); its atoms were evaluated 32 times an edge</td>
+</tr>
+<tr>
+<td>With workers, a property's action atoms are evaluated on every edge in parallel before its check; one that fails, prints or draws is left to the check. Not for a property of state atoms alone: forking and decoding each state costs more than the check spends on them</td>
+<td>Examples' AllocatorImplementation 0.75 → 0.52 (4 workers), 0.85 → 0.69 (2), and 0.65 (4) before an atom <code>~A</code> shared <code>A</code>'s value, which it evaluated twice; the quick bench's liveness, ten properties of state atoms, 0.16 → 0.24 before that exception</td>
+</tr>
+<tr>
+<td>The scratch arena takes regions through the whole search, and a filter's test is one; a region keeps one chunk it drops for the next</td>
+<td>Examples' MCInnerSerial: over 4 GB → 0.47 GB, 310 s (TLC 354 s); closure 0.51 → 0.53 s (plain -O2), the rest flat</td>
+</tr>
+<tr>
+<td>An argument's value is kept while an initial state's invariants are checked, as for any other state: only a read of the initial state being found changes</td>
+<td>tests/tla/MCInitSlices with 5552 initial states (a recursive operator passing its accumulator) 24.5 → 0.61; each <code>force</code> evaluated its thunk again, and that its argument's, down the recursion</td>
+</tr>
+<tr>
+<td>A constant operator whose body loops is computed once for each list of arguments of one value each, where computing it had no effect; one whose calls keep taking other values stops trying; Naturals' operators reached through an instance take <code>ev_call</code>'s integer path</td>
+<td>Examples' Huang (1 worker) 36.2 → 9.1</td>
+</tr>
+<tr>
+<td><code>vcmp</code> compares a function's or record's keys and values inline where both are atoms, as it does a tuple's and a set's</td>
+<td>Examples' MCInnerSerial 244.9 → 224.4 s, 9% fewer instructions (without PGO)</td>
+</tr>
+<tr>
+<td>A state's steps kept in their own array, only with a temporal property; a fingerprint slot holds the fingerprint's high half and the state, the record the whole</td>
+<td>memory: MCKVSSafetySmall 798 → 694 MB with 1 worker, 1197 → 1009 MB with 4; time unchanged</td>
+</tr>
+<tr>
+<td>With one worker, the state records are one mapping, reserved, and each fingerprint table its own, unmapped as it grows (macOS's malloc keeps a large block freed)</td>
+<td>memory: MCKVSSafetySmall 695 → 511 MB with 1 worker; time unchanged</td>
+</tr>
+<tr>
+<td>With workers, a new state's encoding goes in the store's other half, not a worker's region the search copies from; a successor found is its action and its state or claim, 8 bytes, the claim keeping a new one's fingerprint</td>
+<td>memory: MCKVSSafetySmall's search with 4 workers 1009 → 753 MB (the found successors 229 → 79 MB); time unchanged</td>
+</tr>
+<tr>
+<td>Each temporal property's product in an arena of its own, dropped with it; the initial predicates' evaluations dropped after each initial state</td>
+<td>memory: CoffeeCan3000Beans 5.54 → 4.67 GB, 13.6 → 10.6 s</td>
+</tr>
+<tr>
+<td>A variable's value of 4 bytes or more interned, as SPIN's collapse compression: a state keeps its id; a variable whose interning costs more than it saves over 16384 values is kept whole</td>
+<td>memory: DijkstraMutex Safety-4-processors (33.3M states) 4.39 → 2.08 GB; queue 26 → 16 MB</td>
+</tr>
+<tr>
+<td>A state's record keeps neither its depth, found from the first state of each level, nor its encoding's length: 32 → 24 bytes</td>
+<td>memory: DijkstraMutex Safety-4-processors 2.08 → 1.82 GB; counters 68 → 62 MB</td>
+</tr>
+<tr>
+<td>A filter over a record set or product makes each element in turn; liveness decodes states into an arena emptied for each check</td>
+<td>memory: CoffeeCan at 1500 beans, safety 495 → 205 MB, liveness 1071 → 807 MB</td>
+</tr>
+<tr>
+<td>Liveness decodes each interned value once for all the states that share it; a product node 56 → 40 bytes</td>
+<td>memory: aba_asyn_byz's decoded states 2676 → 242 MB; liveness 51 → 39 MB, 2% fewer instructions</td>
+</tr>
+<tr>
+<td>A state's steps in one mapped pool; the product's nodes mapped once; a product successor its step's index, the action found from it; an atom cached only where it is evaluated, a state predicate on states and an action on steps</td>
+<td>memory: aba_asyn_byz 5.07 → 3.98 GB, 33.2 → 30.7 s</td>
+</tr>
+<tr>
+<td>Arena memory 8-byte aligned, not 16: a value takes its 72 bytes, not 80; the few <code>__int128</code> arrays align themselves. An alignment check on every allocation cost 1-3%</td>
+<td>memory: CoffeeCan at 1500, safety 205 → 188 MB</td>
+</tr>
+<tr>
+<td>A variable with too many values to intern whole has its elements or values of 8 bytes or more interned; a fingerprint slot is the state's index alone, 4 bytes, the record holding the fingerprint. Parts under 8 bytes cost <code>closure</code> 2% for little</td>
+<td>ElevatorSafetyLarge's store 65.6 → 26.1 bytes a state; counters 62 → 54 MB</td>
+</tr>
+<tr>
+<td>With one worker the store mapped once, as with several; a state's record packs its store offset, 40 bits, with its action, 24: 20 bytes</td>
+<td>ElevatorSafetyLarge (59M states) over 4 GB → 3854 MB, 479 s (TLC 1715 s)</td>
+</tr>
+<tr>
+<td>An interned value looked up by the hash its fingerprint keeps on it; a fingerprint slot keeps the fingerprint's top 2 bits beside the state's index; a worker stops interning a variable that does not pay after its share of the window, not the whole of it; a new state's depth its parent's, known</td>
+<td>against 0.15.0, plain -O2 cycles: queue +12% → +3%, counters +4% → +0.5%; 8 workers' CPU: recursion 0.47 → 0.45 s (0.15.0 0.45)</td>
+</tr>
+<tr>
+<td>Symbolic: a word made by + or - keeps its sum of words; a sum's word is the first made for it, and one that cancels or merges is built from its sum, so (a + d) - (b + d) is a - b's literals. Each + and - still asserts it does not overflow</td>
+<td>tests/symbolic MC_FoldExcept3 22.1 → 0.7 s; make test-symbolic 27.7 → 19.0 s. Rebuilding every sum, not only those that cancel, made MC_ERC20 18 → 38 s</td>
+</tr>
+<tr>
+<td>Symbolic: a learned clause minimized recursively, through reasons of reasons, as MiniSat</td>
+<td>Paxos at length 7 378G → 203G instructions; MC_ERC20 at 5 +2.9%</td>
+</tr>
+</tbody>
+</table>
+<h2 id="tried-and-dropped">Tried and dropped</h2>
+<table>
+<thead>
+<tr>
+<th>idea</th>
+<th>why not</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A fast path for <code>K_DECL</code> in <code>eval</code></td>
+<td>no gain; unsafe for a constant whose <code>var_index</code> is 0</td>
+</tr>
+<tr>
+<td>Fingerprint table split into fingerprints and states</td>
+<td>no gain</td>
+</tr>
+<tr>
+<td>A wrapper evaluating leaves without the dispatch</td>
+<td>slower</td>
+</tr>
+<tr>
+<td><code>-fno-stack-protector</code></td>
+<td>about 2%, not worth a build flag</td>
+</tr>
+<tr>
+<td><code>veq</code> comparing two atoms of one kind first, as <code>vcmp</code> does</td>
+<td>2% fewer instructions on MCPaxosSmall, but 1% slower with the profile-guided build</td>
+</tr>
+<tr>
+<td><code>eval</code> as a switch calling one noinline function per kind</td>
+<td>2%; the table above does better</td>
+</tr>
+<tr>
+<td>A tuple's value array in the same allocation as the tuple</td>
+<td>no measurable gain</td>
+</tr>
+<tr>
+<td>Prefetching fingerprint slots, successors queued 8 deep</td>
+<td>none, slightly slower: the out-of-order core already overlaps the miss</td>
+</tr>
+<tr>
+<td>Interning strings and model values (counters made 5.8M model values)</td>
+<td>no gain: arena allocation is a pointer bump, and the scratch arena is reset each state, so it stays in cache</td>
+</tr>
+<tr>
+<td><code>t \in [1..n -&gt; R]</code> for a tuple <code>t</code> checking the domain by the interval's bounds, without enumerating it</td>
+<td>0.25% fewer instructions on Examples' MCBakery, whose TypeOK does it twice per state: the profile's samples there were the members' checks</td>
+</tr>
+<tr>
+<td><code>assignable</code> with a fast path, an inline front, or a switch</td>
+<td>each made partition about 11% slower with the profile-guided build; the loop form stays</td>
+</tr>
+<tr>
+<td><code>ev_call</code> computing <code>+ - &lt; &lt;= &gt; &gt;=</code> of two integers inline, without the native call</td>
+<td>none on the quick bench with the profile-guided build (counters 0.78 → 0.77, others equal): the natives are a few instructions already</td>
+</tr>
+<tr>
+<td>The invariants of a state outside the model, kept by its fingerprint, as TLC checks them each time it finds one</td>
+<td>Huang finds each such state once: no hit</td>
+</tr>
+<tr>
+<td>A state-level value kept under a prime, so MCInnerSerial computes <code>opId</code> once for each candidate order, not for each <code>R</code></td>
+<td>the next state changes as successors are made, in many places, so a kept value would need the values it read checked (two more words in every binding, and its prints, which TLC repeats); <code>totalOpOrder</code> is lazy, so only <code>opId</code>, about 15%, is reached</td>
+</tr>
+</tbody>
+</table>
+<h2 id="where-the-time-goes-now">Where the time goes now</h2>
+<p>Counters, one worker: about 60% evaluating (148 tree nodes per state at
+about 7 ns each), 35% keeping states (fingerprint lookup 16%, encoding,
+records), 6% decoding. Closure: a third in set membership of tuples. Two
+workers reach 1.6x one; the parallel path costs about 20% more work (claims,
+encoding twice, a second lookup when merging).</p>
+<p>The next large step for evaluation is fewer, cheaper nodes: resolving names
+to slots, and fusing common shapes (<code>f[x]</code> with <code>f</code> a variable and <code>x</code> a
+bound name, comparisons of integers) at resolve time.</p>
+<h2 id="open-where-tlc-gains-more-from-workers">Open: where TLC gains more from workers</h2>
+<p>Examples' models where Manyan is least ahead of TLC (4 workers each) are
+ones with a large serial part, not a slow evaluator.</p>
+<ul>
+<li><strong>AllocatorImplementation</strong> (TLC 3.44 s, Manyan 1.38 s; Manyan 1.32 s with
+  one worker). Its property <code>SchedAllocator</code> is checked on the state
+  graph after the search, in one process: about half the samples are in
+  <code>scc_search</code>, evaluating <code>[Sched!Next]_vars</code> on each of 64414 edges
+  and the fairness <code>ENABLED</code>s of <code>Sched!Liveness</code> on each state. TLC
+  evaluates these as each worker expands a state (<code>LiveCheck.addNextState</code>).
+  Kept for each edge, the atoms are now evaluated once an edge, not 32
+  times (above), and the workers evaluate them before the check, each
+  on the edges of its states: 0.75 → 0.52 s with 4 workers. Left in one
+  process are the 115 fairness conditions on each state and edge: the
+  check makes 570424 <code>ENABLED</code> evaluations, 468217 of them distinct, and
+  315589 steps, all distinct, of the 2.0 million and 7.4 million there
+  are. Evaluating all of them in the workers would be about four times
+  the work, so it would take components checked in parallel, not a
+  fill.
+  <code>subst_index</code> (above) took 3.6% off the evaluation itself.
+  Since 0.11.0 a property is checked by its possible error models (PEMs),
+  searched lazily, one at a time; filling every atom of every step in the
+  workers first doubled the time with 4 workers (0.48 → 0.96 s). Instead
+  the workers each search error models of the product, filling the shared
+  atom cache as they go, and the search goes on in order from what they
+  found: 0.48 → 0.24 s with 4 workers, 0.46 → 0.21 s with 8.
+  Each search still took the <code>&lt;&gt;[]</code> conditions of its error model on
+  every edge itself, 60% of its evaluations, and 7 error models make two
+  rounds on 4 workers. The workers now evaluate those first, by state:
+  0.25 → 0.22 s with 4 workers, 0.22 → 0.20 s with 8. Not where the
+  offers (below) took them already, nor for a group of one error model,
+  nor of state atoms alone: forking costs more there (EWD840 0.006 → 0.009 s,
+  the quick bench's liveness +53% with 8 workers).</li>
+<li><strong>ReadersWriters, MCLiveWriteThroughCache.</strong> A product of more than 8
+  error models first computes what each component offers them, on one
+  process: 0.25 s of ReadersWriters' 0.29 s with 4 workers. The
+  components are found first, by a search that evaluates nothing, and
+  the workers evaluate the offers' conditions in them, by state:
+  ReadersWriters 0.25 → 0.12 s, MCLiveWriteThroughCache 0.19 → 0.09 s
+  with 4 workers. Only above 100000 evaluations: below, the fork costs
+  more (ElevatorLivenessMedium +26%, LiveHourClock +43%).</li>
+<li><strong>The quick bench's liveness.</strong> 0.17 s with one worker and 0.16 with
+  eight: 0.14 s was <code>Served</code>, five groups of one error model each, a
+  tableau each, checked in turn by one process. The workers now check the
+  groups, each in one worker, and the search checks again in order those
+  violated or not known: 0.168 → 0.097 s with 8 workers, SimpleAllocator
+  0.122 → 0.026, MCAlternatingBit 0.046 → 0.012. Not for two groups,
+  which lose the workers' search inside each (TestGraphs +32%, EWD840
+  +66%); nor more workers forked than a level has batches, a fork costing
+  each (CoffeeCan100Beans +41% with 8 workers, now +9%). Left: groups that
+  share their atoms evaluate them in each worker, where in turn the first
+  fills them for the rest (CoffeeCan100Beans +9%, MCLiveInternalMemory +8%
+  with 4 workers, a few milliseconds); the first group checked first, by
+  the search, made those faster and MCAlternatingBit +94%, DijkstraMutex
+  +60%.</li>
+</ul>
+</article>
+</body>
+</html>

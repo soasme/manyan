@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Symbolic benchmark · Manyan</title>
+<link rel="icon" href="logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="index.html">Manyan</a><a href="playground.html">Playground</a><a href="manual.html">Manual</a><a href="roadmap.html">Roadmap</a><a href="benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="symbolic-benchmark">Symbolic benchmark</h1>
+<!-- results -->
+
+<p>tlaplus/Examples at ca168055339d, the models its manifests check with Apalache, to length 5. Measured on arm64 Darwin 25.5.0, one run, wall-clock seconds.</p>
+<p>46 models: 46 same. Where manyan gives Apalache's outcome, it is 266.9x as fast (geometric mean).</p>
+<table>
+<thead>
+<tr>
+<th>model</th>
+<th>outcome</th>
+<th style="text-align: right;">Apalache</th>
+<th style="text-align: right;">Manyan</th>
+<th style="text-align: right;">speedup</th>
+<th>result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CigaretteSmokers/APCigaretteSmokers</td>
+<td>NoError</td>
+<td style="text-align: right;">2.59</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">439.9x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>CoffeeCan/APCoffeeCan</td>
+<td>NoError</td>
+<td style="text-align: right;">1.76</td>
+<td style="text-align: right;">0.03</td>
+<td style="text-align: right;">70.3x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>DieHard/APDieHarder</td>
+<td>NoError</td>
+<td style="text-align: right;">3.50</td>
+<td style="text-align: right;">0.04</td>
+<td style="text-align: right;">95.0x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>DiningPhilosophers/APDiningPhilosophersPCal</td>
+<td>NoError</td>
+<td style="text-align: right;">6.53</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">1149.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Disruptor/APDisruptor_MPMC</td>
+<td>NoError</td>
+<td style="text-align: right;">3.62</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">310.3x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Disruptor/APDisruptor_SPMC</td>
+<td>NoError</td>
+<td style="text-align: right;">2.38</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">407.3x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>EinsteinRiddle/Einstein</td>
+<td>Error FindSolution 1</td>
+<td style="text-align: right;">2.39</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">205.2x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>FiniteMonotonic/APCRDT</td>
+<td>NoError</td>
+<td style="text-align: right;">11.03</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">951.2x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>FiniteMonotonic/APReplicatedLog</td>
+<td>NoError</td>
+<td style="text-align: right;">1.89</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">327.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>FlashProtocol/APFlashWithMutex</td>
+<td>NoError</td>
+<td style="text-align: right;">36.73</td>
+<td style="text-align: right;">0.36</td>
+<td style="text-align: right;">102.0x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>GermanProtocol/APGermanCMPWithMutex</td>
+<td>NoError</td>
+<td style="text-align: right;">5.31</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">455.7x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>GermanProtocol/APGermanControl</td>
+<td>NoError</td>
+<td style="text-align: right;">2.15</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">183.2x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>GermanProtocol/APGermanData</td>
+<td>NoError</td>
+<td style="text-align: right;">2.95</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">208.1x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>MisraReachability/APParReach</td>
+<td>NoError</td>
+<td style="text-align: right;">2.38</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">207.5x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>MissionariesAndCannibals/APMissionariesAndCannibals</td>
+<td>NoError</td>
+<td style="text-align: right;">1.96</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">344.1x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Moving_Cat_Puzzle/APCat</td>
+<td>NoError</td>
+<td style="text-align: right;">1.60</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">290.2x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>ReadersWriters/APReadersWriters</td>
+<td>NoError</td>
+<td style="text-align: right;">2.07</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">369.1x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpanningTree/APSpanTree</td>
+<td>ExecutionsTooShort</td>
+<td style="text-align: right;">1.75</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">150.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/AsynchronousInterface/APAsynchInterface</td>
+<td>NoError</td>
+<td style="text-align: right;">1.45</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">256.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/AsynchronousInterface/APChannel</td>
+<td>NoError</td>
+<td style="text-align: right;">1.55</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">275.8x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/Composing/APChannel</td>
+<td>NoError</td>
+<td style="text-align: right;">1.55</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">272.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/Composing/APHourClock</td>
+<td>NoError</td>
+<td style="text-align: right;">1.35</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">240.7x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/FIFO/APChannel</td>
+<td>NoError</td>
+<td style="text-align: right;">1.55</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">273.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/FIFO/APInnerFIFO</td>
+<td>NoError</td>
+<td style="text-align: right;">1.76</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">296.0x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/FIFO/APInnerFIFOInstanced</td>
+<td>NoError</td>
+<td style="text-align: right;">1.71</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">307.8x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/FIFO/APMCInnerFIFO</td>
+<td>NoError</td>
+<td style="text-align: right;">1.81</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">325.6x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/HourClock/APHourClock</td>
+<td>NoError</td>
+<td style="text-align: right;">1.36</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">235.3x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/HourClock/APHourClock2</td>
+<td>NoError</td>
+<td style="text-align: right;">1.50</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">126.7x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/Liveness/APHourClock</td>
+<td>NoError</td>
+<td style="text-align: right;">1.45</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">259.8x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>SpecifyingSystems/Liveness/APLiveHourClock</td>
+<td>NoError</td>
+<td style="text-align: right;">1.45</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">256.8x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>acp/APACP_SB</td>
+<td>NoError</td>
+<td style="text-align: right;">3.31</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">285.6x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>barriers/APBarrier</td>
+<td>NoError</td>
+<td style="text-align: right;">2.08</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">369.3x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>bcastFolklore/APbcastFolklore</td>
+<td>NoError</td>
+<td style="text-align: right;">3.15</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">268.9x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>bosco/APbosco</td>
+<td>NoError</td>
+<td style="text-align: right;">14.98</td>
+<td style="text-align: right;">0.05</td>
+<td style="text-align: right;">300.1x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>c1cs/APc1cs</td>
+<td>NoError</td>
+<td style="text-align: right;">3.70</td>
+<td style="text-align: right;">0.22</td>
+<td style="text-align: right;">16.6x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>chang_roberts/APChangRoberts</td>
+<td>NoError</td>
+<td style="text-align: right;">6.30</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">1120.0x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>ewd426/APTokenRing</td>
+<td>NoError</td>
+<td style="text-align: right;">3.57</td>
+<td style="text-align: right;">0.02</td>
+<td style="text-align: right;">190.3x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>ewd840/APEWD840</td>
+<td>NoError</td>
+<td style="text-align: right;">2.49</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">441.0x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>ewd840/APSyncTerminationDetection</td>
+<td>NoError</td>
+<td style="text-align: right;">2.40</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">204.7x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>glowingRaccoon/APclean</td>
+<td>NoError</td>
+<td style="text-align: right;">1.66</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">292.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>glowingRaccoon/APstages</td>
+<td>NoError</td>
+<td style="text-align: right;">1.73</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">309.4x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>lamport_mutex/APLamportMutex</td>
+<td>NoError</td>
+<td style="text-align: right;">9.57</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">842.0x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>nbacg_guer01/APnbacg_guer01</td>
+<td>NoError</td>
+<td style="text-align: right;">5.86</td>
+<td style="text-align: right;">0.08</td>
+<td style="text-align: right;">69.9x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>spanning/APspanning</td>
+<td>NoError</td>
+<td style="text-align: right;">1.97</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">346.2x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>tcp/APtcp</td>
+<td>NoError</td>
+<td style="text-align: right;">13.31</td>
+<td style="text-align: right;">0.02</td>
+<td style="text-align: right;">535.3x</td>
+<td>same</td>
+</tr>
+<tr>
+<td>transaction_commit/APTCommit</td>
+<td>NoError</td>
+<td style="text-align: right;">2.07</td>
+<td style="text-align: right;">0.01</td>
+<td style="text-align: right;">367.4x</td>
+<td>same</td>
+</tr>
+</tbody>
+</table>
+</article>
+</body>
+</html>

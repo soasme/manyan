@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standard modules · Manyan</title>
+<link rel="icon" href="logo.jpg">
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1c1a; --muted: #6b675f; --line: #dedad2; --code: #f1eee7;
+    --panel: #ffffff; --accent: #9c3b25; --accent-fg: #ffffff; --bad: #a3271a; --good: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --fg: #e9e6df; --muted: #9a958b; --line: #34312c; --code: #23211e;
+      --panel: #1e1d1a; --accent: #e07a5f; --accent-fg: #161513; --bad: #f08a7a; --good: #8fca8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .top { border-bottom: 1px solid var(--line); }
+  .top nav { max-width: 1200px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 4px 18px; flex-wrap: wrap; }
+  .top a { color: var(--muted); text-decoration: none; }
+  .top a:hover, .top a[aria-current] { color: var(--fg); }
+  .top a:first-child { color: var(--fg); font-weight: 600; margin-right: auto; }
+  article { max-width: 820px; margin: 0 auto; padding: 8px 16px 48px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 28px 0 12px; }
+  h2 { font-size: 22px; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 18px; margin: 28px 0 6px; }
+  code, pre { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; display: block; overflow-x: auto; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 10px; vertical-align: top; }
+  th { background: var(--code); }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+<header class="top"><nav><a href="index.html">Manyan</a><a href="playground.html">Playground</a><a href="manual.html">Manual</a><a href="roadmap.html">Roadmap</a><a href="benchmark.html">Benchmark</a><a href="https://github.com/soasme/manyan">GitHub</a></nav></header>
+<article>
+<h1 id="standard-modules">Standard modules</h1>
+<p>TLC computes some operators of its modules in Java instead of from their
+TLA⁺ definitions: the operators of its own standard modules and some of
+CommunityModules'. Manyan computes them in C. This document lists them and
+says how one is written.</p>
+<h2 id="built-in">Built in</h2>
+<p>Naturals, Integers, Reals, Sequences, FiniteSets, TLC, Bags,
+Randomization, RealTime, Toolbox, TLCExt and Json are built into <code>manyan.c</code>: a
+spec need not supply them, and one it supplies is read in their place. Of
+TLCExt, <code>TLCFP</code> is TLC's fingerprint of the value under <code>-fp</code>'s
+polynomial, which TLC picks at random without it
+(<a href="manual.html#limitations">limitations</a>).
+<code>PickSuccessor(e)</code> asks on standard input, as TLC does, whether to take
+each step to a state not yet seen where <code>e</code> is false: yes (or an empty
+line), no, explored (taken, but not expanded), or print the two states or
+what changes. At the end of the input Manyan stops, where TLC asks
+again while it reports the error.</p>
+<h2 id="communitymodules">CommunityModules</h2>
+<p>A module of <a href="https://github.com/tlaplus/CommunityModules">CommunityModules</a>
+is read from the spec's directory, as TLC reads it from its class path. Its
+operators come from their definitions, except those below: TLC overrides
+them in Java from the jar, and Manyan in <code>manyan-std.c</code>, giving what that Java
+gives, error messages included.</p>
+<table>
+<thead>
+<tr>
+<th>module</th>
+<th>operators</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BagsExt</td>
+<td><code>FoldBag</code></td>
+</tr>
+<tr>
+<td>CSV</td>
+<td><code>CSVWrite</code>, <code>CSVWriteRecord</code>, <code>CSVRead</code>, <code>CSVRecords</code> (a line too short for <code>CSVRead</code>'s columns fails in <code>CSVRead</code>, where TLC fails when the record is used)</td>
+</tr>
+<tr>
+<td>Functions</td>
+<td><code>FoldFunction</code>, <code>FoldFunctionOnSet</code></td>
+</tr>
+<tr>
+<td>Graphs</td>
+<td><code>SimplePath</code>, <code>AreConnectedIn</code>, <code>IsStronglyConnected</code></td>
+</tr>
+<tr>
+<td>IOUtils</td>
+<td><code>IOEnv</code>, <code>atoi</code>, <code>IOExec</code>, <code>IOEnvExec</code>, <code>Serialize</code> (format <code>TXT</code>; another format is the definition's)</td>
+</tr>
+<tr>
+<td>Json</td>
+<td><code>ToJson</code>, <code>ToJsonArray</code>, <code>ToJsonObject</code>, <code>JsonSerialize</code>, <code>ndJsonSerialize</code>, <code>JsonDeserialize</code>, <code>ndJsonDeserialize</code> (a record literal in an <code>ASSUME</code> is written in TLC's order, where TLC writes it as written)</td>
+</tr>
+<tr>
+<td>SequencesExt</td>
+<td><code>SetToSeq</code>, <code>FoldSeq</code>, <code>SelectInSeq</code>, <code>SelectInSubSeq</code>, <code>SelectLastInSeq</code>, <code>SelectLastInSubSeq</code>, <code>IsPrefix</code></td>
+</tr>
+<tr>
+<td>Statistics</td>
+<td><code>ChiSquare</code></td>
+</tr>
+<tr>
+<td>SVG</td>
+<td><code>SVGElemToString</code>, <code>NodeOfRingNetwork</code></td>
+</tr>
+<tr>
+<td>UndirectedGraphs</td>
+<td><code>ConnectedComponents</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="writing-one">Writing one</h2>
+<p>A native operator is a C function on the values of <code>manyan.h</code>. <code>manyan_define</code>
+binds it to an operator of every module of that name, when the operator's
+definition takes as many arguments, as TLC binds its Java by name. The last
+argument is the Java method as TLC names it when the operator fails; Manyan
+prints it in the same place. As TLC, Manyan casts each argument to its
+parameter's class there, <code>tlc2.value.impl.StringValue</code> say, and fails as
+Java's cast does on another value.</p>
+<pre><code class="language-c">#include &quot;manyan.h&quot;
+
+/* SequencesExt's SetToSeq(S): S's elements, in TLC's order. */
+static ManyanValue *set_to_seq(ManyanCall *call, ManyanValue **a) {
+    ManyanValue *s = manyan_elements(a[0]);
+    if (!s) manyan_fail(call, &quot;Attempted to enumerate a set that is not enumerable:\n%s&quot;, manyan_print(a[0]));
+    ManyanValue *elems[manyan_size(s) + 1];
+    for (size_t i = 0; i &lt; manyan_size(s); i++) elems[i] = manyan_element(s, i);
+    return manyan_tuple(manyan_size(s), elems);
+}
+
+manyan_define(&quot;SequencesExt&quot;, &quot;SetToSeq&quot;, 1, set_to_seq,
+           &quot;public static tlc2.value.impl.Value tlc2.overrides.SequencesExt.SetToSeq(tlc2.value.impl.Value)&quot;);
+</code></pre>
+<p>Arguments arrive evaluated. With arity <code>MANYAN_LAZY</code> the operator takes any
+number of them unevaluated, as TLC's evaluation methods do, and evaluates
+each it needs with <code>manyan_arg</code>; returning <code>NULL</code> then leaves the call to the
+definition, as <code>Serialize</code> does for a format other than <code>TXT</code>.</p>
+<p>Values are made and read with the functions <code>manyan.h</code> declares. A record is a
+function from strings (<code>manyan_record</code> makes one TLC's Java makes as a
+<code>RecordValue</code>), a sequence a tuple, and the elements of sets and the keys
+of functions come in TLC's order. Values belong to the evaluation that
+made them; a native keeps none past its return. An error does not return:
+<code>manyan_fail</code> for one TLC's Java raises as an <code>EvalException</code>, which TLC
+prints as it is, and <code>manyan_throw</code> for another exception, which TLC prints
+under the Java method that threw it, so memory a native needs across one
+comes from <code>manyan_alloc</code>, which lives as values do. <code>manyan_format</code> is Java's
+<code>String.format</code> on strings, <code>manyan_to_string</code> a value as TLC's
+<code>toString</code> writes it, on one line, and <code>manyan_apply</code> an operator passed as
+an argument, as the folds apply theirs.</p>
+<p>Each new native gets a test in <code>tests/spec/stdlib</code>, its expected output
+from TLC with the CommunityModules jar (<code>make bless</code>), and a stub of the
+module in the test's <code>.files</code> directory with the definition TLC overrides.</p>
+</article>
+</body>
+</html>
